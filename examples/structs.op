@@ -1,0 +1,55 @@
+// structs and nested data
+
+struct Vec2 {
+    int x;
+    int y;
+}
+
+struct Rect {
+    ptr origin;
+    int width;
+    int height;
+}
+
+function int area(ptr r) {
+    return r.width * r.height
+}
+
+function int perimeter(ptr r) {
+    return 2 * (r.width + r.height)
+}
+
+function void print_rect(ptr r) {
+    print("rect at (")
+    print_int(r.origin.x)
+    print(", ")
+    print_int(r.origin.y)
+    print(") size ")
+    print_int(r.width)
+    print("x")
+    print_int(r.height)
+    print(" area=")
+    print_int(area(r))
+    print(" perim=")
+    print_int(perimeter(r))
+    print("\n")
+}
+
+function int main() {
+    alloc_console()
+
+    let p1 = Vec2 { x: 10, y: 20 }
+    let p2 = Vec2 { x: 0, y: 0 }
+
+    let r1 = Rect { origin: p1, width: 100, height: 50 }
+    let r2 = Rect { origin: p2, width: 30, height: 30 }
+
+    print_rect(r1)
+    print_rect(r2)
+
+    free(r1)
+    free(r2)
+    free(p1)
+    free(p2)
+    return 0
+}

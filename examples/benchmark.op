@@ -1,0 +1,43 @@
+// sequential vs parallel benchmark
+
+function int burn() {
+    var x = 1
+    for i in range(0, 10000000) {
+        x = x + i * 3 + 7
+    }
+    return x
+}
+
+function int main() {
+    alloc_console()
+    print("=== parallel benchmark ===\n")
+    print("8 iterations, 10M ops each\n\n")
+
+    // sequential
+    let t0 = get_tick_count()
+    for i in range(0, 8) {
+        burn()
+    }
+    let seq = get_tick_count() - t0
+    print("sequential: ")
+    print_int(seq)
+    print(" ms\n")
+
+    // parallel
+    let t1 = get_tick_count()
+    parallel for i in range(0, 8) {
+        burn()
+    }
+    let par = get_tick_count() - t1
+    print("parallel:   ")
+    print_int(par)
+    print(" ms\n")
+
+    if par > 0 {
+        print("speedup:    ")
+        print_int(seq / par)
+        print("x\n")
+    }
+
+    return 0
+}

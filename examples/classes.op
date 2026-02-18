@@ -1,0 +1,69 @@
+// classes with methods
+
+class Player {
+    health: int,
+    armor: int,
+    name: str,
+
+    function void take_damage(int amount) {
+        // armor absorbs half
+        let absorbed = amount * self.armor / 100
+        let actual = amount - absorbed
+        self.health = self.health - actual
+        if self.health < 0 {
+            self.health = 0
+        }
+    }
+
+    function void heal(int amount) {
+        self.health = self.health + amount
+        if self.health > 100 {
+            self.health = 100
+        }
+    }
+
+    function bool is_alive() {
+        return self.health > 0
+    }
+
+    function void status() {
+        print(self.name)
+        print(" | hp: ")
+        print_int(self.health)
+        print(" | armor: ")
+        print_int(self.armor)
+        if self.is_alive() {
+            print(" [alive]\n")
+        } else {
+            print(" [dead]\n")
+        }
+    }
+}
+
+function int main() {
+    alloc_console()
+
+    var warrior = Player { health: 100, armor: 60, name: "warrior" }
+    var mage = Player { health: 100, armor: 10, name: "mage" }
+
+    warrior.status()
+    mage.status()
+
+    print("\n--- combat round ---\n")
+    warrior.take_damage(40)
+    mage.take_damage(40)
+
+    warrior.status()
+    mage.status()
+
+    print("\n--- healing ---\n")
+    warrior.heal(20)
+    mage.heal(50)
+
+    warrior.status()
+    mage.status()
+
+    free(warrior)
+    free(mage)
+    return 0
+}

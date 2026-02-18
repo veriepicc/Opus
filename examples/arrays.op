@@ -1,0 +1,53 @@
+// arrays and sorting
+
+function void bubble_sort(ptr arr, int len) {
+    for i in range(0, len) {
+        for j in range(0, len - i - 1) {
+            let a = arr[j]
+            let b = arr[j + 1]
+            if a > b {
+                array_set(arr, j, b)
+                array_set(arr, j + 1, a)
+            }
+        }
+    }
+}
+
+function void print_array(ptr arr, int len) {
+    print("[")
+    for i in range(0, len) {
+        print_int(arr[i])
+        if i < len - 1 {
+            print(", ")
+        }
+    }
+    print("]\n")
+}
+
+function int main() {
+    alloc_console()
+
+    let data = array_new(10)
+    // fill with unsorted values
+    array_set(data, 0, 64)
+    array_set(data, 1, 25)
+    array_set(data, 2, 12)
+    array_set(data, 3, 99)
+    array_set(data, 4, 1)
+    array_set(data, 5, 47)
+    array_set(data, 6, 83)
+    array_set(data, 7, 36)
+    array_set(data, 8, 71)
+    array_set(data, 9, 8)
+
+    print("before: ")
+    print_array(data, 10)
+
+    bubble_sort(data, 10)
+
+    print("after:  ")
+    print_array(data, 10)
+
+    array_free(data)
+    return 0
+}

@@ -1,0 +1,26 @@
+// windows api through ffi
+
+function int main() {
+    alloc_console()
+
+    // resolve kernel32 functions
+    let kernel32 = get_module("kernel32.dll")
+    print("kernel32: ")
+    print_hex(kernel32)
+
+    let get_pid = get_proc(kernel32, "GetCurrentProcessId")
+    let pid = ffi_call0(get_pid)
+    print("pid: ")
+    print_int(pid)
+
+    // load user32 and show a message box
+    let user32 = load_library("user32.dll")
+    let msgbox_fn = get_proc(user32, "MessageBoxA")
+
+    // MessageBoxA(hwnd, text, caption, flags)
+    // 0x40 = MB_ICONINFORMATION
+    ffi_call4(msgbox_fn, 0, "Hello from Opus!", "FFI Demo", 0x40)
+
+    print("done\n")
+    return 0
+}
