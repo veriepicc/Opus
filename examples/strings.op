@@ -1,0 +1,55 @@
+// string operations
+
+function void analyze(str text) {
+    let len = string_length(text)
+    var digits = 0
+    var letters = 0
+    var spaces = 0
+    var other = 0
+
+    for i in range(0, len) {
+        let ch = char_at(text, i)
+        if is_digit(ch) {
+            digits++
+        } else if is_alpha(ch) {
+            letters++
+        } else if is_whitespace(ch) {
+            spaces++
+        } else {
+            other++
+        }
+    }
+
+    print("\"")
+    print(text)
+    print("\"\n")
+    print("  length:  ") print_int(len)
+    print("  letters: ") print_int(letters)
+    print("  digits:  ") print_int(digits)
+    print("  spaces:  ") print_int(spaces)
+    print("  other:   ") print_int(other)
+    print("\n")
+}
+
+function int main() {
+    alloc_console()
+
+    analyze("Hello World 123!")
+    analyze("opus v0.1.0 -- systems lang")
+    analyze("48 89 5C 24 08")
+
+    // string building
+    let greeting = string_append("hello", " world")
+    print("appended: ")
+    print(greeting)
+    print("\n")
+
+    let sub = string_substring(greeting, 6, 5)
+    print("substring: ")
+    print(sub)
+    print("\n")
+
+    free(sub)
+    free(greeting)
+    return 0
+}

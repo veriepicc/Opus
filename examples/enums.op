@@ -1,0 +1,55 @@
+// enums and state machines
+
+enum State {
+    Idle,
+    Running,
+    Attacking,
+    Dead,
+}
+
+enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+function str state_name(int s) {
+    if s == State.Idle { return "idle" }
+    if s == State.Running { return "running" }
+    if s == State.Attacking { return "attacking" }
+    if s == State.Dead { return "dead" }
+    return "unknown"
+}
+
+function int main() {
+    alloc_console()
+
+    var state = State.Idle
+    var ticks = 0
+
+    loop {
+        print("tick ")
+        print_int(ticks)
+        print(": ")
+        print(state_name(state))
+        print("\n")
+
+        if state == State.Idle {
+            state = State.Running
+        } else if state == State.Running {
+            if ticks == 3 {
+                state = State.Attacking
+            }
+        } else if state == State.Attacking {
+            state = State.Dead
+        } else if state == State.Dead {
+            print("game over\n")
+            break
+        }
+
+        ticks++
+    }
+
+    return 0
+}
