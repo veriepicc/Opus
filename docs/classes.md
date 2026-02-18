@@ -21,7 +21,7 @@ Structs are simple data containers. No methods, no inheritance, no vtables.
 
 #### C-Style Fields
 
-```opus
+```c
 struct Point {
     int x;
     int y;
@@ -37,7 +37,7 @@ struct Rect {
 
 #### Rust-Style Fields
 
-```opus
+```c
 struct Point {
     x: int,
     y: int,
@@ -48,7 +48,7 @@ struct Point {
 
 Both field styles can coexist in the same struct:
 
-```opus
+```c
 struct Entity {
     int id;
     name: str,
@@ -62,7 +62,7 @@ struct Entity {
 The compiler recognizes struct literals when the name starts with an uppercase letter
 followed by braces:
 
-```opus
+```c
 let origin = Point { x: 0, y: 0 }
 let player_pos = Point { x: 100, y: 200 }
 let bounds = Rect { left: 0, top: 0, width: 800, height: 600 }
@@ -70,7 +70,7 @@ let bounds = Rect { left: 0, top: 0, width: 800, height: 600 }
 
 ### Field Access
 
-```opus
+```c
 function int main() {
     alloc_console()
     let p = Point { x: 42, y: 99 }
@@ -83,7 +83,7 @@ function int main() {
 
 ### Field Modification
 
-```opus
+```c
 function int main() {
     alloc_console()
     var p = Point { x: 10, y: 20 }
@@ -97,7 +97,7 @@ function int main() {
 
 ### Compound Assignment on Fields
 
-```opus
+```c
 var p = Point { x: 10, y: 20 }
 p.x += 5      // 15
 p.y -= 3      // 17
@@ -109,7 +109,7 @@ p.y -= 3      // 17
 - Structs are **heap-allocated** via `HeapAlloc`
 - No automatic cleanup — call `free()` when done
 
-```opus
+```c
 // 3 fields = 24 bytes on the heap (3 x 8)
 struct Vec3 {
     float x;
@@ -130,7 +130,7 @@ function int main() {
 
 Struct variables are pointers under the hood, so passing them is cheap:
 
-```opus
+```c
 struct Player {
     int health;
     int score;
@@ -152,7 +152,7 @@ function int main() {
 
 ### Nested Structs
 
-```opus
+```c
 struct Inner { int value; }
 struct Outer { ptr inner; int tag; }
 
@@ -175,7 +175,7 @@ Classes are structs with methods — data and behavior bundled together.
 
 ### Defining a Class
 
-```opus
+```c
 class Player {
     health: int,
     speed: int,
@@ -209,7 +209,7 @@ class body.
 
 Same struct literal syntax:
 
-```opus
+```c
 var p = Player { health: 100, speed: 50, name: "hero" }
 ```
 
@@ -217,7 +217,7 @@ var p = Player { health: 100, speed: 50, name: "hero" }
 
 Dot syntax. The instance is passed implicitly as the first argument:
 
-```opus
+```c
 function int main() {
     alloc_console()
     var p = Player { health: 100, speed: 50, name: "hero" }
@@ -241,7 +241,7 @@ function int main() {
 
 Inside a method, `self` refers to the instance. Use it to read/write fields:
 
-```opus
+```c
 class Enemy {
     health: int,
     damage: int,
@@ -270,7 +270,7 @@ class Enemy {
 Methods become global functions with the class name prefixed. The instance pointer is the
 first argument:
 
-```opus
+```c
 // this:
 p.takeDamage(30)
 
@@ -280,13 +280,13 @@ Player_takeDamage(p, 30)
 
 You can call methods as regular functions too:
 
-```opus
+```c
 Player_takeDamage(p, 30)    // same thing
 ```
 
 ### Field Modification
 
-```opus
+```c
 var p = Player { health: 100, speed: 50, name: "hero" }
 
 // direct assignment
@@ -300,7 +300,7 @@ p.speed -= 10
 
 ### Practical Example: Game Entity
 
-```opus
+```c
 class Entity {
     int x;
     int y;
@@ -346,7 +346,7 @@ function int main() {
 
 ### Practical Example: Linked List
 
-```opus
+```c
 class Node {
     value: int,
     next: ptr,
@@ -401,7 +401,7 @@ Enums define a set of named integer constants.
 
 ### Basic Definition
 
-```opus
+```c
 enum Direction {
     North,
     South,
@@ -416,7 +416,7 @@ Values auto-increment from 0: `North` = 0, `South` = 1, `East` = 2, `West` = 3.
 
 Assign specific values. Subsequent variants continue from the last explicit value:
 
-```opus
+```c
 enum HttpStatus {
     OK = 200,
     Created,          // 201
@@ -432,14 +432,14 @@ enum HttpStatus {
 
 Dot syntax with the enum name:
 
-```opus
+```c
 let dir = Direction.North
 let status = HttpStatus.NotFound
 ```
 
 ### Using Enums in Comparisons
 
-```opus
+```c
 function void handle_direction(int dir) {
     if dir == Direction.North {
         print("going north\n")
@@ -467,7 +467,7 @@ Enum values are resolved at compile time and inlined directly. No runtime lookup
 
 ### Practical Example: State Machine
 
-```opus
+```c
 enum State {
     Idle,
     Walking,
@@ -538,7 +538,7 @@ function int main() {
 
 ### Practical Example: Token Types
 
-```opus
+```c
 enum TokenKind {
     Ident,
     IntLit,

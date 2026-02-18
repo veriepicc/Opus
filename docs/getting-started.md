@@ -30,7 +30,7 @@ Add that to your PATH or reference it directly.
 
 Create a file called `hello.op`:
 
-```opus
+```c
 function int main() {
     alloc_console()
     print("Hello, World!\n")
@@ -95,7 +95,7 @@ Compiles to native code in memory and executes immediately. No file is written t
 
 For projects with multiple source files, create an `opus.project` file:
 
-```opus
+```c
 project MyApp {
     entry: "main.op"
     output: "myapp.dll"
@@ -126,7 +126,7 @@ Output: myapp.dll (4096 bytes)
 
 You can also import individual files directly:
 
-```opus
+```c
 // main.op
 import my_library
 
@@ -139,7 +139,7 @@ function int main() {
 }
 ```
 
-```opus
+```c
 // my_library.op
 function int add_nums(int a, int b) {
     return a + b

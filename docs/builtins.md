@@ -37,7 +37,7 @@ JIT and EXE/DLL mode unless noted otherwise.
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -85,7 +85,7 @@ Heap-allocated dynamic arrays with a 16-byte header.
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -109,7 +109,7 @@ function int main() {
 }
 ```
 
-```opus
+```c
 // building an array incrementally
 function ptr collect_evens(int limit) {
     let result = array_new(limit / 2)
@@ -167,7 +167,7 @@ These shorter names do the same thing:
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -196,7 +196,7 @@ function int main() {
 }
 ```
 
-```opus
+```c
 // character inspection
 function void analyze(str text) {
     let len = string_length(text)
@@ -255,7 +255,7 @@ Low-level memory access. These map directly to x86 mov instructions of the appro
 
 All memory functions are also available under the `Mem` namespace:
 
-```opus
+```c
 // these pairs are equivalent
 mem_read(addr)          Mem.Read(addr)
 mem_write(addr, val)    Mem.Write(addr, val)
@@ -265,7 +265,7 @@ mem_write_i8(addr, v)   Mem.WriteI8(addr, v)
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -287,7 +287,7 @@ function int main() {
 }
 ```
 
-```opus
+```c
 // zero out a buffer
 function void clear_buffer(ptr buf, int size) {
     memset(buf, 0, size)
@@ -332,7 +332,7 @@ function bool buffers_equal(ptr a, ptr b, int len) {
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -361,7 +361,7 @@ function int main() {
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -382,7 +382,7 @@ function int main() {
 }
 ```
 
-```opus
+```c
 // simple frame limiter
 function void wait_for_frame(int target_ms, int frame_start) {
     let elapsed = get_tick_count() - frame_start
@@ -404,7 +404,7 @@ function void wait_for_frame(int target_ms, int frame_start) {
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -464,7 +464,7 @@ Direct access to the Windows API through dynamic loading and function pointer ca
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -485,7 +485,7 @@ function int main() {
 }
 ```
 
-```opus
+```c
 // make memory executable for jit-style usage
 function void make_executable(ptr code, int size) {
     virtual_protect(code, size, 0x40)   // PAGE_EXECUTE_READWRITE
@@ -516,7 +516,7 @@ Opus has built-in threading primitives.
 
 ### Examples
 
-```opus
+```c
 function int worker(int id) {
     print("worker ")
     print_int(id)
@@ -548,7 +548,7 @@ function int main() {
 }
 ```
 
-```opus
+```c
 // shared counter with atomics
 function void increment_counter(ptr counter) {
     for i in range(0, 1000) {
@@ -590,7 +590,7 @@ Simple byte buffer for building up binary data.
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -624,7 +624,7 @@ function int main() {
 
 ### Examples
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -668,7 +668,7 @@ Both styles compile to the same thing.
 | `String.Append(a, b)` | `string_append(a, b)` |
 | `String.Equals(a, b)` | `string_equals(a, b)` |
 
-```opus
+```c
 function int main() {
     alloc_console()
 
