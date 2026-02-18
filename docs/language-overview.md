@@ -17,7 +17,7 @@ Opus is a compiled systems programming language targeting Windows x64. It compil
 
 Every Opus program needs a `main` function:
 
-```opus
+```c
 function int main() {
     alloc_console()
     print("running# Getting Started
@@ -52,7 +52,7 @@ function int main() {
     
     Create a file called `hello.op`:
     
-    ```opus
+    ```c
     function int main() {
         alloc_console()
         print("Hello, World!\n")
@@ -117,7 +117,7 @@ function int main() {
     
     For projects with multiple source files, create an `opus.project` file:
     
-    ```opus
+    ```c
     project MyApp {
         entry: "main.op"
         output: "myapp.dll"
@@ -148,7 +148,7 @@ function int main() {
     
     You can also import individual files directly:
     
-    ```opus
+    ```c
     // main.op
     import my_library
     
@@ -161,7 +161,7 @@ function int main() {
     }
     ```
     
-    ```opus
+    ```c
     // my_library.op
     function int add_nums(int a, int b) {
         return a + b
@@ -249,7 +249,7 @@ Opus supports multiple syntax styles. You can pick one and stick with it, or mix
 
 The recommended style. Familiar if you know C, C++, Java, or JavaScript:
 
-```opus
+```c
 function int add(int a, int b) {
     return a + b
 }
@@ -267,7 +267,7 @@ function int main() {
 
 `func` and `fn` are aliases for `function`. `ret` is an alias for `return`:
 
-```opus
+```c
 func int square(int x) {
     ret x * x
 }
@@ -281,7 +281,7 @@ fn int cube(int x) {
 
 The `fn` keyword with colon-typed parameters and arrow return types also works:
 
-```opus
+```c
 fn add(a: i32, b: i32) -> i32 {
     return a + b
 }
@@ -291,7 +291,7 @@ fn add(a: i32, b: i32) -> i32 {
 
 You can omit the function keyword entirely and lead with the return type:
 
-```opus
+```c
 int add(int a, int b) {
     return a + b
 }
@@ -301,7 +301,7 @@ int add(int a, int b) {
 
 For the adventurous. Uses natural language keywords:
 
-```opus
+```c
 define function add with parameter a as i32, parameter b as i32 returning i32
     return a + b
 end function
@@ -311,7 +311,7 @@ end function
 
 All styles can coexist in one file. The lexer auto-detects per token:
 
-```opus
+```c
 // c-style function
 function int compute(int x) {
     return x * x + 1
@@ -340,7 +340,7 @@ function int main() {
 
 ## Variables
 
-```opus
+```c
 // immutable (cannot be reassigned)
 let x = 42
 let name = "opus"
@@ -367,7 +367,7 @@ let result = add(10, 20)
 
 Top-level `let` and `var` declarations work with literal initializers:
 
-```opus
+```c
 let MAX_HEALTH = 100
 let GRAVITY = 10
 
@@ -412,7 +412,7 @@ function int main() {
 
 ### Number Literals
 
-```opus
+```c
 let decimal = 42
 let hex = 0xFF
 let binary = 0b1010
@@ -421,7 +421,7 @@ let float_val = 3.14
 
 ### Boolean Literals
 
-```opus
+```c
 let a = true
 let b = false
 let c = yes       // alias for true
@@ -434,7 +434,7 @@ let d = no        // alias for false
 
 No parentheses required around the condition:
 
-```opus
+```c
 if x > 0 {
     print("positive\n")
 } else if x < 0 {
@@ -446,7 +446,7 @@ if x > 0 {
 
 ### While Loop
 
-```opus
+```c
 var i = 0
 while i < 10 {
     print_dec(i)
@@ -457,7 +457,7 @@ while i < 10 {
 
 ### For Loop with Range
 
-```opus
+```c
 // range(start, end) - iterates from start to end-1
 for i in range(0, 10) {
     print_dec(i)
@@ -479,7 +479,7 @@ for i in range(0, n) {
 
 ### Infinite Loop
 
-```opus
+```c
 loop {
     if done {
         break
@@ -489,7 +489,7 @@ loop {
 
 ### Break and Continue
 
-```opus
+```c
 for i in range(0, 100) {
     if i == 50 {
         break          // exit the loop
@@ -526,7 +526,7 @@ for i in range(0, 100) {
 
 Strings are null-terminated C strings. `print()` does not add a newline — use `\n`:
 
-```opus
+```c
 print("Hello, World!\n")
 print("Tab:\tValue\n")
 print("Line 1\nLine 2\n")
@@ -545,7 +545,7 @@ print("Line 1\nLine 2\n")
 
 ### String Operations
 
-```opus
+```c
 let len = string_length("hello")              // 5
 let joined = string_append("foo", "bar")      // "foobar" (heap allocated)
 let eq = string_equals("a", "a")              // 1
@@ -557,7 +557,7 @@ Heap-allocated strings from `string_append`, `string_substring`, and `int_to_str
 
 ## Comments
 
-```opus
+```c
 // single line comment
 
 /* multi-line
@@ -568,7 +568,7 @@ Heap-allocated strings from `string_append`, `string_substring`, and `int_to_str
 
 Structs are plain data. Classes can have methods:
 
-```opus
+```c
 struct Point {
     x: int,
     y: int,
@@ -590,7 +590,7 @@ class Player {
 
 Instances are heap-allocated:
 
-```opus
+```c
 var p: Player = malloc(16)
 p.health = 100
 p.speed = 50
@@ -607,7 +607,7 @@ See [Classes & Structs](CLASSES.md) for the full reference.
 
 ## Enums
 
-```opus
+```c
 enum Direction {
     North,        // 0
     South,        // 1
@@ -637,7 +637,7 @@ Opus uses manual memory management. There is no garbage collector (planned for f
 
 ### Allocation
 
-```opus
+```c
 // allocate raw bytes
 let ptr = malloc(64)
 
@@ -657,7 +657,7 @@ free(ptr)
 
 Heap-allocated arrays with a 16-byte header (length + capacity). Elements are 8 bytes each:
 
-```opus
+```c
 let arr = array_new(10)
 array_set(arr, 0, 42)
 array_set(arr, 1, 100)
@@ -674,7 +674,7 @@ array_free(arr)
 
 Fire off a function on a new thread and wait for the result:
 
-```opus
+```c
 function int compute(int x) {
     return x * x + 1
 }
@@ -695,7 +695,7 @@ function int main() {
 
 Split loop iterations across CPU cores automatically:
 
-```opus
+```c
 // allocate shared memory
 let sum_ptr = malloc(8)
 mem_write(sum_ptr, 0)
@@ -714,7 +714,7 @@ Use `atomic_add` for safe concurrent writes to shared memory.
 
 Opus can call Windows API functions directly:
 
-```opus
+```c
 // get a module handle
 let kernel32 = get_module("kernel32.dll")
 
@@ -736,7 +736,7 @@ Higher-level builtins like `msgbox`, `virtual_protect`, and `load_library` wrap 
 
 For embedding raw bytes (useful for shellcode, patterns, signatures):
 
-```opus
+```c
 let pattern = hex"48 89 5C 24 08 57 48 83 EC 20"
 ```
 
@@ -746,14 +746,14 @@ This creates a byte buffer containing the literal hex values.
 
 Split code across files with `import`:
 
-```opus
+```c
 // math.op
 function int square(int x) {
     return x * x
 }
 ```
 
-```opus
+```c
 // main.op
 import math
 

@@ -97,7 +97,7 @@ The IAT links to `kernel32.dll` for all system functions:
 
 Since DLLs run inside a host process that may not have a console, you need to create one:
 
-```opus
+```c
 function int main() {
     // create a console window attached to the host process
     alloc_console()
@@ -145,7 +145,7 @@ mechanism and the PE characteristics flag.
 
 For multi-file DLL projects, use an `opus.project` file:
 
-```opus
+```c
 project MyApp {
     entry: "main.op"
     output: "myapp.dll"
@@ -199,7 +199,7 @@ When `debug: true` is set in the project file (or will be available as a CLI fla
 - Source context (surrounding lines) is displayed on crash
 - Stack traces include source locations instead of just raw addresses
 
-```opus
+```c
 project DebugApp {
     entry: "main.op"
     output: "debug_app.dll"
@@ -220,7 +220,7 @@ are available:
 
 ### `"auto"` — Auto-Recovery
 
-```opus
+```c
 project MyApp {
     healing: "auto"
 }
@@ -233,7 +233,7 @@ project MyApp {
 
 ### `"freeze"` — Freeze on Crash
 
-```opus
+```c
 project MyApp {
     healing: "freeze"
 }
@@ -246,7 +246,7 @@ project MyApp {
 
 ### `"off"` — Normal Crash Behavior
 
-```opus
+```c
 project MyApp {
     healing: "off"
 }
@@ -278,7 +278,7 @@ Compare that to a minimal C++ DLL compiled with MSVC (~50+ KB) or a Rust DLL (~1
 
 ### Minimal DLL
 
-```opus
+```c
 function int main() {
     alloc_console()
     print("hello from dll\n")
@@ -293,7 +293,7 @@ Generated DLL: minimal.dll (2560 bytes)
 
 ### Full Application DLL
 
-```opus
+```c
 function int main() {
     alloc_console()
     set_title("Opus Scanner")
@@ -331,7 +331,7 @@ function int main() {
 
 ### DLL with Threading
 
-```opus
+```c
 function int worker(int id) {
     print("worker ")
     print_int(id)
@@ -366,7 +366,7 @@ function int main() {
 
 ### DLL with FFI
 
-```opus
+```c
 function int main() {
     alloc_console()
     set_title("FFI Demo")
@@ -390,7 +390,7 @@ function int main() {
 
 ### DLL with Debug Project
 
-```opus
+```c
 project Scanner {
     entry: "scanner.op"
     output: "scanner.dll"
@@ -401,7 +401,7 @@ project Scanner {
 }
 ```
 
-```opus
+```c
 // scanner.op
 import utils
 

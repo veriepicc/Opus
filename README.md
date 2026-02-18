@@ -2,7 +2,7 @@
 
 A systems programming language that compiles directly to native x64 machine code. No LLVM, no VM, no runtime — just raw machine code in standalone Windows executables and injectable DLLs.
 
-```opus
+```c
 function int main() {
     alloc_console()
     print("Hello, World!\n")

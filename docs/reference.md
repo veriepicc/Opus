@@ -70,7 +70,7 @@ Opus provides familiar aliases so you can write in whatever style feels natural:
 | `pointer` / `addr` / `address` | `ptr` |
 | `bool` / `boolean` | `bool` |
 
-```opus
+```c
 // all of these are the same type
 int x = 42
 i32 y = 42
@@ -99,7 +99,7 @@ some memory density.
 
 ### Syntax Styles
 
-```opus
+```c
 // with optional type annotation
 let x: int = 42
 let name: str = "opus"
@@ -125,7 +125,7 @@ counter = counter + 1
 
 Both `let` and `var` work at the top level with literal initializers:
 
-```opus
+```c
 let MAX_HEALTH = 100
 let TITLE = "My Game"
 var global_counter = 0
@@ -138,7 +138,7 @@ var global_counter = 0
 
 Semicolons are optional. Both styles work and can be mixed:
 
-```opus
+```c
 let x = 42
 let y = 100;
 var z = x + y
@@ -152,7 +152,7 @@ Opus supports several function declaration styles. They all compile to the same 
 
 ### Primary Style (v2.0)
 
-```opus
+```c
 function int add(int a, int b) {
     return a + b
 }
@@ -174,7 +174,7 @@ function int main() {
 
 `func` and `fn` are aliases for `function`. `ret` is an alias for `return`.
 
-```opus
+```c
 // all equivalent
 function int square(int x) { return x * x }
 func int square(int x) { ret x * x }
@@ -185,7 +185,7 @@ fn int square(int x) { return x * x }
 
 If you omit the keyword entirely, Opus treats the return type as the start of the declaration:
 
-```opus
+```c
 int add(int a, int b) {
     return a + b
 }
@@ -199,7 +199,7 @@ void do_stuff() {
 
 For those coming from Rust, the arrow-return syntax works too:
 
-```opus
+```c
 fn add(a: i32, b: i32) -> i32 {
     return a + b
 }
@@ -214,7 +214,7 @@ fn greet(name: str) -> void {
 
 Yes, really:
 
-```opus
+```c
 define function add with parameter a as i32 and parameter b as i32 returning i32
     return a + b
 end function
@@ -225,7 +225,7 @@ end function
 In v2.0 style (`function`/`func`/`fn` with type-first params), parameters are mutable by
 default. You can reassign them freely:
 
-```opus
+```c
 function int clamp(int val, int lo, int hi) {
     if val < lo { val = lo }
     if val > hi { val = hi }
@@ -246,7 +246,7 @@ buffers on the heap.
 
 No parentheses needed around the condition. Braces are required.
 
-```opus
+```c
 function void classify(int x) {
     if x > 0 {
         print("positive\n")
@@ -260,7 +260,7 @@ function void classify(int x) {
 
 ### while
 
-```opus
+```c
 function void countdown(int n) {
     while n > 0 {
         print_int(n)
@@ -274,7 +274,7 @@ function void countdown(int n) {
 
 Iterates from `start` to `end - 1` (exclusive upper bound):
 
-```opus
+```c
 // prints 0 through 9
 for i in range(0, 10) {
     print_int(i)
@@ -285,7 +285,7 @@ for i in range(0, 10) {
 
 Infinite loop. Use `break` to exit:
 
-```opus
+```c
 loop {
     let input = read_input()
     if input == 0 {
@@ -297,7 +297,7 @@ loop {
 
 ### break and continue
 
-```opus
+```c
 for i in range(0, 100) {
     if i % 2 == 0 {
         continue       // skip even numbers
@@ -315,7 +315,7 @@ for i in range(0, 100) {
 
 Splits loop iterations across CPU cores:
 
-```opus
+```c
 // each iteration may run on a different thread
 parallel for i in range(0, 1000) {
     process_item(i)
@@ -348,7 +348,7 @@ parallel for i in range(0, 1000) {
 
 ### Arithmetic
 
-```opus
+```c
 let sum = a + b
 let diff = a - b
 let prod = a * b
@@ -358,7 +358,7 @@ let rem = a % b
 
 ### Comparison
 
-```opus
+```c
 if x == y { print("equal\n") }
 if x != y { print("not equal\n") }
 if x < y  { print("less\n") }
@@ -367,7 +367,7 @@ if x >= y { print("greater or equal\n") }
 
 ### Logical
 
-```opus
+```c
 // symbol or english — your choice
 if a > 0 && b > 0 { print("both positive\n") }
 if a > 0 and b > 0 { print("both positive\n") }
@@ -381,7 +381,7 @@ if not done { print("still going\n") }
 
 ### Bitwise
 
-```opus
+```c
 let masked = value & 0xFF
 let combined = flags | 0x01
 let flipped = bits ^ 0xFF
@@ -392,7 +392,7 @@ let shifted_right = x >> 4
 
 ### Increment / Decrement
 
-```opus
+```c
 var i = 0
 i++          // post-increment
 i--          // post-decrement
@@ -402,7 +402,7 @@ i--          // post-decrement
 
 ### Compound Assignment
 
-```opus
+```c
 var x = 10
 x += 5       // x = 15
 x -= 3       // x = 12
@@ -416,7 +416,7 @@ x /= 4       // x = 6
 
 ### Integers
 
-```opus
+```c
 let decimal = 42
 let hex = 0xFF
 let binary = 0b1010
@@ -425,7 +425,7 @@ let big = 1000000
 
 ### Floats
 
-```opus
+```c
 let pi = 3.14
 let half = 0.5
 ```
@@ -435,7 +435,7 @@ let half = 0.5
 Strings are null-terminated byte sequences. `print()` does not append a newline — add `\n`
 explicitly.
 
-```opus
+```c
 let greeting = "Hello, World!\n"
 let path = "C:\\Users\\opus\\file.txt"
 let tab_separated = "name\tvalue\n"
@@ -456,21 +456,21 @@ let tab_separated = "name\tvalue\n"
 
 Raw byte buffers from hex notation:
 
-```opus
+```c
 // produces a buffer with those exact bytes
 let shellcode = hex"48 89 5C 24 08 48 89 6C 24 10"
 ```
 
 ### Characters
 
-```opus
+```c
 let ch = 'A'
 let newline = '\n'
 ```
 
 ### Booleans
 
-```opus
+```c
 let a = true
 let b = false
 let c = yes       // same as true
@@ -481,7 +481,7 @@ let d = no        // same as false
 
 ## Comments
 
-```opus
+```c
 // single-line comment
 
 /* multi-line
@@ -497,7 +497,7 @@ let x = 42  // inline comment
 
 ### C-Style Definition
 
-```opus
+```c
 struct Point {
     int x;
     int y;
@@ -506,7 +506,7 @@ struct Point {
 
 ### Rust-Style Definition
 
-```opus
+```c
 struct Point {
     x: int,
     y: int,
@@ -517,7 +517,7 @@ struct Point {
 
 Both field styles can coexist in the same struct:
 
-```opus
+```c
 struct Entity {
     int id;
     name: str,
@@ -530,14 +530,14 @@ struct Entity {
 Create instances using the struct name followed by braces. The compiler recognizes this
 pattern when the name starts with an uppercase letter:
 
-```opus
+```c
 let origin = Point { x: 0, y: 0 }
 let player_pos = Point { x: 100, y: 200 }
 ```
 
 ### Field Access
 
-```opus
+```c
 let px = origin.x
 let py = origin.y
 print_int(px)
@@ -549,7 +549,7 @@ print_int(px)
 - Structs are heap-allocated via `HeapAlloc`
 - You must call `free(p)` when done — there is no automatic cleanup
 
-```opus
+```c
 let p = Point { x: 10, y: 20 }
 print_int(p.x)
 print_int(p.y)
@@ -564,7 +564,7 @@ Classes are structs with methods.
 
 ### Definition
 
-```opus
+```c
 class Player {
     health: int,
     speed: int,
@@ -585,13 +585,13 @@ class Player {
 
 ### Creating Instances
 
-```opus
+```c
 var p = Player { health: 100, speed: 50 }
 ```
 
 ### Method Calls
 
-```opus
+```c
 p.takeDamage(30)
 let hp = p.getHealth()    // 70
 ```
@@ -600,7 +600,7 @@ let hp = p.getHealth()    // 70
 
 Inside methods, `self` refers to the instance. Use it to read and write fields:
 
-```opus
+```c
 class Enemy {
     health: int,
     damage: int,
@@ -621,7 +621,7 @@ class Enemy {
 
 Methods compile to global functions with the instance as the first argument:
 
-```opus
+```c
 // this call:
 p.takeDamage(30)
 
@@ -631,7 +631,7 @@ Player_takeDamage(p, 30)
 
 ### Field Modification
 
-```opus
+```c
 var p = Player { health: 100, speed: 50 }
 p.health = 200
 p.speed += 10
@@ -639,7 +639,7 @@ p.speed += 10
 
 ### Chained Field Access
 
-```opus
+```c
 struct Inner { int value; }
 struct Outer { ptr inner; }
 
@@ -654,7 +654,7 @@ print_int(o.inner.value)    // 42
 
 ### Definition
 
-```opus
+```c
 enum Direction {
     North,
     South,
@@ -667,7 +667,7 @@ Values auto-increment from 0: `North = 0`, `South = 1`, `East = 2`, `West = 3`.
 
 ### Explicit Values
 
-```opus
+```c
 enum TokenKind {
     Ident,          // 0
     IntLit,         // 1
@@ -684,7 +684,7 @@ After an explicit value, subsequent variants continue incrementing from there.
 
 Access variants with dot syntax:
 
-```opus
+```c
 let dir = Direction.North
 
 if dir == Direction.North {
@@ -700,19 +700,19 @@ Enum values are compile-time constants — they get inlined directly.
 
 ### Basic Import
 
-```opus
+```c
 import math          // loads math.op from same directory
 ```
 
 ### Nested Paths
 
-```opus
+```c
 import utils.strings  // loads utils/strings.op
 ```
 
 ### Aliased Import
 
-```opus
+```c
 import graphics.renderer as gfx
 ```
 
@@ -723,7 +723,7 @@ import graphics.renderer as gfx
 3. Compilation is two-pass: all function signatures are collected first, then code is generated
 4. Circular imports are detected and prevented
 
-```opus
+```c
 // file: math.op
 function int square(int x) {
     return x * x
@@ -746,7 +746,7 @@ function int main() {
 
 Declare external functions (from DLLs or other object files):
 
-```opus
+```c
 extern fn MessageBoxA(ptr hwnd, str text, str caption, int flags) -> int;
 extern fn GetTickCount() -> int;
 ```
@@ -760,7 +760,7 @@ at load time.
 
 Use the `as` keyword to cast between types:
 
-```opus
+```c
 let raw = malloc(64)
 let value = raw as int
 
@@ -770,7 +770,7 @@ let byte_val = big_number as i8
 
 Casts are unchecked — you are responsible for making sure the conversion makes sense.
 
-```opus
+```c
 function void example() {
     let p = malloc(8)
     mem_write(p, 42)
@@ -786,7 +786,7 @@ function void example() {
 
 A complete program that demonstrates multiple features:
 
-```opus
+```c
 import utils
 
 struct Player {

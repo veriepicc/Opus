@@ -37,7 +37,7 @@ All of this works in EXE mode, DLL mode, and JIT mode.
 `spawn` launches a function on a new thread and returns a handle. `await` blocks until
 that thread finishes and gives you the return value.
 
-```opus
+```c
 function int compute(int x) {
     // runs on a separate thread
     return x * x + 1
@@ -76,7 +76,7 @@ function int main() {
 
 ### Multiple Threads
 
-```opus
+```c
 function int worker(int id) {
     print("worker ")
     print_int(id)
@@ -115,7 +115,7 @@ function int main() {
 
 If threads need to share data, use pointers and atomic operations:
 
-```opus
+```c
 function int counter_thread(ptr counter) {
     for i in range(0, 5000) {
         atomic_add(counter, 1)
@@ -154,7 +154,7 @@ function int main() {
 
 `parallel for` splits loop iterations across CPU cores automatically:
 
-```opus
+```c
 function int main() {
     alloc_console()
     
@@ -189,7 +189,7 @@ The stack frame is extended to hold thread data (handles, range bounds, etc.).
 
 The classic use case — summing values across threads with atomic add:
 
-```opus
+```c
 function int main() {
     alloc_console()
     
@@ -224,7 +224,7 @@ function int main() {
 You can have multiple `parallel for` blocks — they execute sequentially (each one
 completes before the next starts):
 
-```opus
+```c
 function int main() {
     alloc_console()
     
@@ -250,7 +250,7 @@ function int main() {
 Variables declared before a `parallel for` are accessible inside the body (captured by
 value). Code after the block runs only when all threads are done:
 
-```opus
+```c
 function int main() {
     alloc_console()
     
@@ -285,7 +285,7 @@ Atomically adds `val` to the 64-bit value at `ptr`. Returns the previous value.
 
 Maps to `lock xadd` (InterlockedExchangeAdd64).
 
-```opus
+```c
 let counter = malloc(8)
 mem_write(counter, 0)
 
@@ -301,7 +301,7 @@ Returns `1` on success, `0` on failure.
 
 Maps to `lock cmpxchg` (InterlockedCompareExchange64).
 
-```opus
+```c
 let flag = malloc(8)
 mem_write(flag, 0)
 
@@ -317,7 +317,7 @@ if success {
 Atomically reads a 64-bit value with a memory fence. Guarantees you see the latest
 value written by any thread.
 
-```opus
+```c
 let shared = malloc(8)
 // ... other threads writing to shared ...
 
@@ -330,7 +330,7 @@ print_int(current)
 Atomically writes a 64-bit value with a memory fence. Guarantees other threads see
 this write.
 
-```opus
+```c
 let shared = malloc(8)
 atomic_store(shared, 42)
 // all threads will now see 42
@@ -365,7 +365,7 @@ atomic_store(shared, 42)
 
 ### Safe Patterns
 
-```opus
+```c
 // SAFE: each thread writes to its own index
 let results = malloc(80)
 parallel for i in range(0, 10) {
@@ -373,7 +373,7 @@ parallel for i in range(0, 10) {
 }
 ```
 
-```opus
+```c
 // SAFE: shared counter with atomic_add
 let counter = malloc(8)
 mem_write(counter, 0)
@@ -383,7 +383,7 @@ parallel for i in range(0, 100) {
 // counter == 100
 ```
 
-```opus
+```c
 // UNSAFE: data race! dont do this
 var shared = 0
 parallel for i in range(0, 100) {
@@ -391,7 +391,7 @@ parallel for i in range(0, 100) {
 }
 ```
 
-```opus
+```c
 // UNSAFE: two threads writing same struct field
 var p = Player { health: 100 }
 let h1 = spawn damage_player(p)
@@ -403,7 +403,7 @@ let h2 = spawn damage_player(p)
 
 For more complex critical sections, you can build a spinlock:
 
-```opus
+```c
 function void lock(ptr mutex) {
     // spin until we swap 0 -> 1
     loop {
@@ -445,7 +445,7 @@ function int main() {
 
 ### Basic spawn/await
 
-```opus
+```c
 function int double_it(int x) {
     return x * 2
 }
@@ -465,7 +465,7 @@ function int main() {
 
 ### Parallel Sum with atomic_add
 
-```opus
+```c
 function int main() {
     alloc_console()
     
@@ -486,7 +486,7 @@ function int main() {
 
 ### Producer/Consumer with atomic_cas
 
-```opus
+```c
 // simple single-slot channel using cas
 
 function int producer(ptr slot) {
@@ -548,7 +548,7 @@ function int main() {
 
 ### Benchmark: Sequential vs Parallel
 
-```opus
+```c
 function int burn() {
     var x = 1
     for i in range(0, 10000000) {
@@ -594,7 +594,7 @@ function int main() {
 
 ### Parallel Array Processing
 
-```opus
+```c
 function int main() {
     alloc_console()
     

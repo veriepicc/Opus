@@ -4,7 +4,7 @@
 
 Opus outputs standalone Windows executables and injectable DLLs — no runtime, no VM, no dependencies. The compiler itself is written in C++20 modules and ships as a single binary.
 
-```opus
+```c
 function int main() {
     alloc_console()
     print("Hello from Opus!\n")
@@ -37,7 +37,7 @@ Generated EXE: hello.exe (3072 bytes)
 
 Write a program:
 
-```opus
+```c
 // hello.op
 function int main() {
     alloc_console()

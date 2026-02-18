@@ -4,7 +4,7 @@
 
 ## Quick Start
 
-```opus
+```c
 // hello.op
 function int main() {
     alloc_console()

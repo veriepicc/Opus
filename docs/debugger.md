@@ -91,7 +91,7 @@ Three modes control what happens after a crash is detected.
 
 The default when `debug: true` is set. Freezes execution at the crash point so you can inspect the state.
 
-```opus
+```c
 project MyApp {
     debug: true
     healing: "freeze"
@@ -107,7 +107,7 @@ project MyApp {
 
 Attempts to fix the crash and keep running. Best for production DLLs where you want resilience.
 
-```opus
+```c
 project MyApp {
     healing: "auto"
 }
@@ -122,7 +122,7 @@ project MyApp {
 
 Standard behavior. The process terminates on unhandled exceptions.
 
-```opus
+```c
 project MyApp {
     healing: "off"
 }
@@ -221,7 +221,7 @@ The overhead is roughly the size of your source code plus the line map. For most
 
 ### Project File
 
-```opus
+```c
 project MyApp {
     entry: "main.op"
     output: "myapp.dll"
@@ -241,7 +241,7 @@ project MyApp {
 
 ### Example: Debug DLL with Auto-Healing
 
-```opus
+```c
 project Scanner {
     entry: "scanner.op"
     output: "scanner.dll"
@@ -252,7 +252,7 @@ project Scanner {
 }
 ```
 
-```opus
+```c
 // scanner.op
 function int main() {
     alloc_console()

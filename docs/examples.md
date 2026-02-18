@@ -28,7 +28,7 @@ Runnable example programs in the `examples/` directory, organized by feature.
 
 ## Hello World
 
-```opus
+```c
 // the simplest opus program
 function int main() {
     alloc_console()
@@ -47,7 +47,7 @@ Hello, World!
 
 ## Fibonacci
 
-```opus
+```c
 function int fib(int n) {
     if n <= 1 {
         return n
@@ -74,7 +74,7 @@ function int main() {
 
 ## Strings
 
-```opus
+```c
 function void analyze(str text) {
     let len = string_length(text)
     var digits = 0
@@ -132,7 +132,7 @@ function int main() {
 
 ## Arrays
 
-```opus
+```c
 function void bubble_sort(ptr arr, int len) {
     for i in range(0, len) {
         for j in range(0, len - i - 1) {
@@ -189,7 +189,7 @@ function int main() {
 
 ## Structs
 
-```opus
+```c
 struct Vec2 {
     int x;
     int y;
@@ -249,7 +249,7 @@ function int main() {
 
 ## Classes
 
-```opus
+```c
 class Player {
     health: int,
     armor: int,
@@ -322,7 +322,7 @@ function int main() {
 
 ## Enums
 
-```opus
+```c
 enum State {
     Idle,
     Running,
@@ -375,7 +375,7 @@ function int main() {
 
 ## Memory
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -409,7 +409,7 @@ function int main() {
 
 ## Concurrency
 
-```opus
+```c
 function int compute(int x) {
     sleep(50)
     return x * x
@@ -453,7 +453,7 @@ function int main() {
 
 ## Benchmark
 
-```opus
+```c
 function int burn() {
     var x = 1
     for i in range(0, 10000000) {
@@ -499,7 +499,7 @@ function int main() {
 
 ## FFI
 
-```opus
+```c
 function int main() {
     alloc_console()
 
@@ -527,7 +527,7 @@ function int main() {
 
 A DLL that scans the host process memory for byte patterns:
 
-```opus
+```c
 // compile with: opus --dll scanner.op
 
 function int main() {
