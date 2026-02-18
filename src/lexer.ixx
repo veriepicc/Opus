@@ -108,7 +108,7 @@ struct Token {
     std::string_view text;
     SourceLoc loc;
     
-    // For literals, store the parsed value
+    // parsed literal value if applicable
     std::variant<
         std::monostate,
         std::int64_t,
@@ -130,7 +130,7 @@ struct Token {
 
 class Lexer {
 public:
-    // Constructor without mode - auto-detect per token (mixed syntax)
+    // mixed mode: auto-detect syntax per token
     Lexer(std::string_view source, std::string_view filename)
         : source_(source)
         , filename_(filename)
@@ -140,7 +140,6 @@ public:
         , loc_{.line = 1, .column = 1, .offset = 0, .file = filename}
     {}
 
-    // Constructor with explicit mode (single syntax for whole file)
     Lexer(std::string_view source, std::string_view filename, SyntaxMode mode)
         : source_(source)
         , filename_(filename)
@@ -160,27 +159,22 @@ public:
         SourceLoc start_loc = loc_;
         char c = peek();
 
-        // Numbers
         if (std::isdigit(c) || (c == '.' && std::isdigit(peek(1)))) {
             return lex_number();
         }
 
-        // Strings
         if (c == '"') {
             return lex_string();
         }
 
-        // Characters
         if (c == '\'') {
             return lex_char();
         }
 
-        // Identifiers and keywords
         if (std::isalpha(c) || c == '_') {
             return lex_ident();
         }
 
-        // Operators and punctuation
         return lex_operator();
     }
 
@@ -198,9 +192,7 @@ public:
 
     SyntaxMode mode() const { return mode_; }
     
-    // Auto-detect syntax from source
     static SyntaxMode detect_syntax(std::string_view source) {
-        // Look at first non-whitespace content
         std::size_t i = 0;
         while (i < source.size() && std::isspace(source[i])) i++;
         
@@ -208,7 +200,6 @@ public:
 
         std::string_view rest = source.substr(i);
         
-        // English syntax starts with "define", "create", etc.
         if (rest.starts_with("define ") || 
             rest.starts_with("create ") ||
             rest.starts_with("begin ")) {
@@ -249,18 +240,15 @@ private:
         while (!at_end()) {
             char c = peek();
             
-            // In English mode, newlines might be significant
+            // TODO: english mode should treat newlines as significant
             if (c == '\n' && mode_ == SyntaxMode::English) {
-                // For now, skip them too
             }
 
             if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
                 advance();
             } else if (c == '/' && peek(1) == '/') {
-                // Line comment
                 while (!at_end() && peek() != '\n') advance();
             } else if (c == '/' && peek(1) == '*') {
-                // Block comment
                 advance(); advance();
                 while (!at_end() && !(peek() == '*' && peek(1) == '/')) {
                     advance();
@@ -288,7 +276,6 @@ private:
         bool is_hex = false;
         bool is_bin = false;
 
-        // Check for hex/bin prefix
         if (peek() == '0') {
             if (peek(1) == 'x' || peek(1) == 'X') {
                 is_hex = true;
@@ -299,7 +286,6 @@ private:
             }
         }
 
-        // Consume digits
         if (is_hex) {
             while (std::isxdigit(peek())) advance();
         } else if (is_bin) {
@@ -307,14 +293,12 @@ private:
         } else {
             while (std::isdigit(peek())) advance();
             
-            // Decimal point
             if (peek() == '.' && std::isdigit(peek(1))) {
                 is_float = true;
                 advance();
                 while (std::isdigit(peek())) advance();
             }
 
-            // Exponent
             if (peek() == 'e' || peek() == 'E') {
                 is_float = true;
                 advance();
@@ -323,15 +307,13 @@ private:
             }
         }
 
-        // Type suffix (i32, u64, f32, etc.)
-        // For now, just consume any trailing letters
+        // TODO: properly parse type suffixes like i32, u64, f32
         while (std::isalnum(peek())) advance();
 
         std::string_view text = source_.substr(start_pos, pos_ - start_pos);
         Token tok = make_token(is_float ? TokenKind::FloatLit : TokenKind::IntLit, text);
         tok.loc = start;
 
-        // Parse the value
         try {
             if (is_float) {
                 tok.value = std::stod(std::string(text));
@@ -352,7 +334,7 @@ private:
     Token lex_string() {
         SourceLoc start = loc_;
         std::size_t start_pos = pos_;
-        advance(); // Opening quote
+        advance();
 
         std::string value;
         while (!at_end() && peek() != '"') {
@@ -376,7 +358,7 @@ private:
         if (at_end()) {
             return make_token(TokenKind::Error, "unterminated string");
         }
-        advance(); // Closing quote
+        advance();
 
         Token tok = make_token(TokenKind::StringLit, source_.substr(start_pos, pos_ - start_pos));
         tok.loc = start;
@@ -387,7 +369,7 @@ private:
     Token lex_char() {
         SourceLoc start = loc_;
         std::size_t start_pos = pos_;
-        advance(); // Opening quote
+        advance();
 
         char value = 0;
         if (peek() == '\\') {
@@ -420,20 +402,18 @@ private:
     Token lex_hex_string() {
         SourceLoc start = loc_;
         std::size_t start_pos = pos_;
-        advance(); // Opening quote
+        advance();
         
         std::vector<std::uint8_t> bytes;
         
         while (!at_end() && peek() != '\"') {
             char c = peek();
             
-            // Skip whitespace
             if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
                 advance();
                 continue;
             }
             
-            // Parse hex byte (2 hex digits)
             if (std::isxdigit(c)) {
                 char hex[3] = {c, 0, 0};
                 advance();
@@ -457,9 +437,9 @@ private:
         if (at_end()) {
             return make_token(TokenKind::Error, "unterminated hex string");
         }
-        advance(); // Closing quote
+        advance();
         
-        // Store the bytes as a string (we'll handle it specially in codegen)
+        // bytes stored as raw string, codegen handles the interpretation
         std::string hex_data;
         for (std::uint8_t b : bytes) {
             hex_data += static_cast<char>(b);
@@ -481,7 +461,7 @@ private:
 
         std::string_view text = source_.substr(start_pos, pos_ - start_pos);
         
-        // Check for hex string literal: hex"55 57 56..."
+        // hex"55 57 56..." syntax
         if (text == "hex" && peek() == '\"') {
             return lex_hex_string();
         }
@@ -625,17 +605,16 @@ private:
             {"isize", TokenKind::TypeI64},
         };
 
-        // Check types first (they're shared across syntaxes)
+        // types are shared across both syntaxes so check them first
         if (auto it = types.find(text); it != types.end()) {
             return it->second;
         }
 
-        // Check C keywords first (most common)
+        // c keywords are the hot path
         if (auto it = c_keywords.find(text); it != c_keywords.end()) {
             return it->second;
         }
 
-        // In mixed mode or English mode, check English keywords
         if (mixed_mode_ || mode_ == SyntaxMode::English) {
             if (auto it = en_keywords.find(text); it != en_keywords.end()) {
                 return it->second;

@@ -5,8 +5,6 @@ export module opus.types;
 
 import std;
 
-// Use std:: prefixed types throughout
-
 export namespace opus {
 
 // ============================================================================
@@ -174,7 +172,6 @@ struct Type {
         }};
     }
 
-    // Deep copy
     Type clone() const {
         Type result;
         if (auto* p = std::get_if<PrimitiveType>(&kind)) {
@@ -312,8 +309,6 @@ struct CompilerOptions {
 // ============================================================================
 // C++/JS-FRIENDLY TYPE ALIASES
 // ============================================================================
-// Maps user-friendly names to internal primitive types
-
 constexpr PrimitiveType friendly_type_to_primitive(std::string_view name) {
     // C++/JS friendly names
     if (name == "int" || name == "Int")       return PrimitiveType::I32;

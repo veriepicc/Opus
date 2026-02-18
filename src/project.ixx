@@ -1,4 +1,4 @@
-// opus project system - file discovery and loading
+// opus project system
 
 export module opus.project;
 
@@ -9,7 +9,6 @@ import std;
 
 export namespace opus {
 
-// loaded from opus.project
 struct ProjectConfig {
     std::string name;
     std::string entry;
@@ -17,13 +16,12 @@ struct ProjectConfig {
     std::string mode = "dll";
     std::vector<std::string> includes;
     bool debug = false;
-    std::string healing;  // "auto", "freeze", "off" - empty = resolve from debug flag
+    std::string healing;  // "auto", "freeze", "off" - empty means resolve from debug flag
     
     std::filesystem::path project_dir;
     std::vector<std::filesystem::path> source_files;
 };
 
-// parse an opus.project file
 std::expected<ProjectConfig, std::string> load_project(const std::filesystem::path& project_path) {
     std::ifstream file(project_path);
     if (!file) {
@@ -72,12 +70,12 @@ std::expected<ProjectConfig, std::string> load_project(const std::filesystem::pa
         return std::unexpected("no project declaration found in opus.project");
     }
     
-    // validate healing mode if explicitly set
+    // only validate if user explicitly set it
     if (!config.healing.empty() && config.healing != "auto" && config.healing != "freeze" && config.healing != "off") {
         return std::unexpected(std::format("invalid healing mode: '{}', expected 'auto', 'freeze', or 'off'", config.healing));
     }
     
-    // resolve default: debug=true -> auto, debug=false -> off
+    // default: debug builds get auto healing, release gets none
     if (config.healing.empty()) {
         config.healing = config.debug ? "auto" : "off";
     }
@@ -85,7 +83,6 @@ std::expected<ProjectConfig, std::string> load_project(const std::filesystem::pa
     return config;
 }
 
-// recursively find all .op files in a dir
 std::vector<std::filesystem::path> discover_files(const std::filesystem::path& dir) {
     std::vector<std::filesystem::path> files;
     
@@ -103,7 +100,6 @@ std::vector<std::filesystem::path> discover_files(const std::filesystem::path& d
     return files;
 }
 
-// collect all source files for a project
 std::expected<ProjectConfig, std::string> discover_project_files(ProjectConfig config) {
     if (!config.entry.empty()) {
         std::filesystem::path entry_path = config.project_dir / config.entry;
@@ -131,7 +127,6 @@ std::expected<ProjectConfig, std::string> discover_project_files(ProjectConfig c
     return config;
 }
 
-// merge multiple source files into one
 std::expected<std::string, std::string> merge_sources(const std::vector<std::filesystem::path>& files) {
     std::string merged;
     
@@ -152,7 +147,6 @@ std::expected<std::string, std::string> merge_sources(const std::vector<std::fil
     return merged;
 }
 
-// walk up directories looking for opus.project
 std::optional<std::filesystem::path> find_project_file(const std::filesystem::path& start_dir) {
     std::filesystem::path current = start_dir;
     

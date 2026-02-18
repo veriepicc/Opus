@@ -8,7 +8,6 @@ import std;
 
 export namespace opus::ast {
 
-// Forward declarations
 struct Expr;
 struct Stmt;
 struct Decl;
@@ -354,7 +353,6 @@ struct Module {
     std::string name;
     std::vector<DeclPtr> decls;
     
-    // Metadata
     SyntaxMode syntax = SyntaxMode::CStyle;
     std::string source_file;
 };
@@ -363,7 +361,6 @@ struct Module {
 // AST UTILITIES
 // ============================================================================
 
-// Create expression helpers
 inline ExprPtr make_literal_i64(std::int64_t val, SourceSpan span = {}) {
     auto expr = std::make_unique<Expr>();
     LiteralExpr lit;
@@ -434,7 +431,6 @@ inline ExprPtr make_call(ExprPtr callee, std::vector<ExprPtr> args, SourceSpan s
     return expr;
 }
 
-// Create statement helpers
 inline StmtPtr make_let(std::string name, std::optional<Type> type, 
                          ExprPtr init, bool is_mut = false, SourceSpan span = {}) {
     auto stmt = std::make_unique<Stmt>();
