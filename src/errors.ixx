@@ -24,7 +24,6 @@ namespace color {
     constexpr const char* bright_blue = "\033[94m";
 }
 
-// Error severity levels
 enum class Severity {
     Error,
     Warning,
@@ -32,7 +31,6 @@ enum class Severity {
     Help
 };
 
-// Rich error with all context
 struct RichError {
     Severity severity = Severity::Error;
     std::string message;
@@ -44,11 +42,9 @@ struct RichError {
     std::vector<std::string> notes;
 };
 
-// Format a rich error for display
 std::string format_error(const RichError& err) {
     std::string out;
     
-    // header: file:line:col: severity: message
     const char* sev_color = color::bright_red;
     const char* sev_text = "error";
     switch (err.severity) {
@@ -73,7 +69,6 @@ std::string format_error(const RichError& err) {
         out += std::format(" {}{}{} |{} {}\n", 
             color::blue, line_num, color::reset, color::reset, err.source_line);
         
-        // underline
         std::string underline(err.highlight_start > 0 ? err.highlight_start - 1 : 0, ' ');
         std::string carets(std::max(err.highlight_len, std::size_t(1)), '^');
         out += std::format(" {} {}|{} {}{}{}{}\n",
@@ -81,14 +76,12 @@ std::string format_error(const RichError& err) {
             underline, sev_color, carets, color::reset);
     }
     
-    // Suggestion
     if (!err.suggestion.empty()) {
         out += std::format(" {} {}= {}help:{} {}\n",
             std::string(std::format("{}", err.loc.line).size(), ' '),
             color::bright_green, color::bold, color::reset, err.suggestion);
     }
     
-    // notes
     for (const auto& note : err.notes) {
         out += std::format(" {} {}= {}note:{} {}\n",
             std::string(std::format("{}", err.loc.line).size(), ' '),
@@ -98,7 +91,7 @@ std::string format_error(const RichError& err) {
     return out;
 }
 
-// Get a line from source by line number (1-indexed)
+// line_num is 1-indexed
 std::string get_source_line(std::string_view source, std::size_t line_num) {
     std::size_t current_line = 1;
     std::size_t start = 0;
@@ -118,7 +111,6 @@ std::string get_source_line(std::string_view source, std::size_t line_num) {
     return "";
 }
 
-// Format a simple error (when we don't have rich context)
 std::string format_simple_error(const std::string& message, const SourceLoc& loc, 
                                  std::string_view source = "") {
     RichError err;
@@ -134,7 +126,7 @@ std::string format_simple_error(const std::string& message, const SourceLoc& loc
     return format_error(err);
 }
 
-// levenshtein distance for "did you mean" suggestions
+// used for "did you mean X?" suggestions
 std::size_t edit_distance(std::string_view a, std::string_view b) {
     std::vector<std::vector<std::size_t>> dp(a.size() + 1, std::vector<std::size_t>(b.size() + 1));
     
@@ -154,7 +146,6 @@ std::size_t edit_distance(std::string_view a, std::string_view b) {
     return dp[a.size()][b.size()];
 }
 
-// find closest match from candidates
 std::optional<std::string> find_closest_match(std::string_view input, 
                                                const std::vector<std::string>& candidates,
                                                std::size_t max_distance = 3) {

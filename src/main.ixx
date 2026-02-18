@@ -1,5 +1,4 @@
-// Opus Programming Language
-// Entry Point
+// opus compiler entry point
 
 module;
 
@@ -60,7 +59,6 @@ void print_banner() {
 }
 
 int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
-    // Read file
     std::ifstream file(filename);
     if (!file) {
         std::print(std::cerr, "\033[1;91merror\033[0m: cannot open file: \033[1m{}\033[0m\n", filename);
@@ -83,7 +81,7 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
             return 1;
         }
     } else {
-        // Compile - exe mode when not --dll
+        // compile - exe mode when not --dll
         auto result = compiler.compile(source, filename, as_dll, "off", !as_dll);
         if (result.success) {
             std::string outname = filename;
@@ -125,7 +123,6 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
                 std::println("  Inject with LoadLibrary or any injector");
                 
             } else {
-                // exe mode
                 outname += ".exe";
                 
                 std::size_t main_offset = 0;
@@ -158,7 +155,6 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
                 std::println("  Entry point: exe startup -> calls main()");
             }
             
-            // Print function offsets
             std::println("Functions:");
             for (const auto& [name, offset] : result.function_offsets) {
                 std::println("  {} @ 0x{:x}", name, offset);
@@ -166,13 +162,10 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
             
             return 0;
         } else {
-            // Rich error output with source context
             for (const auto& err : result.errors) {
-                // Parse the error to extract location
-                // Format: "file:line:col: error: message"
+                // try to extract file:line:col from error string
                 std::print(std::cerr, "{}\n", err);
                 
-                // Try to show source line
                 std::size_t first_colon = err.find(':');
                 if (first_colon != std::string::npos) {
                     std::size_t second_colon = err.find(':', first_colon + 1);
@@ -186,7 +179,6 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
                                 std::print(std::cerr, " {} \033[34m|\033[0m\n", padding);
                                 std::print(std::cerr, " \033[34m{}\033[0m \033[34m|\033[0m {}\n", line_str, src_line);
                                 
-                                // Get column for underline
                                 std::size_t third_colon = err.find(':', second_colon + 1);
                                 if (third_colon != std::string::npos) {
                                     std::size_t col = std::stoull(err.substr(second_colon + 1, third_colon - second_colon - 1));
@@ -195,7 +187,6 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
                                 }
                             }
                         } catch (...) {
-                            // Failed to parse, just skip source display
                         }
                     }
                 }
@@ -206,14 +197,12 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
     }
 }
 
-// Build a project from opus.project
 int build_project(std::optional<std::string> project_path_arg) {
     std::filesystem::path project_file;
     
     if (project_path_arg) {
         project_file = *project_path_arg;
     } else {
-        // Find opus.project in current directory or parents
         auto found = opus::find_project_file(std::filesystem::current_path());
         if (!found) {
             std::print(std::cerr, "\033[1;91merror\033[0m: no opus.project found in current directory or parents\n");
@@ -224,7 +213,6 @@ int build_project(std::optional<std::string> project_path_arg) {
     
     std::println("Loading project: {}", project_file.string());
     
-    // Load and parse project file
     auto config_result = opus::load_project(project_file);
     if (!config_result) {
         std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", config_result.error());
@@ -233,7 +221,6 @@ int build_project(std::optional<std::string> project_path_arg) {
     
     auto config = std::move(*config_result);
     
-    // Discover source files
     auto files_result = opus::discover_project_files(std::move(config));
     if (!files_result) {
         std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", files_result.error());
@@ -248,7 +235,6 @@ int build_project(std::optional<std::string> project_path_arg) {
         std::println("  - {}", file.filename().string());
     }
     
-    // Merge sources
     auto merged_result = opus::merge_sources(config.source_files);
     if (!merged_result) {
         std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", merged_result.error());
@@ -257,7 +243,6 @@ int build_project(std::optional<std::string> project_path_arg) {
     
     std::string source = std::move(*merged_result);
     
-    // Compile
     opus::Compiler compiler;
     bool as_dll = (config.mode == "dll");
     bool as_exe = (config.mode == "exe");
@@ -275,7 +260,6 @@ int build_project(std::optional<std::string> project_path_arg) {
         std::filesystem::path output_path = config.project_dir / outname;
         
         if (as_dll || as_exe) {
-            // Generate PE with pe generator
             std::size_t main_offset = 0;
             if (result.function_offsets.contains("main")) {
                 main_offset = result.function_offsets["main"];
@@ -348,7 +332,7 @@ int build_project(std::optional<std::string> project_path_arg) {
 }
 
 export int main(int argc, char* argv[]) {
-    // Enable ANSI colors on Windows
+    // enable ansi escape codes on windows
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD dwMode = 0;
     GetConsoleMode(hOut, &dwMode);
@@ -373,7 +357,6 @@ export int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Build command: opus build [path]
     if (arg1 == "build") {
         std::optional<std::string> project_path;
         if (argc > 2) {
@@ -382,7 +365,6 @@ export int main(int argc, char* argv[]) {
         return build_project(project_path);
     }
 
-    // Check for flags
     bool run = false;
     bool dll = false;
     std::string filename;

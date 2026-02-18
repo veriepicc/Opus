@@ -52,7 +52,6 @@ public:
         code_.reserve(initial_capacity);
     }
 
-    // Raw byte emission
     void emit8(std::uint8_t b) { code_.push_back(b); }
     
     void emit16(std::uint16_t w) {
@@ -254,14 +253,14 @@ public:
         }
     }
 
-    // idiv reg (RDX:RAX / reg -> RAX, RDX)
+    // idiv reg (RDX:RAX / reg -> quotient in RAX, remainder in RDX)
     void idiv(Reg src) {
         buf_.emit8(rex(true, Reg::RAX, src));
         buf_.emit8(0xF7);
         buf_.emit8(modrm(0b11, Reg(7), src));  // /7 = idiv
     }
 
-    // cqo (sign-extend RAX into RDX:RAX)
+    // cqo - sign-extend RAX into RDX:RAX
     void cqo() {
         buf_.emit8(0x48);
         buf_.emit8(0x99);
@@ -311,7 +310,7 @@ public:
         buf_.emit8(modrm(0b11, Reg(5), dst));  // /5 = shr
     }
 
-    // sar reg, cl (arithmetic shift right)
+    // sar reg, cl - arithmetic shift right
     void sar_cl(Reg dst) {
         buf_.emit8(rex(true, Reg::RAX, dst));
         buf_.emit8(0xD3);
@@ -345,7 +344,7 @@ public:
         buf_.emit8(modrm(0b11, right, left));
     }
 
-    // setcc reg (set byte based on condition)
+    // setcc - set byte based on condition code
     void setcc(std::uint8_t cc, Reg dst) {
         if (static_cast<std::uint8_t>(dst) >= 8) buf_.emit8(0x41);
         buf_.emit8(0x0F);
@@ -379,20 +378,18 @@ public:
     std::size_t jmp_rel32_placeholder() {
         buf_.emit8(0xE9);
         std::size_t pos = buf_.pos();
-        buf_.emit32(0);  // Placeholder
+        buf_.emit32(0);
         return pos;
     }
 
-    // jcc rel32 (conditional jump)
     std::size_t jcc_rel32(std::uint8_t cc) {
         buf_.emit8(0x0F);
         buf_.emit8(0x80 + cc);
         std::size_t pos = buf_.pos();
-        buf_.emit32(0);  // Placeholder
+        buf_.emit32(0);
         return pos;
     }
 
-    // Patch a jump to target current position
     void patch_jump(std::size_t jump_pos) {
         std::int32_t rel = static_cast<std::int32_t>(buf_.pos() - jump_pos - 4);
         buf_.patch32(jump_pos, static_cast<std::uint32_t>(rel));
@@ -409,7 +406,6 @@ public:
         buf_.emit8(modrm(0b11, Reg(2), target));  // /2 = call
     }
 
-    // ret
     void ret() {
         buf_.emit8(0xC3);
     }
@@ -428,27 +424,23 @@ public:
 
     // FUNCTION PROLOGUE/EPILOGUE
 
-    // Standard Windows x64 prologue
     void prologue(std::size_t local_size, std::span<const Reg> save_regs = {}) {
         push(Reg::RBP);
         mov(Reg::RBP, Reg::RSP);
         
-        // Save callee-saved registers
         for (Reg r : save_regs) {
             push(r);
         }
         
-        // Allocate locals (16-byte aligned)
+        // 16-byte aligned
         std::size_t total = local_size + save_regs.size() * 8;
-        total = (total + 15) & ~15;  // Align to 16
+        total = (total + 15) & ~15;
         if (total > 0) {
             sub_imm(Reg::RSP, static_cast<std::int32_t>(total));
         }
     }
 
-    // Standard epilogue
     void epilogue(std::span<const Reg> save_regs = {}) {
-        // Restore callee-saved registers (reverse order)
         for (auto it = save_regs.rbegin(); it != save_regs.rend(); ++it) {
             pop(*it);
         }
@@ -460,13 +452,9 @@ public:
 
     // MISC
 
-    // nop
     void nop() { buf_.emit8(0x90); }
-
-    // int3 (breakpoint)
     void int3() { buf_.emit8(0xCC); }
 
-    // movzx (zero-extend byte to 64-bit)
     void movzx_byte(Reg dst, Reg src) {
         buf_.emit8(rex(true, dst, src));
         buf_.emit8(0x0F);
@@ -474,7 +462,7 @@ public:
         buf_.emit8(modrm(0b11, dst, src));
     }
 
-    // xor 32-bit (clears upper 32 bits too, useful for zeroing)
+    // 32-bit xor zero-extends to 64, good for zeroing regs
     void xor_32(Reg dst, Reg src) {
         // no REX.W so its 32-bit, which zero-extends to 64
         std::uint8_t r = 0x40;
@@ -747,7 +735,6 @@ public:
         }
     }
 
-    // Execute as a function returning std::int64_t
     template<typename... Args>
     std::int64_t call(Args... args) {
         using FnPtr = std::int64_t(*)(Args...);

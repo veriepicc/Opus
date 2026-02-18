@@ -29,7 +29,6 @@ public:
         , max_iterations_(100000)  // Safeguard: max iterations before abort
     {}
 
-    // Parse entire module
     std::expected<ast::Module, std::vector<ParseError>> parse_module(std::string_view name) {
         ast::Module mod;
         mod.name = std::string(name);
@@ -41,7 +40,6 @@ public:
             }
             auto decl = parse_decl();
             if (!decl) {
-                // Error recovery: skip to next statement
                 synchronize();
             } else {
                 mod.decls.push_back(std::move(*decl));
@@ -148,7 +146,7 @@ private:
             if (previous().kind == TokenKind::Semicolon) return;
             
             switch (current().kind) {
-                // v2.0 keywords
+                // v2.0
                 case TokenKind::Function:
                 case TokenKind::Class:
                 case TokenKind::Struct:
@@ -161,14 +159,14 @@ private:
                 case TokenKind::For:
                 case TokenKind::Thread:
                 case TokenKind::Unsafe:
-                // Legacy keywords
+                // legacy
                 case TokenKind::Fn:
                 case TokenKind::Enum:
                 case TokenKind::Project:
-                // English keywords
+                // english
                 case TokenKind::Define:
                 case TokenKind::Create:
-                // Type keywords (C++ style declarations)
+                // type keywords
                 case TokenKind::TypeInt:
                 case TokenKind::TypeLong:
                 case TokenKind::TypeVoid:
@@ -187,28 +185,19 @@ private:
     // ========================================================================
 
     std::optional<ast::DeclPtr> parse_decl() {
-        // English syntax: define, create
         if (check(TokenKind::Define) || check(TokenKind::Create)) {
             return parse_decl_english();
         }
-        
-        // C-style (default): fn, struct, const, import, export, extern
         return parse_decl_c();
     }
 
-    // C-Style v2.0: function RetType name(params) { body }
-    // Or: RetType name(params) { body } (no function keyword)
-    // Or: class/struct/const/import/extern
     std::optional<ast::DeclPtr> parse_decl_c() {
-        // v2.0: 'function' keyword style: function int add(int a, int b) { ... }
         if (match(TokenKind::Function)) {
             return parse_fn_decl_v2();
         }
-        // v2.0: 'class' keyword
         if (match(TokenKind::Class)) {
             return parse_class_decl();
         }
-        // Legacy: 'fn' keyword (backward compat)
         if (match(TokenKind::Fn)) {
             return parse_fn_decl_c();
         }
@@ -227,18 +216,15 @@ private:
         if (match(TokenKind::Extern)) {
             return parse_extern_decl();
         }
-        // v2.0: project declaration
         if (match(TokenKind::Project)) {
             return parse_project_decl();
         }
-        // global variable: let x = 10 or var y = 20
         if (match(TokenKind::Let)) {
             return parse_static_decl(false);
         }
         if (match(TokenKind::Var)) {
             return parse_static_decl(true);
         }
-        // v2.0: C++ style type-first declaration (int main() { ... })
         if (current().is_type()) {
             return parse_fn_decl_v2_type_first();
         }
@@ -254,7 +240,6 @@ private:
                 return parse_fn_decl_english();
             }
             if (match(TokenKind::Variable)) {
-                // global variable
             }
         }
         if (match(TokenKind::Create)) {
@@ -281,14 +266,13 @@ private:
         auto params = parse_param_list();
         consume(TokenKind::RParen, "expected ')' after parameters");
 
-        // Return type
         Type ret_type = Type::make_primitive(PrimitiveType::Void);
         if (match(TokenKind::Arrow)) {
             auto t = parse_type();
             if (t) ret_type = std::move(*t);
         }
 
-        // Body (use mixed parsing to allow any syntax inside)
+        // mixed parsing allows any syntax inside fn bodies
         consume(TokenKind::LBrace, "expected '{' before function body");
         auto body = parse_block_stmts_mixed();
         consume(TokenKind::RBrace, "expected '}' after function body");
@@ -312,10 +296,8 @@ private:
         Token name_tok = consume(TokenKind::Ident, "expected function name");
         std::string name(name_tok.text);
 
-        // Parameters (optional)
         std::vector<ast::Param> params;
         if (match(TokenKind::With)) {
-            // with parameter x as i32, y as i32
             do {
                 Token pname = consume(TokenKind::Ident, "expected parameter name");
                 consume(TokenKind::As, "expected 'as' after parameter name");
@@ -329,15 +311,12 @@ private:
             } while (match(TokenKind::Comma));
         }
 
-        // Return type
         Type ret_type = Type::make_primitive(PrimitiveType::Void);
         if (match(TokenKind::Returning)) {
             auto t = parse_type();
             if (t) ret_type = std::move(*t);
         }
 
-        // Body: begin ... end function
-        // Or just statements until "end function"
         std::vector<ast::StmtPtr> body;
         while (!at_end() && !check(TokenKind::End)) {
             auto stmt = parse_stmt();
@@ -368,19 +347,16 @@ private:
     std::optional<ast::DeclPtr> parse_fn_decl_v2() {
         SourceSpan span{.start = previous().loc};
         
-        // Check for 'thread' modifier
         bool is_thread = match(TokenKind::Thread);
         
-        // Return type comes first (C++ style)
         auto ret_type_opt = parse_type();
         Type ret_type = ret_type_opt ? std::move(*ret_type_opt) : Type::make_primitive(PrimitiveType::Void);
         
-        // Function name (allow type keywords as names too, e.g. "double")
+        // allow type keywords as fn names too, e.g. "double"
         Token name_tok;
         if (check(TokenKind::Ident)) {
             name_tok = advance();
         } else if (current().is_type()) {
-            // Allow type keywords as function names
             name_tok = advance();
         } else {
             error("expected function name");
@@ -388,12 +364,10 @@ private:
         }
         std::string name(name_tok.text);
 
-        // Parameters: (Type name, Type name, ...)
         consume(TokenKind::LParen, "expected '(' after function name");
         auto params = parse_param_list_v2();
         consume(TokenKind::RParen, "expected ')' after parameters");
 
-        // Body { ... }
         consume(TokenKind::LBrace, "expected '{' before function body");
         auto body = parse_block_stmts_v2();
         consume(TokenKind::RBrace, "expected '}' after function body");
@@ -411,24 +385,21 @@ private:
         return decl;
     }
 
-    // v2.0: Type name(Type param, ...) { body } - no 'function' keyword
+    // v2.0: Type name(Type param, ...) { body } - no function keyword
     std::optional<ast::DeclPtr> parse_fn_decl_v2_type_first() {
         SourceSpan span{.start = current().loc};
         
-        // Return type is current token (already verified to be a type)
+        // return type is current token (already verified to be a type)
         auto ret_type_opt = parse_type();
         Type ret_type = ret_type_opt ? std::move(*ret_type_opt) : Type::make_primitive(PrimitiveType::Void);
         
-        // Function name
         Token name_tok = consume(TokenKind::Ident, "expected function name after type");
         std::string name(name_tok.text);
 
-        // Parameters
         consume(TokenKind::LParen, "expected '('");
         auto params = parse_param_list_v2();
         consume(TokenKind::RParen, "expected ')'");
 
-        // Body
         consume(TokenKind::LBrace, "expected '{'");
         auto body = parse_block_stmts_v2();
         consume(TokenKind::RBrace, "expected '}'");
@@ -452,7 +423,6 @@ private:
         if (check(TokenKind::RParen)) return params;
 
         do {
-            // Type comes first (C++ style)
             auto ptype = parse_type();
             if (!ptype) {
                 error("expected parameter type");
@@ -480,7 +450,7 @@ private:
             if (stmt) {
                 stmts.push_back(std::move(*stmt));
             } else {
-                // If parse failed and position didn't move, force advance to prevent loop
+                // position didnt move, force advance to prevent loop
                 if (pos_ == before && !at_end()) {
                     advance();
                 }
@@ -489,66 +459,55 @@ private:
         return stmts;
     }
 
-    // v2.0 statement parsing
     std::optional<ast::StmtPtr> parse_stmt_v2() {
-        // capture location before parsing for debug line mapping
         SourceLoc stmt_start = current().loc;
         
-        // v2.0: let x = 10;
         if (match(TokenKind::Let)) {
             auto s = parse_let_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        // v2.0: var x = 10; (mutable)
         if (match(TokenKind::Var)) {
             auto s = parse_var_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        // v2.0: auto x = 10; (C++ style, mutable with inference)
+        // auto is just var with type inference
         if (match(TokenKind::Auto)) {
-            auto s = parse_var_stmt_v2();  // Same as var - mutable with type inference
+            auto s = parse_var_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        // v2.0: const x = 10;
         if (match(TokenKind::Const)) {
             auto s = parse_const_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        // v2.0: Type x = 10; (C++ style variable declaration)
         if (current().is_type()) {
             auto s = parse_type_decl_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        // return
         if (match(TokenKind::Return)) {
             auto s = parse_return_stmt();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        // v2.0: if without parentheses
         if (match(TokenKind::If)) {
             auto s = parse_if_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        // v2.0: while without parentheses
         if (match(TokenKind::While)) {
             auto s = parse_while_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        // parallel for - splits work across cores
         if (match(TokenKind::Parallel)) {
             auto s = parse_parallel_for();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        // for loop
         if (match(TokenKind::For)) {
             auto s = parse_for_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
@@ -573,7 +532,6 @@ private:
             stmt->span.start = stmt_start;
             return stmt;
         }
-        // Block
         if (match(TokenKind::LBrace)) {
             auto stmts = parse_block_stmts_v2();
             consume(TokenKind::RBrace, "expected '}'");
@@ -583,10 +541,9 @@ private:
             return stmt;
         }
 
-        // Expression statement
         auto expr = parse_expr();
         if (!expr) {
-            // Advance past problematic token to prevent infinite loop
+            // advance past bad token to prevent infinite loop
             if (!at_end()) advance();
             return std::nullopt;
         }
@@ -597,21 +554,18 @@ private:
         return stmt;
     }
 
-    // v2.0: let x = 10; (immutable)
     std::optional<ast::StmtPtr> parse_let_stmt_v2() {
-        // Accept type keywords as variable names (contextual keywords)
+        // type keywords can be used as variable names (contextual)
         Token name;
         if (check(TokenKind::Ident)) {
             name = advance();
         } else if (current().is_type()) {
-            // Type keywords like 'ptr', 'int' can be variable names
             name = advance();
         } else {
             name = consume(TokenKind::Ident, "expected variable name");
         }
         
         std::optional<Type> type;
-        // Optional type annotation with colon (for backward compat)
         if (match(TokenKind::Colon)) {
             type = parse_type();
         }
@@ -628,14 +582,13 @@ private:
             .name = std::string(name.text),
             .type = std::move(type),
             .init = std::move(init),
-            .is_mut = false  // let is immutable
+            .is_mut = false
         };
         return stmt;
     }
 
-    // v2.0: var x = 10; (mutable, JS style)
     std::optional<ast::StmtPtr> parse_var_stmt_v2() {
-        // Accept type keywords as variable names (contextual keywords)
+        // type keywords can be used as variable names (contextual)
         Token name;
         if (check(TokenKind::Ident)) {
             name = advance();
@@ -662,12 +615,11 @@ private:
             .name = std::string(name.text),
             .type = std::move(type),
             .init = std::move(init),
-            .is_mut = true  // var is mutable
+            .is_mut = true
         };
         return stmt;
     }
 
-    // v2.0: const x = 10;
     std::optional<ast::StmtPtr> parse_const_stmt_v2() {
         Token name = consume(TokenKind::Ident, "expected constant name");
         
@@ -691,7 +643,6 @@ private:
         return stmt;
     }
 
-    // v2.0: Type name = value; (C++ style)
     std::optional<ast::StmtPtr> parse_type_decl_stmt_v2() {
         auto type = parse_type();
         if (!type) return std::nullopt;
@@ -710,12 +661,12 @@ private:
             .name = std::string(name.text),
             .type = std::move(type),
             .init = std::move(init),
-            .is_mut = true  // C++ style is mutable by default
+            .is_mut = true
         };
         return stmt;
     }
 
-    // v2.0: if cond { ... } else { ... } - no parentheses!
+    // no parens on if/while - go-style
     std::optional<ast::StmtPtr> parse_if_stmt_v2() {
         auto cond = parse_expr();
         
@@ -725,7 +676,6 @@ private:
 
         std::optional<std::vector<ast::StmtPtr>> else_block;
         if (match(TokenKind::Else)) {
-            // else if
             if (check(TokenKind::If)) {
                 advance();
                 auto else_if = parse_if_stmt_v2();
@@ -751,7 +701,6 @@ private:
         return stmt;
     }
 
-    // v2.0: while cond { ... } - no parentheses!
     std::optional<ast::StmtPtr> parse_while_stmt_v2() {
         auto cond = parse_expr();
         consume(TokenKind::LBrace, "expected '{' after while condition");
@@ -768,7 +717,6 @@ private:
         return stmt;
     }
 
-    // v2.0: for i in range(0, 10) { ... }
     std::optional<ast::StmtPtr> parse_for_stmt_v2() {
         Token var = consume(TokenKind::Ident, "expected variable");
         consume(TokenKind::In, "expected 'in'");
@@ -788,7 +736,6 @@ private:
         return stmt;
     }
 
-    // v2.0: class Name { ... }
     std::optional<ast::DeclPtr> parse_class_decl() {
         Token name_tok = consume(TokenKind::Ident, "expected class name");
         consume(TokenKind::LBrace, "expected '{'");
@@ -799,9 +746,7 @@ private:
         while (!check(TokenKind::RBrace) && !at_end()) {
             if (!check_loop_safeguard("parse_class_decl")) break;
             
-            // Method: function RetType name(...) { } or function void name(self, ...) { }
             if (match(TokenKind::Function)) {
-                // Parse method similar to parse_fn_decl_v2
                 auto ret_type = parse_type();
                 Token method_name = consume(TokenKind::Ident, "expected method name");
                 consume(TokenKind::LParen, "expected '(' after method name");
@@ -821,11 +766,9 @@ private:
                     });
                 }
             }
-            // Field with type annotation: name: Type,
             else if (check(TokenKind::Ident)) {
                 Token fname = advance();
                 if (match(TokenKind::Colon)) {
-                    // Rust-style: name: Type
                     auto ftype = parse_type();
                     if (ftype) {
                         fields.emplace_back(std::string(fname.text), std::move(*ftype));
@@ -836,7 +779,6 @@ private:
                     error("expected ':' after field name");
                 }
             }
-            // C-style field: Type name;
             else if (current().is_type()) {
                 auto ftype = parse_type();
                 Token fname = consume(TokenKind::Ident, "expected field name");
@@ -898,29 +840,25 @@ private:
             if (!check_loop_safeguard("parse_struct_decl")) {
                 break;
             }
-            // Support BOTH syntaxes:
-            // 1. Rust-style: name: Type,
-            // 2. C-style: Type name;
+            // supports both rust-style (name: Type,) and c-style (Type name;)
             
             if (current().is_type()) {
-                // C-style: Type name;
                 auto ftype = parse_type();
                 Token fname = consume(TokenKind::Ident, "expected field name");
                 if (ftype) {
                     fields.emplace_back(std::string(fname.text), std::move(*ftype));
                 }
-                match(TokenKind::Semicolon);  // C-style uses semicolon
-                match(TokenKind::Comma);      // But also allow comma
+                match(TokenKind::Semicolon);
+                match(TokenKind::Comma);
             } else {
-                // Rust-style: name: Type,
                 Token fname = consume(TokenKind::Ident, "expected field name");
                 consume(TokenKind::Colon, "expected ':'");
                 auto ftype = parse_type();
                 if (ftype) {
                     fields.emplace_back(std::string(fname.text), std::move(*ftype));
                 }
-                match(TokenKind::Comma);      // Optional trailing comma
-                match(TokenKind::Semicolon);  // But also allow semicolon
+                match(TokenKind::Comma);
+                match(TokenKind::Semicolon);
             }
         }
 
@@ -934,7 +872,6 @@ private:
         return decl;
     }
 
-    // enum Name { Variant, Variant2 = 5 }
     std::optional<ast::DeclPtr> parse_enum_decl() {
         Token name_tok = consume(TokenKind::Ident, "expected enum name");
         consume(TokenKind::LBrace, "expected '{' after enum name");
@@ -995,7 +932,6 @@ private:
         return decl;
     }
 
-    // let x = 10 or var y: int = 20
     std::optional<ast::DeclPtr> parse_static_decl(bool is_mut) {
         Token name_tok = consume(TokenKind::Ident, "expected variable name");
         
@@ -1050,19 +986,18 @@ private:
         return decl;
     }
 
-    // project Name { entry: "main.op", output: "app.dll", ... }
     std::optional<ast::DeclPtr> parse_project_decl() {
         Token name_tok = consume(TokenKind::Ident, "expected project name");
         consume(TokenKind::LBrace, "expected '{' after project name");
         
         ast::ProjectDecl proj;
         proj.name = std::string(name_tok.text);
-        proj.mode = "dll";  // Default mode
+        proj.mode = "dll";
         
         while (!check(TokenKind::RBrace) && !at_end()) {
             if (!check_loop_safeguard("parse_project_decl")) break;
             
-            // get property name - could be ident or keyword like 'include'
+            // property name could be ident or keyword like include
             std::string key_str;
             if (check(TokenKind::Include)) {
                 advance();
@@ -1084,7 +1019,6 @@ private:
                 Token val = consume(TokenKind::StringLit, "expected string for output");
                 proj.output = std::get<std::string>(val.value);
             } else if (key_str == "mode") {
-                // mode can be ident like 'dll' or 'exe'
                 if (check(TokenKind::Ident)) {
                     proj.mode = std::string(advance().text);
                 } else {
@@ -1102,7 +1036,6 @@ private:
                 }
                 consume(TokenKind::RBracket, "expected ']' after include list");
             } else if (key_str == "debug") {
-                // debug: true or debug: false
                 if (check(TokenKind::True)) {
                     advance();
                     proj.debug = true;
@@ -1116,7 +1049,6 @@ private:
                     error("expected 'true' or 'false' for debug");
                 }
             } else if (key_str == "healing") {
-                // healing: auto | freeze | off
                 if (check(TokenKind::Ident)) {
                     proj.healing = std::string(advance().text);
                 } else if (check(TokenKind::StringLit)) {
@@ -1141,7 +1073,6 @@ private:
 
     std::optional<ast::DeclPtr> parse_extern_decl() {
         if (match(TokenKind::Fn)) {
-            // extern fn name(params) -> RetType
             Token name_tok = consume(TokenKind::Ident, "expected function name");
             consume(TokenKind::LParen, "expected '('");
             auto params = parse_param_list();
@@ -1191,14 +1122,13 @@ private:
             if (stmt) {
                 stmts.push_back(std::move(*stmt));
             } else if (pos_ == before && !at_end()) {
-                advance();  // Prevent infinite loop
+                advance();
             }
         }
         return stmts;
     }
 
     
-    // Mixed mode: detect syntax per-statement
     std::vector<ast::StmtPtr> parse_block_stmts_mixed() {
         std::vector<ast::StmtPtr> stmts;
         while (!check(TokenKind::RBrace) && !check(TokenKind::End) && !at_end()) {
@@ -1215,13 +1145,10 @@ private:
         return stmts;
     }
     
-    // Detect which syntax this statement uses and parse accordingly
+    // figures out which syntax style this statement uses
     std::optional<ast::StmtPtr> parse_stmt_mixed() {
-        // English syntax: create variable, set ... to, etc.
         if (check(TokenKind::Create)) return parse_stmt_english();
         if (check(TokenKind::Set)) return parse_stmt_english();
-        
-        // C-style (default)
         return parse_stmt_c();
     }
 
@@ -1298,7 +1225,6 @@ private:
 
     std::optional<ast::StmtPtr> parse_stmt_english() {
         if (match(TokenKind::Create) && match(TokenKind::Variable)) {
-            // create variable x as i32 with value 0
             Token name = consume(TokenKind::Ident, "expected variable name");
             consume(TokenKind::As, "expected 'as'");
             auto type = parse_type();
@@ -1317,7 +1243,6 @@ private:
             return stmt;
         }
         if (match(TokenKind::Set)) {
-            // set x to 42
             auto target = parse_expr();
             consume(TokenKind::To, "expected 'to'");
             auto value = parse_expr();
@@ -1534,7 +1459,6 @@ private:
     // ========================================================================
 
     std::optional<Type> parse_type() {
-        // Pointer types
         if (match(TokenKind::Star)) {
             bool is_mut = match(TokenKind::Mut);
             auto inner = parse_type();
@@ -1564,12 +1488,11 @@ private:
             return t;
         }
 
-        // Primitive types
         if (current().is_type()) {
             Token t = advance();
             PrimitiveType pt;
             switch (t.kind) {
-                // C++/JS-friendly types (v2.0)
+                // v2.0 types
                 case TokenKind::TypeVoid:   pt = PrimitiveType::Void; break;
                 case TokenKind::TypeBool:   pt = PrimitiveType::Bool; break;
                 case TokenKind::TypeInt:    pt = PrimitiveType::I32; break;
@@ -1585,7 +1508,7 @@ private:
                 case TokenKind::TypeString: pt = PrimitiveType::Str; break;
                 case TokenKind::TypeChar:   pt = PrimitiveType::Char; break;
                 case TokenKind::TypePtr:    pt = PrimitiveType::Ptr; break;
-                // Legacy types (backward compat)
+                // legacy types
                 case TokenKind::TypeI8:     pt = PrimitiveType::I8; break;
                 case TokenKind::TypeI16:    pt = PrimitiveType::I16; break;
                 case TokenKind::TypeI32:    pt = PrimitiveType::I32; break;
@@ -1604,7 +1527,6 @@ private:
             return Type::make_primitive(pt);
         }
 
-        // Named type
         if (check(TokenKind::Ident)) {
             Token name = advance();
             Type t;
@@ -1748,7 +1670,6 @@ private:
 
         while (true) {
             if (match(TokenKind::LParen)) {
-                // Function call
                 std::vector<ast::ExprPtr> args;
                 if (!check(TokenKind::RParen)) {
                     do {
@@ -1766,7 +1687,6 @@ private:
                 expr = std::move(call);
             }
             else if (match(TokenKind::LBracket)) {
-                // Index
                 auto index = parse_expr();
                 consume(TokenKind::RBracket, "expected ']'");
 
@@ -1780,7 +1700,6 @@ private:
                 }
             }
             else if (match(TokenKind::Dot)) {
-                // Field access
                 Token field = consume(TokenKind::Ident, "expected field name");
                 auto access = std::make_unique<ast::Expr>();
                 access->kind = ast::FieldExpr{
@@ -1790,7 +1709,6 @@ private:
                 expr = std::move(access);
             }
             else if (match(TokenKind::As)) {
-                // Cast
                 auto target = parse_type();
                 if (target) {
                     auto cast = std::make_unique<ast::Expr>();
@@ -1802,7 +1720,6 @@ private:
                 }
             }
             else if (match(TokenKind::PlusPlus)) {
-                // Postfix ++
                 auto inc = std::make_unique<ast::Expr>();
                 inc->kind = ast::UnaryExpr{
                     .op = ast::UnaryExpr::Op::PostInc,
@@ -1811,7 +1728,6 @@ private:
                 expr = std::move(inc);
             }
             else if (match(TokenKind::MinusMinus)) {
-                // Postfix --
                 auto dec = std::make_unique<ast::Expr>();
                 dec->kind = ast::UnaryExpr{
                     .op = ast::UnaryExpr::Op::PostDec,
@@ -1827,14 +1743,12 @@ private:
         return expr;
     }
 
-    // Parse struct literal: StructName { field: value, field2: value2 }
     std::optional<ast::ExprPtr> parse_struct_literal(const std::string& struct_name) {
         consume(TokenKind::LBrace, "expected '{' after struct name");
         
         std::vector<std::pair<std::string, ast::ExprPtr>> fields;
         
         while (!check(TokenKind::RBrace)) {
-            // field: value
             Token field_name = consume(TokenKind::Ident, "expected field name");
             consume(TokenKind::Colon, "expected ':' after field name");
             
@@ -1846,10 +1760,8 @@ private:
             
             fields.emplace_back(std::string(field_name.text), std::move(*value));
             
-            // Optional comma
             if (!check(TokenKind::RBrace)) {
                 if (!match(TokenKind::Comma)) {
-                    // Allow no comma before }
                     if (!check(TokenKind::RBrace)) {
                         error("expected ',' or '}' after field value");
                         return std::nullopt;
@@ -1868,7 +1780,7 @@ private:
         return expr;
     }
 
-    // spawn func(arg1, arg2, ...) -> SpawnExpr
+    // spawn func(args) -> SpawnExpr
     std::optional<ast::ExprPtr> parse_spawn_expr() {
         Token callee_tok = consume(TokenKind::Ident, "expected function name after 'spawn'");
         
@@ -1893,7 +1805,6 @@ private:
         return expr;
     }
 
-    // await handle_expr -> AwaitExpr
     std::optional<ast::ExprPtr> parse_await_expr() {
         auto handle = parse_expr();
         if (!handle) return std::nullopt;
@@ -1903,7 +1814,7 @@ private:
         return expr;
     }
 
-    // parallel for i in range(start, end) { body } -> ParallelForStmt
+    // parallel for i in range(start, end) { body }
     std::optional<ast::StmtPtr> parse_parallel_for() {
         consume(TokenKind::For, "expected 'for' after 'parallel'");
         Token var = consume(TokenKind::Ident, "expected loop variable");
@@ -1938,7 +1849,6 @@ private:
         return stmt;
     }
 
-    // atomic_add(ptr, val), atomic_cas(ptr, expected, desired), etc -> AtomicOpExpr
     std::optional<ast::ExprPtr> parse_atomic_op(const std::string& name) {
         using Op = ast::AtomicOpExpr::Op;
         
@@ -1951,11 +1861,9 @@ private:
         
         consume(TokenKind::LParen, std::format("expected '(' after '{}'", name));
         
-        // first arg is always the pointer
         auto ptr = parse_expr();
         if (!ptr) return std::nullopt;
         
-        // remaining args
         std::vector<ast::ExprPtr> args;
         while (match(TokenKind::Comma)) {
             auto arg = parse_expr();
@@ -1964,7 +1872,6 @@ private:
         
         consume(TokenKind::RParen, std::format("expected ')' after {} arguments", name));
         
-        // validate arg count: ptr counts as 1, plus the rest
         int total_args = 1 + static_cast<int>(args.size());
         if (total_args != expected_args) {
             error(std::format("{} expects {} arguments, got {}", name, expected_args, total_args));
@@ -1980,7 +1887,6 @@ private:
     }
 
     std::optional<ast::ExprPtr> parse_primary() {
-        // Literals
         if (match(TokenKind::IntLit)) {
             auto expr = std::make_unique<ast::Expr>();
             std::int64_t val = std::get<std::int64_t>(previous().value);
@@ -2013,7 +1919,7 @@ private:
             std::string val = std::get<std::string>(previous().value);
             expr->kind = ast::LiteralExpr{
                 .value = std::move(val),
-                .type = Type::make_primitive(PrimitiveType::Str)  // Store as string for now
+                .type = Type::make_primitive(PrimitiveType::Str)  // TODO proper hex type
             };
             return expr;
         }
@@ -2035,31 +1941,25 @@ private:
         }
 
 
-        // spawn function_name(args) - fires off a thread
         if (match(TokenKind::Spawn)) {
             return parse_spawn_expr();
         }
 
-        // await handle - blocks until thread finishes
         if (match(TokenKind::Await)) {
             return parse_await_expr();
         }
 
-        // Identifiers (and namespace:function calls)
         if (match(TokenKind::Ident)) {
             std::string name(previous().text);
             
-            // atomic builtins - intercept before normal call handling
+            // atomic builtins need to be intercepted before normal call handling
             if (name == "atomic_add" || name == "atomic_cas" || 
                 name == "atomic_load" || name == "atomic_store") {
                 return parse_atomic_op(name);
             }
             
-            // Check for namespace.function() calls (e.g., Mem.Read())
-            // Only treat as namespace if:
-            // 1. Pattern is: ident.ident(
-            // 2. First identifier starts with uppercase (Mem, Array, Console)
-            // If lowercase (player, p), let parse_postfix handle as method call
+            // uppercase ident followed by dot is namespace syntax (Mem.Read())
+            // lowercase is field access, handled by parse_postfix
             if (check(TokenKind::Dot) && !name.empty() && name[0] >= 'A' && name[0] <= 'Z') {
                 std::size_t saved_pos = pos_;
                 advance();  // consume .
@@ -2068,23 +1968,18 @@ private:
                     std::size_t after_ident = pos_;
                     Token func_name = advance();
                     
-                    // Only treat as namespace if followed by (
                     if (check(TokenKind::LParen)) {
-                        // This is namespace.function() call
                         name += ".";
                         name += func_name.text;
                     } else {
-                        // Not a function call - restore for field access
                         pos_ = saved_pos;
                     }
                 } else {
-                    // Not namespace syntax, restore position
                     pos_ = saved_pos;
                 }
             }
             
-            // Check for struct literal: StructName { field: value, ... }
-            // Only if identifier starts with uppercase (class/struct name)
+            // struct literal if uppercase ident followed by {
             if (check(TokenKind::LBrace) && !name.empty() && name[0] >= 'A' && name[0] <= 'Z') {
                 return parse_struct_literal(name);
             }
@@ -2094,7 +1989,7 @@ private:
             return expr;
         }
         
-        // Type keywords used as variable names (contextual keywords)
+        // type keywords can be used as variable names
         if (current().is_type()) {
             Token tok = advance();
             auto expr = std::make_unique<ast::Expr>();
@@ -2102,7 +1997,7 @@ private:
             return expr;
         }
         
-        // Memory keywords that act like function names
+        // malloc/free are keywords but parse as regular function calls
         if (match(TokenKind::Malloc)) {
             auto expr = std::make_unique<ast::Expr>();
             expr->kind = ast::IdentExpr{.name = "malloc"};
@@ -2115,14 +2010,12 @@ private:
         }
 
 
-        // Parenthesized expression
         if (match(TokenKind::LParen)) {
             auto inner = parse_expr();
             consume(TokenKind::RParen, "expected ')'");
             return inner;
         }
 
-        // Array literal
         if (match(TokenKind::LBracket)) {
             std::vector<ast::ExprPtr> elements;
             if (!check(TokenKind::RBracket)) {

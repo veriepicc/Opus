@@ -1,14 +1,13 @@
-// Opus Programming Language
-// Main Module - Public API
+// opus public api module
 
 module;
 
-// Windows headers must be in global module fragment
+// windows headers must go in global module fragment
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <cstdio>  // For freopen_s, stdout, stderr, stdin
+#include <cstdio>
 #endif
 
 export module opus;
@@ -25,17 +24,14 @@ import std;
 
 export namespace opus {
 
-// ============================================================================
-// RUNTIME BUILTINS
-// ============================================================================
+// runtime builtins
 
-// String table for file contents (accessible from JIT code)
+// string table is shared between host and jit code
 inline std::vector<std::string>& get_string_table() {
     static std::vector<std::string> table;
     return table;
 }
 
-// These are callable from JIT code
 extern "C" void opus_print_int(std::int64_t value) {
     std::println("{}", value);
 }
@@ -48,16 +44,15 @@ extern "C" void opus_print_newline() {
     std::println("");
 }
 
-// File I/O - takes filename as string handle, returns content as string handle
 extern "C" std::int64_t opus_read_file(std::int64_t filename_handle) {
     auto& table = get_string_table();
     if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) {
-        return -1;  // Invalid handle
+        return -1;
     }
     
     std::ifstream file(table[filename_handle]);
     if (!file) {
-        return -1;  // Error: file not found
+        return -1;
     }
     std::stringstream buffer;
     buffer << file.rdbuf();
@@ -67,7 +62,6 @@ extern "C" std::int64_t opus_read_file(std::int64_t filename_handle) {
     return handle;
 }
 
-// Create string from literal and add to table, returns handle
 extern "C" std::int64_t opus_make_string(const char* str) {
     auto& table = get_string_table();
     std::int64_t handle = static_cast<std::int64_t>(table.size());
@@ -75,7 +69,6 @@ extern "C" std::int64_t opus_make_string(const char* str) {
     return handle;
 }
 
-// String operations (work with handles from read_file or string literals)
 extern "C" std::int64_t opus_string_length(std::int64_t handle) {
     auto& table = get_string_table();
     if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) {
@@ -103,7 +96,6 @@ extern "C" void opus_print_string(std::int64_t handle) {
     }
 }
 
-// File writing - write string handle contents to file
 extern "C" std::int64_t opus_write_file(std::int64_t filename_handle, std::int64_t content_handle) {
     auto& table = get_string_table();
     if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) {
@@ -121,7 +113,6 @@ extern "C" std::int64_t opus_write_file(std::int64_t filename_handle, std::int64
     return static_cast<std::int64_t>(table[content_handle].size());
 }
 
-// Memory allocation
 extern "C" std::int64_t opus_malloc(std::int64_t size) {
     void* ptr = std::malloc(static_cast<std::size_t>(size));
     return reinterpret_cast<std::int64_t>(ptr);
@@ -131,11 +122,8 @@ extern "C" void opus_free(std::int64_t ptr) {
     std::free(reinterpret_cast<void*>(ptr));
 }
 
-// ============================================================================
-// RAW MEMORY ACCESS (for game hacking / systems programming)
-// ============================================================================
+// raw memory access for systems programming
 
-// Read operations - read from arbitrary memory address
 extern "C" std::int64_t opus_mem_read_i8(std::int64_t addr) {
     if (addr == 0) return 0;
     return static_cast<std::int64_t>(*reinterpret_cast<std::int8_t*>(addr));
@@ -166,13 +154,12 @@ extern "C" double opus_mem_read_f64(std::int64_t addr) {
     return *reinterpret_cast<double*>(addr);
 }
 
-// Read pointer (same as i64 but semantic)
+// same as i64 but semantically a pointer
 extern "C" std::int64_t opus_mem_read_ptr(std::int64_t addr) {
     if (addr == 0) return 0;
     return *reinterpret_cast<std::int64_t*>(addr);
 }
 
-// Write operations - write to arbitrary memory address
 extern "C" void opus_mem_write_i8(std::int64_t addr, std::int64_t value) {
     if (addr == 0) return;
     *reinterpret_cast<std::int8_t*>(addr) = static_cast<std::int8_t>(value);
@@ -203,49 +190,40 @@ extern "C" void opus_mem_write_f64(std::int64_t addr, double value) {
     *reinterpret_cast<double*>(addr) = value;
 }
 
-// Write pointer (same as i64 but semantic)
 extern "C" void opus_mem_write_ptr(std::int64_t addr, std::int64_t value) {
     if (addr == 0) return;
     *reinterpret_cast<std::int64_t*>(addr) = value;
 }
 
-// Memory copy
 extern "C" void opus_mem_copy(std::int64_t dest, std::int64_t src, std::int64_t size) {
     if (dest == 0 || src == 0) return;
     std::memcpy(reinterpret_cast<void*>(dest), reinterpret_cast<void*>(src), static_cast<std::size_t>(size));
 }
 
-// Memory set
 extern "C" void opus_mem_set(std::int64_t dest, std::int64_t value, std::int64_t size) {
     if (dest == 0) return;
     std::memset(reinterpret_cast<void*>(dest), static_cast<int>(value), static_cast<std::size_t>(size));
 }
 
-// ============================================================================
-// FFI - FOREIGN FUNCTION INTERFACE (Windows API)
-// ============================================================================
+// ffi - windows api
 
 #ifdef _WIN32
-// Windows headers included in global module fragment
 
-// Get module handle by name (string handle)
 extern "C" std::int64_t opus_get_module(std::int64_t name_handle) {
     auto& table = get_string_table();
     if (name_handle < 0 || name_handle >= static_cast<std::int64_t>(table.size())) {
-        // No name = get current module
+        // no name = current module
         return reinterpret_cast<std::int64_t>(GetModuleHandleA(nullptr));
     }
     HMODULE mod = GetModuleHandleA(table[name_handle].c_str());
     return reinterpret_cast<std::int64_t>(mod);
 }
 
-// Get module handle by name (direct C string for convenience)
 extern "C" std::int64_t opus_get_module_str(const char* name) {
     HMODULE mod = GetModuleHandleA(name);
     return reinterpret_cast<std::int64_t>(mod);
 }
 
-// Load a library
 extern "C" std::int64_t opus_load_library(std::int64_t name_handle) {
     auto& table = get_string_table();
     if (name_handle < 0 || name_handle >= static_cast<std::int64_t>(table.size())) {
@@ -255,7 +233,6 @@ extern "C" std::int64_t opus_load_library(std::int64_t name_handle) {
     return reinterpret_cast<std::int64_t>(mod);
 }
 
-// Get procedure address
 extern "C" std::int64_t opus_get_proc(std::int64_t module, std::int64_t name_handle) {
     auto& table = get_string_table();
     if (name_handle < 0 || name_handle >= static_cast<std::int64_t>(table.size())) {
@@ -268,56 +245,48 @@ extern "C" std::int64_t opus_get_proc(std::int64_t module, std::int64_t name_han
     return reinterpret_cast<std::int64_t>(proc);
 }
 
-// Call FFI function with 0 arguments
 extern "C" std::int64_t opus_ffi_call0(std::int64_t fn_ptr) {
     if (fn_ptr == 0) return 0;
     using Fn = std::int64_t(*)();
     return reinterpret_cast<Fn>(fn_ptr)();
 }
 
-// Call FFI function with 1 argument
 extern "C" std::int64_t opus_ffi_call1(std::int64_t fn_ptr, std::int64_t a1) {
     if (fn_ptr == 0) return 0;
     using Fn = std::int64_t(*)(std::int64_t);
     return reinterpret_cast<Fn>(fn_ptr)(a1);
 }
 
-// Call FFI function with 2 arguments
 extern "C" std::int64_t opus_ffi_call2(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2) {
     if (fn_ptr == 0) return 0;
     using Fn = std::int64_t(*)(std::int64_t, std::int64_t);
     return reinterpret_cast<Fn>(fn_ptr)(a1, a2);
 }
 
-// Call FFI function with 3 arguments
 extern "C" std::int64_t opus_ffi_call3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3) {
     if (fn_ptr == 0) return 0;
     using Fn = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t);
     return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3);
 }
 
-// Call FFI function with 4 arguments
 extern "C" std::int64_t opus_ffi_call4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4) {
     if (fn_ptr == 0) return 0;
     using Fn = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t);
     return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3, a4);
 }
 
-// Call FFI function with 5 arguments
 extern "C" std::int64_t opus_ffi_call5(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5) {
     if (fn_ptr == 0) return 0;
     using Fn = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t);
     return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3, a4, a5);
 }
 
-// Call FFI function with 6 arguments
 extern "C" std::int64_t opus_ffi_call6(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5, std::int64_t a6) {
     if (fn_ptr == 0) return 0;
     using Fn = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t);
     return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3, a4, a5, a6);
 }
 
-// Convenience: MessageBoxA directly
 extern "C" std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text_handle, std::int64_t flags) {
     auto& table = get_string_table();
     const char* title = "";
@@ -331,21 +300,17 @@ extern "C" std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text
     return MessageBoxA(nullptr, text, title, static_cast<UINT>(flags));
 }
 
-// Get last error
 extern "C" std::int64_t opus_get_last_error() {
     return static_cast<std::int64_t>(GetLastError());
 }
 
-// Allocate a console window - essential for DLL debugging
+// need a console for dll debugging since dlls dont have one
 extern "C" std::int64_t opus_alloc_console() {
     if (AllocConsole()) {
-        // Redirect stdout to the new console
         FILE* fp;
         freopen_s(&fp, "CONOUT$", "w", stdout);
         freopen_s(&fp, "CONOUT$", "w", stderr);
         freopen_s(&fp, "CONIN$", "r", stdin);
-        
-        // Set console title
         SetConsoleTitleA("Opus Console");
         
         return 1;
@@ -353,12 +318,10 @@ extern "C" std::int64_t opus_alloc_console() {
     return 0;
 }
 
-// Free the console
 extern "C" void opus_free_console() {
     FreeConsole();
 }
 
-// Set console title
 extern "C" void opus_set_console_title(std::int64_t title_handle) {
     auto& table = get_string_table();
     if (title_handle >= 0 && title_handle < static_cast<std::int64_t>(table.size())) {
@@ -366,7 +329,6 @@ extern "C" void opus_set_console_title(std::int64_t title_handle) {
     }
 }
 
-// VirtualProtect - essential for hooking
 extern "C" std::int64_t opus_virtual_protect(std::int64_t address, std::int64_t size, std::int64_t new_protect) {
     DWORD old_protect;
     BOOL result = VirtualProtect(
@@ -378,10 +340,9 @@ extern "C" std::int64_t opus_virtual_protect(std::int64_t address, std::int64_t 
     if (result) {
         return static_cast<std::int64_t>(old_protect);
     }
-    return -1;  // Error
+    return -1;
 }
 
-// ReadProcessMemory (for external reading)
 extern "C" std::int64_t opus_read_process_memory(std::int64_t process, std::int64_t address, std::int64_t buffer, std::int64_t size) {
     SIZE_T bytes_read;
     BOOL result = ReadProcessMemory(
@@ -394,7 +355,6 @@ extern "C" std::int64_t opus_read_process_memory(std::int64_t process, std::int6
     return result ? static_cast<std::int64_t>(bytes_read) : -1;
 }
 
-// WriteProcessMemory
 extern "C" std::int64_t opus_write_process_memory(std::int64_t process, std::int64_t address, std::int64_t buffer, std::int64_t size) {
     SIZE_T bytes_written;
     BOOL result = WriteProcessMemory(
@@ -407,18 +367,16 @@ extern "C" std::int64_t opus_write_process_memory(std::int64_t process, std::int
     return result ? static_cast<std::int64_t>(bytes_written) : -1;
 }
 
-// Get current process
 extern "C" std::int64_t opus_get_current_process() {
     return reinterpret_cast<std::int64_t>(GetCurrentProcess());
 }
 
-// Get current process ID
 extern "C" std::int64_t opus_get_current_process_id() {
     return static_cast<std::int64_t>(GetCurrentProcessId());
 }
 
 #else
-// Non-Windows stubs
+// non-windows stubs
 extern "C" std::int64_t opus_get_module(std::int64_t name_handle) { return 0; }
 extern "C" std::int64_t opus_get_module_str(const char* name) { return 0; }
 extern "C" std::int64_t opus_load_library(std::int64_t name_handle) { return 0; }
@@ -439,14 +397,13 @@ extern "C" std::int64_t opus_get_current_process() { return 0; }
 extern "C" std::int64_t opus_get_current_process_id() { return 0; }
 #endif
 
-// Array operations (for dynamic arrays stored in memory)
+// layout: arr[0] = length, arr[1..n] = elements
 extern "C" std::int64_t opus_array_new(std::int64_t size) {
-    // Allocate array: first 8 bytes = length, then size*8 bytes for elements
     std::int64_t* arr = static_cast<std::int64_t*>(std::malloc((size + 1) * sizeof(std::int64_t)));
     if (!arr) return 0;
-    arr[0] = size;  // Store length
+    arr[0] = size;
     for (std::int64_t i = 1; i <= size; ++i) {
-        arr[i] = 0;  // Initialize to 0
+        arr[i] = 0;
     }
     return reinterpret_cast<std::int64_t>(arr);
 }
@@ -473,7 +430,6 @@ extern "C" void opus_array_free(std::int64_t arr_ptr) {
     std::free(reinterpret_cast<void*>(arr_ptr));
 }
 
-// String building - append string to another
 extern "C" std::int64_t opus_string_append(std::int64_t handle1, std::int64_t handle2) {
     auto& table = get_string_table();
     if (handle1 < 0 || handle1 >= static_cast<std::int64_t>(table.size())) return -1;
@@ -484,7 +440,6 @@ extern "C" std::int64_t opus_string_append(std::int64_t handle1, std::int64_t ha
     return new_handle;
 }
 
-// Int to string
 extern "C" std::int64_t opus_int_to_string(std::int64_t value) {
     auto& table = get_string_table();
     std::int64_t handle = static_cast<std::int64_t>(table.size());
@@ -492,16 +447,12 @@ extern "C" std::int64_t opus_int_to_string(std::int64_t value) {
     return handle;
 }
 
-// Print char (ASCII code)
 extern "C" void opus_print_char(std::int64_t ch) {
     std::print("{}", static_cast<char>(ch));
 }
 
-// ============================================================================
-// SELF-HOSTING HELPERS
-// ============================================================================
+// self-hosting helpers
 
-// String comparison - returns 1 if equal, 0 if not
 extern "C" std::int64_t opus_string_equals(std::int64_t h1, std::int64_t h2) {
     auto& table = get_string_table();
     if (h1 < 0 || h1 >= static_cast<std::int64_t>(table.size())) return 0;
@@ -509,7 +460,6 @@ extern "C" std::int64_t opus_string_equals(std::int64_t h1, std::int64_t h2) {
     return table[h1] == table[h2] ? 1 : 0;
 }
 
-// Substring - returns new handle
 extern "C" std::int64_t opus_string_substring(std::int64_t handle, std::int64_t start, std::int64_t len) {
     auto& table = get_string_table();
     if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) return -1;
@@ -522,7 +472,6 @@ extern "C" std::int64_t opus_string_substring(std::int64_t handle, std::int64_t 
     return new_handle;
 }
 
-// Character classification
 extern "C" std::int64_t opus_is_alpha(std::int64_t ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' ? 1 : 0;
 }
@@ -539,7 +488,6 @@ extern "C" std::int64_t opus_is_whitespace(std::int64_t ch) {
     return (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') ? 1 : 0;
 }
 
-// String starts with
 extern "C" std::int64_t opus_string_starts_with(std::int64_t str_handle, std::int64_t prefix_handle) {
     auto& table = get_string_table();
     if (str_handle < 0 || str_handle >= static_cast<std::int64_t>(table.size())) return 0;
@@ -547,12 +495,10 @@ extern "C" std::int64_t opus_string_starts_with(std::int64_t str_handle, std::in
     return table[str_handle].starts_with(table[prefix_handle]) ? 1 : 0;
 }
 
-// Exit program
 extern "C" void opus_exit(std::int64_t code) {
     std::exit(static_cast<int>(code));
 }
 
-// Write bytes to file (for outputting compiled binary)
 extern "C" std::int64_t opus_write_bytes(std::int64_t filename_handle, std::int64_t arr_ptr, std::int64_t len) {
     auto& table = get_string_table();
     if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) return -1;
@@ -563,7 +509,6 @@ extern "C" std::int64_t opus_write_bytes(std::int64_t filename_handle, std::int6
     std::ofstream file(table[filename_handle], std::ios::binary);
     if (!file) return -1;
     
-    // Write bytes from array
     for (std::int64_t i = 0; i < len; ++i) {
         char byte = static_cast<char>(arr[i + 1]);  // +1 because arr[0] is length
         file.write(&byte, 1);
@@ -571,7 +516,7 @@ extern "C" std::int64_t opus_write_bytes(std::int64_t filename_handle, std::int6
     return len;
 }
 
-// Byte buffer operations (for x64 codegen)
+// byte buffer ops for x64 codegen
 extern "C" std::int64_t opus_buffer_new(std::int64_t capacity) {
     return opus_array_new(capacity);
 }
@@ -580,7 +525,7 @@ extern "C" void opus_buffer_push(std::int64_t arr_ptr, std::int64_t byte) {
     std::int64_t* arr = reinterpret_cast<std::int64_t*>(arr_ptr);
     if (!arr) return;
     std::int64_t len = arr[0];
-    // For simplicity, assume we have enough capacity
+    // no bounds check, caller must ensure capacity
     arr[len + 1] = byte;
     arr[0] = len + 1;
 }
@@ -589,7 +534,6 @@ extern "C" std::int64_t opus_buffer_len(std::int64_t arr_ptr) {
     return opus_array_len(arr_ptr);
 }
 
-// Parse int from string
 extern "C" std::int64_t opus_parse_int(std::int64_t handle) {
     auto& table = get_string_table();
     if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) return 0;
@@ -600,7 +544,7 @@ extern "C" std::int64_t opus_parse_int(std::int64_t handle) {
     }
 }
 
-// Runtime function table - pointers passed to JIT code
+// pointers to runtime functions, passed into jit code
 struct RuntimeFunctions {
     void* print_int = reinterpret_cast<void*>(&opus_print_int);
     void* print_str = reinterpret_cast<void*>(&opus_print_str);
@@ -621,7 +565,7 @@ struct RuntimeFunctions {
     void* string_append = reinterpret_cast<void*>(&opus_string_append);
     void* int_to_string = reinterpret_cast<void*>(&opus_int_to_string);
     void* print_char = reinterpret_cast<void*>(&opus_print_char);
-    // Self-hosting helpers
+    // self-hosting helpers
     void* string_equals = reinterpret_cast<void*>(&opus_string_equals);
     void* string_substring = reinterpret_cast<void*>(&opus_string_substring);
     void* is_alpha = reinterpret_cast<void*>(&opus_is_alpha);
@@ -635,7 +579,7 @@ struct RuntimeFunctions {
     void* buffer_push = reinterpret_cast<void*>(&opus_buffer_push);
     void* buffer_len = reinterpret_cast<void*>(&opus_buffer_len);
     void* parse_int = reinterpret_cast<void*>(&opus_parse_int);
-    // Memory operations (for game hacking / systems programming)
+    // memory ops
     void* mem_read_i8 = reinterpret_cast<void*>(&opus_mem_read_i8);
     void* mem_read_i16 = reinterpret_cast<void*>(&opus_mem_read_i16);
     void* mem_read_i32 = reinterpret_cast<void*>(&opus_mem_read_i32);
@@ -652,7 +596,7 @@ struct RuntimeFunctions {
     void* mem_write_ptr = reinterpret_cast<void*>(&opus_mem_write_ptr);
     void* mem_copy = reinterpret_cast<void*>(&opus_mem_copy);
     void* mem_set = reinterpret_cast<void*>(&opus_mem_set);
-    // FFI - Windows API calls
+    // ffi
     void* get_module = reinterpret_cast<void*>(&opus_get_module);
     void* load_library = reinterpret_cast<void*>(&opus_load_library);
     void* get_proc = reinterpret_cast<void*>(&opus_get_proc);
@@ -670,15 +614,13 @@ struct RuntimeFunctions {
     void* get_current_process_id = reinterpret_cast<void*>(&opus_get_current_process_id);
 };
 
-// Use Meyers singleton pattern for module-safe global
+// meyers singleton so this works across module boundaries
 inline RuntimeFunctions& get_runtime() {
     static RuntimeFunctions instance;
     return instance;
 }
 
-// ============================================================================
-// COMPILER
-// ============================================================================
+// compiler
 
 class Compiler {
 public:
@@ -689,29 +631,26 @@ public:
         std::vector<std::uint8_t> code;
         std::unordered_map<std::string, std::size_t> function_offsets;
         
-        // IAT fixups for DLL mode (patch_site, iat_offset)
+        // (patch_site, iat_offset)
         std::vector<std::pair<std::size_t, std::size_t>> iat_fixups;
         
-        // Line map for debug (instruction_offset, source_line)
+        // (instruction_offset, source_line)
         std::vector<std::pair<std::uint32_t, std::uint32_t>> line_map;
         
-        // true when code has a writable slot in .text (globals base ptr)
+        // set when code has a writable slot in .text for globals base ptr
         bool needs_writable_text = false;
     };
 
     Compiler() = default;
 
-    // Get runtime for codegen to embed function pointers
     static RuntimeFunctions& runtime() { return get_runtime(); }
 
     Result compile(std::string_view source, std::string_view filename = "<input>", bool dll_mode = false, const std::string& healing_mode = "off", bool exe_mode = false) {
         Result result;
 
-        // Use mixed mode by default - allows all syntaxes in one file
         Lexer lexer(source, filename);
         auto tokens = lexer.tokenize_all();
 
-        // Check for lexer errors
         for (const auto& tok : tokens) {
             if (tok.kind == TokenKind::Error) {
                 result.errors.push_back(std::format("{}:{}:{}: lexer error: {}", 
@@ -722,8 +661,8 @@ public:
             return result;
         }
 
-        // Parse in mixed mode (auto-detect per statement)
-        Parser parser(std::move(tokens), SyntaxMode::CStyle);  // CStyle as base, mixed detection per stmt
+        // cstyle as base, mixed detection happens per statement
+        Parser parser(std::move(tokens), SyntaxMode::CStyle);
         auto mod_result = parser.parse_module(filename);
         
         if (!mod_result) {
@@ -735,7 +674,6 @@ public:
 
         ast::Module& mod = *mod_result;
 
-        // Generate code with runtime
         CodeGenerator codegen;
         auto& rt = get_runtime();
         codegen.set_runtime_pointers(
@@ -744,18 +682,16 @@ public:
             rt.make_string, rt.write_file, rt.malloc_fn, rt.free_fn,
             rt.array_new, rt.array_get, rt.array_set, rt.array_len,
             rt.array_free, rt.string_append, rt.int_to_string, rt.print_char,
-            // Self-hosting helpers
+            // self-hosting helpers
             rt.string_equals, rt.string_substring, rt.is_alpha, rt.is_digit,
             rt.is_alnum, rt.is_whitespace, rt.string_starts_with, rt.exit_fn,
             rt.write_bytes, rt.buffer_new, rt.buffer_push, rt.buffer_len, rt.parse_int);
         
-        // Enable DLL mode if requested
         codegen.set_dll_mode(dll_mode || exe_mode);
         
-        // set source path for import resolution
         codegen.set_source_path(std::string(filename));
         
-        // compute layout and tell codegen where user code starts
+        // pe layout needs to know startup code size so codegen offsets are correct
         if (dll_mode || exe_mode) {
             bool debug_mode = healing_mode != "off";
             auto layout = pe::DllGenerator::compute_layout(debug_mode, exe_mode);
@@ -770,16 +706,13 @@ public:
             return result;
         }
 
-        // Extract generated code
         const auto& buf = codegen.emitter().buffer();
         result.code.assign(buf.data(), buf.data() + buf.size());
 
-        // Record function offsets
         for (const auto& [name, info] : codegen.functions()) {
             result.function_offsets[name] = info.code_offset;
         }
         
-        // Copy IAT fixups for DLL/exe mode
         if (dll_mode || exe_mode) {
             result.iat_fixups = codegen.get_iat_fixups();
             result.line_map = codegen.get_line_map();
@@ -790,7 +723,6 @@ public:
         return result;
     }
 
-    // Compile and execute, returning the result of main()
     std::expected<std::int64_t, std::string> compile_and_run(std::string_view source) {
         auto result = compile(source);
         
@@ -802,18 +734,15 @@ public:
             return std::unexpected(errors);
         }
 
-        // Find main
         auto it = result.function_offsets.find("main");
         if (it == result.function_offsets.end()) {
             return std::unexpected("no main function found");
         }
 
         #ifdef _WIN32
-        // Allocate executable memory
         x64::ExecutableMemory exec(result.code.size());
         std::memcpy(exec.ptr(), result.code.data(), result.code.size());
 
-        // Call main
         using MainFn = std::int64_t(*)();
         auto main_fn = reinterpret_cast<MainFn>(
             static_cast<std::uint8_t*>(exec.ptr()) + it->second
@@ -826,9 +755,7 @@ public:
     }
 };
 
-// ============================================================================
-// REPL
-// ============================================================================
+// repl
 
 class REPL {
 public:
@@ -858,7 +785,7 @@ public:
                 continue;
             }
 
-            // Wrap expression in a main function
+            // wrap in main() so expressions can be evaluated directly
             std::string wrapped = std::format("fn main() -> i64 {{ return {}; }}", line);
             
             auto result = compiler_.compile_and_run(wrapped);
