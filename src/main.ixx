@@ -13,35 +13,31 @@ import opus.project;
 import std;
 
 void print_usage() {
-    std::println("Opus Compiler v0.1.0");
-    std::println("");
-    std::println("Usage: opus [options] <file.op>");
-    std::println("       opus repl");
-    std::println("");
-    std::println("File Extensions:");
-    std::println("  .op          Source code");
-    std::println("  .opus        Compiled executable");
-    std::println("");
-    std::println("Options:");
-    std::println("  -o <file>     Output file name");
-    std::println("  -c            Compile only (don't link)");
-    std::println("  -S            Output assembly");
-    std::println("  -O<level>     Optimization level (0-3)");
-    std::println("  --run         Compile and run immediately");
-    std::println("  --dll         Output as Windows DLL (injectable)");
-    std::println("                (default: generates standalone .exe)");
-    std::println("  --help        Show this help");
-    std::println("");
-    std::println("Project Commands:");
-    std::println("  build         Build project using opus.project");
-    std::println("  build <path>  Build using specified project file");
-    std::println("");
-    std::println("Syntax Modes (all can be mixed in one file!):");
-    std::println("  C-style:   fn main() -> i32 {{ return 0; }}");
-    std::println("  English:   define function main returning i32");
-    std::println("               return 0");
-    std::println("             end function");
-    std::println("  AI:        fn:main>i32{{ret:0}}");
+    std::println(R"(Opus Compiler v0.1.0
+
+Usage: opus [options] <file.op>
+       opus repl
+
+File Extensions:
+  .op          Source code
+  .opus        Compiled executable
+
+Options:
+  --run         Compile and run immediately
+  --dll         Output as Windows DLL (injectable)
+                (default: generates standalone .exe)
+  --help        Show this help
+
+Project Commands:
+  build         Build project using opus.project
+  build <path>  Build using specified project file
+
+Syntax Modes (all can be mixed in one file!):
+  C-style:   fn main() -> i32 {{ return 0; }}
+  English:   define function main returning i32
+               return 0
+             end function
+  AI:        fn:main>i32{{ret:0}})");
 }
 
 void print_banner() {
@@ -52,13 +48,27 @@ void print_banner() {
 / /_/ / /_/ / /_/ (__  ) 
 \____/ .___/\__,_/____/  
     /_/                  
-    )");
-    std::println("A Simple Programming Language");
-    std::println("===================================");
-    std::println("");
+
+A Simple Programming Language
+===================================
+)");
 }
 
-int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
+// returns empty string on success, error message on failure
+[[nodiscard]] static std::string write_binary_file(const std::string& path, const std::uint8_t* data, std::size_t size) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        return std::format("cannot write to '{}' (file locked by another process?)", path);
+    }
+    out.write(reinterpret_cast<const char*>(data), size);
+    out.close();
+    if (!out) {
+        return std::format("write failed for '{}'", path);
+    }
+    return {};
+}
+
+[[nodiscard]] int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
     std::ifstream file(filename);
     if (!file) {
         std::print(std::cerr, "\033[1;91merror\033[0m: cannot open file: \033[1m{}\033[0m\n", filename);
@@ -82,7 +92,13 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
         }
     } else {
         // compile - exe mode when not --dll
-        auto result = compiler.compile(source, filename, as_dll, "off", !as_dll);
+        auto result = compiler.compile({
+            .source = source,
+            .filename = filename,
+            .dll_mode = as_dll,
+            .healing_mode = opus::ast::HealingMode::Off,
+            .exe_mode = !as_dll,
+        });
         if (result.success) {
             std::string outname = filename;
             if (outname.ends_with(".op")) {
@@ -93,28 +109,28 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
                 outname += ".dll";
                 
                 std::size_t main_offset = 0;
-                if (result.function_offsets.contains("main")) {
-                    main_offset = result.function_offsets["main"];
+                if (auto it = result.function_offsets.find("main"); it != result.function_offsets.end()) {
+                    main_offset = it->second;
                 }
                 
                 opus::pe::DllGenerator dll_gen;
-                auto dll_bytes = dll_gen.generate(result.code, main_offset, true, result.iat_fixups, "", {}, "off", false, result.needs_writable_text);
+                auto dll_bytes = dll_gen.generate({
+                    .code = result.code,
+                    .main_offset = main_offset,
+                    .alloc_console = true,
+                    .iat_fixups = result.iat_fixups,
+                    .healing_mode = opus::ast::HealingMode::Off,
+                    .writable_text = result.needs_writable_text,
+                });
                 
                 auto pe_errors = opus::pe::DllGenerator::validate_pe(dll_bytes);
                 for (const auto& err : pe_errors) {
                     std::println("\033[1;93mPE warning:\033[0m {}", err);
                 }
                 
-                std::ofstream out(outname, std::ios::binary);
-                if (!out) {
-                    std::print(std::cerr, "\033[1;91merror\033[0m: cannot write to '{}' (file locked by another process?)\n", outname);
-                    return 1;
-                }
-                out.write(reinterpret_cast<const char*>(dll_bytes.data()), 
-                          dll_bytes.size());
-                out.close();
-                if (!out) {
-                    std::print(std::cerr, "\033[1;91merror\033[0m: write failed for '{}'\n", outname);
+                auto write_err = write_binary_file(outname, dll_bytes.data(), dll_bytes.size());
+                if (!write_err.empty()) {
+                    std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", write_err);
                     return 1;
                 }
                 
@@ -126,28 +142,29 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
                 outname += ".exe";
                 
                 std::size_t main_offset = 0;
-                if (result.function_offsets.contains("main")) {
-                    main_offset = result.function_offsets["main"];
+                if (auto it = result.function_offsets.find("main"); it != result.function_offsets.end()) {
+                    main_offset = it->second;
                 }
                 
                 opus::pe::DllGenerator exe_gen;
-                auto exe_bytes = exe_gen.generate(result.code, main_offset, true, result.iat_fixups, "", {}, "off", true, result.needs_writable_text);
+                auto exe_bytes = exe_gen.generate({
+                    .code = result.code,
+                    .main_offset = main_offset,
+                    .alloc_console = true,
+                    .iat_fixups = result.iat_fixups,
+                    .healing_mode = opus::ast::HealingMode::Off,
+                    .exe_mode = true,
+                    .writable_text = result.needs_writable_text,
+                });
                 
                 auto pe_errors = opus::pe::DllGenerator::validate_pe(exe_bytes);
                 for (const auto& err : pe_errors) {
                     std::println("\033[1;93mPE warning:\033[0m {}", err);
                 }
                 
-                std::ofstream out(outname, std::ios::binary);
-                if (!out) {
-                    std::print(std::cerr, "\033[1;91merror\033[0m: cannot write to '{}' (file locked by another process?)\n", outname);
-                    return 1;
-                }
-                out.write(reinterpret_cast<const char*>(exe_bytes.data()), 
-                          exe_bytes.size());
-                out.close();
-                if (!out) {
-                    std::print(std::cerr, "\033[1;91merror\033[0m: write failed for '{}'\n", outname);
+                auto write_err = write_binary_file(outname, exe_bytes.data(), exe_bytes.size());
+                if (!write_err.empty()) {
+                    std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", write_err);
                     return 1;
                 }
                 
@@ -197,7 +214,7 @@ int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
     }
 }
 
-int build_project(std::optional<std::string> project_path_arg) {
+[[nodiscard]] int build_project(std::optional<std::string> project_path_arg) {
     std::filesystem::path project_file;
     
     if (project_path_arg) {
@@ -246,7 +263,13 @@ int build_project(std::optional<std::string> project_path_arg) {
     opus::Compiler compiler;
     bool as_dll = (config.mode == "dll");
     bool as_exe = (config.mode == "exe");
-    auto result = compiler.compile(source, project_file.string(), as_dll, config.healing, as_exe);
+    auto result = compiler.compile({
+        .source = source,
+        .filename = project_file.string(),
+        .dll_mode = as_dll,
+        .healing_mode = config.healing.value_or(opus::ast::HealingMode::Off),
+        .exe_mode = as_exe,
+    });
     
     if (result.success) {
         std::string outname = config.output;
@@ -261,30 +284,33 @@ int build_project(std::optional<std::string> project_path_arg) {
         
         if (as_dll || as_exe) {
             std::size_t main_offset = 0;
-            if (result.function_offsets.contains("main")) {
-                main_offset = result.function_offsets["main"];
+            if (auto it = result.function_offsets.find("main"); it != result.function_offsets.end()) {
+                main_offset = it->second;
             }
             
             std::string debug_source = config.debug ? source : "";
             
             opus::pe::DllGenerator pe_gen;
-            auto pe_bytes = pe_gen.generate(result.code, main_offset, true, result.iat_fixups, debug_source, result.line_map, config.healing, as_exe, result.needs_writable_text);
+            auto pe_bytes = pe_gen.generate({
+                .code = result.code,
+                .main_offset = main_offset,
+                .alloc_console = true,
+                .iat_fixups = result.iat_fixups,
+                .debug_source = debug_source,
+                .line_map = result.line_map,
+                .healing_mode = config.healing.value_or(opus::ast::HealingMode::Off),
+                .exe_mode = as_exe,
+                .writable_text = result.needs_writable_text,
+            });
             
             auto pe_errors = opus::pe::DllGenerator::validate_pe(pe_bytes);
             for (const auto& err : pe_errors) {
                 std::println("\033[1;93mPE warning:\033[0m {}", err);
             }
             
-            std::ofstream out(output_path, std::ios::binary);
-            if (!out) {
-                std::print(std::cerr, "\033[1;91merror\033[0m: cannot write to '{}' (file locked by another process?)\n", output_path.string());
-                return 1;
-            }
-            out.write(reinterpret_cast<const char*>(pe_bytes.data()), 
-                      pe_bytes.size());
-            out.close();
-            if (!out) {
-                std::print(std::cerr, "\033[1;91merror\033[0m: write failed for '{}'\n", output_path.string());
+            auto write_err = write_binary_file(output_path.string(), pe_bytes.data(), pe_bytes.size());
+            if (!write_err.empty()) {
+                std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", write_err);
                 return 1;
             }
             
@@ -299,16 +325,9 @@ int build_project(std::optional<std::string> project_path_arg) {
                 std::println("\033[1;93mDebug mode:\033[0m Source in .src, line map in .srcmap ({} entries)", result.line_map.size());
             }
         } else {
-            std::ofstream out(output_path, std::ios::binary);
-            if (!out) {
-                std::print(std::cerr, "\033[1;91merror\033[0m: cannot write to '{}' (file locked by another process?)\n", output_path.string());
-                return 1;
-            }
-            out.write(reinterpret_cast<const char*>(result.code.data()), 
-                      result.code.size());
-            out.close();
-            if (!out) {
-                std::print(std::cerr, "\033[1;91merror\033[0m: write failed for '{}'\n", output_path.string());
+            auto write_err = write_binary_file(output_path.string(), result.code.data(), result.code.size());
+            if (!write_err.empty()) {
+                std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", write_err);
                 return 1;
             }
             
@@ -333,31 +352,31 @@ int build_project(std::optional<std::string> project_path_arg) {
 
 export int main(int argc, char* argv[]) {
     // enable ansi escape codes on windows
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD dwMode = 0;
-    GetConsoleMode(hOut, &dwMode);
-    SetConsoleMode(hOut, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD console_mode = 0;
+    GetConsoleMode(stdout_handle, &console_mode);
+    SetConsoleMode(stdout_handle, console_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 
     if (argc < 2) {
         print_usage();
         return 0;
     }
 
-    std::string arg1 = argv[1];
+    std::string command = argv[1];
 
-    if (arg1 == "--help" || arg1 == "-h") {
+    if (command == "--help" || command == "-h") {
         print_usage();
         return 0;
     }
 
-    if (arg1 == "repl") {
+    if (command == "repl") {
         print_banner();
-        opus::REPL repl;
+        opus::Repl repl;
         repl.run();
         return 0;
     }
 
-    if (arg1 == "build") {
+    if (command == "build") {
         std::optional<std::string> project_path;
         if (argc > 2) {
             project_path = argv[2];

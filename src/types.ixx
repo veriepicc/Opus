@@ -120,8 +120,17 @@ struct Type {
 
     bool is_integer() const {
         if (auto* p = std::get_if<PrimitiveType>(&kind)) {
-            using enum PrimitiveType;
-            return *p >= I8 && *p <= U128;
+            switch (*p) {
+                case PrimitiveType::I8:  case PrimitiveType::I16:
+                case PrimitiveType::I32: case PrimitiveType::I64:
+                case PrimitiveType::I128:
+                case PrimitiveType::U8:  case PrimitiveType::U16:
+                case PrimitiveType::U32: case PrimitiveType::U64:
+                case PrimitiveType::U128:
+                    return true;
+                default:
+                    return false;
+            }
         }
         return false;
     }
@@ -135,8 +144,14 @@ struct Type {
 
     bool is_signed() const {
         if (auto* p = std::get_if<PrimitiveType>(&kind)) {
-            using enum PrimitiveType;
-            return *p >= I8 && *p <= I128;
+            switch (*p) {
+                case PrimitiveType::I8:  case PrimitiveType::I16:
+                case PrimitiveType::I32: case PrimitiveType::I64:
+                case PrimitiveType::I128:
+                    return true;
+                default:
+                    return false;
+            }
         }
         return false;
     }
@@ -157,7 +172,11 @@ struct Type {
         if (std::holds_alternative<FunctionType>(kind)) {
             return 8; // function pointer
         }
-        // Struct size computed separately
+        // struct size must be computed by the caller who knows field layout
+        if (std::holds_alternative<StructType>(kind))
+            throw std::logic_error("size_bytes called on struct - use field layout instead");
+        if (std::holds_alternative<std::string>(kind))
+            throw std::logic_error("size_bytes called on named type - resolve it first");
         return 0;
     }
 
@@ -174,36 +193,39 @@ struct Type {
 
     Type clone() const {
         Type result;
-        if (auto* p = std::get_if<PrimitiveType>(&kind)) {
-            result.kind = *p;
-        } else if (auto* arr = std::get_if<ArrayType>(&kind)) {
-            result.kind = ArrayType{
-                .element = std::make_unique<Type>(arr->element->clone()),
-                .size = arr->size
-            };
-        } else if (auto* ptr = std::get_if<PointerType>(&kind)) {
-            result.kind = PointerType{
-                .pointee = std::make_unique<Type>(ptr->pointee->clone()),
-                .is_mut = ptr->is_mut
-            };
-        } else if (auto* fn = std::get_if<FunctionType>(&kind)) {
-            FunctionType ft;
-            for (const auto& param : fn->params) {
-                ft.params.push_back(std::make_unique<Type>(param->clone()));
+        result.kind = std::visit([](const auto& v) -> decltype(kind) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, PrimitiveType>) {
+                return v;
+            } else if constexpr (std::is_same_v<T, ArrayType>) {
+                return ArrayType{
+                    .element = std::make_unique<Type>(v.element->clone()),
+                    .size = v.size
+                };
+            } else if constexpr (std::is_same_v<T, FunctionType>) {
+                FunctionType ft;
+                for (const auto& param : v.params) {
+                    ft.params.push_back(std::make_unique<Type>(param->clone()));
+                }
+                ft.ret = std::make_unique<Type>(v.ret->clone());
+                ft.is_variadic = v.is_variadic;
+                return ft;
+            } else if constexpr (std::is_same_v<T, StructType>) {
+                StructType st;
+                st.name = v.name;
+                for (const auto& [name, type] : v.fields) {
+                    st.fields.emplace_back(name, std::make_unique<Type>(type->clone()));
+                }
+                return st;
+            } else if constexpr (std::is_same_v<T, PointerType>) {
+                return PointerType{
+                    .pointee = std::make_unique<Type>(v.pointee->clone()),
+                    .is_mut = v.is_mut
+                };
+            } else if constexpr (std::is_same_v<T, std::string>) {
+                return v;
             }
-            ft.ret = std::make_unique<Type>(fn->ret->clone());
-            ft.is_variadic = fn->is_variadic;
-            result.kind = std::move(ft);
-        } else if (auto* s = std::get_if<StructType>(&kind)) {
-            StructType st;
-            st.name = s->name;
-            for (const auto& [name, type] : s->fields) {
-                st.fields.emplace_back(name, std::make_unique<Type>(type->clone()));
-            }
-            result.kind = std::move(st);
-        } else if (auto* name = std::get_if<std::string>(&kind)) {
-            result.kind = *name;
-        }
+        }, kind);
         return result;
     }
 };
@@ -216,7 +238,7 @@ struct SourceLoc {
     std::uint32_t line = 1;
     std::uint32_t column = 1;
     std::uint32_t offset = 0;
-    std::string_view file = "<unknown>";
+    std::string file = "<unknown>";
 
     std::string to_string() const {
         return std::format("{}:{}:{}", file, line, column);
@@ -278,7 +300,7 @@ enum class MemoryMode : std::uint8_t {
     Manual,     // Full manual control (C mode)
 };
 
-constexpr std::string_view memory_mode_name(MemoryMode m) {
+constexpr std::string_view memory_name(MemoryMode m) {
     switch (m) {
         case MemoryMode::Mixed:  return "mixed";
         case MemoryMode::GC:     return "gc";
@@ -309,8 +331,7 @@ struct CompilerOptions {
 // ============================================================================
 // C++/JS-FRIENDLY TYPE ALIASES
 // ============================================================================
-constexpr PrimitiveType friendly_type_to_primitive(std::string_view name) {
-    // C++/JS friendly names
+constexpr std::optional<PrimitiveType> friendly_type_to_primitive(std::string_view name) {
     if (name == "int" || name == "Int")       return PrimitiveType::I32;
     if (name == "long" || name == "Long")     return PrimitiveType::I64;
     if (name == "short" || name == "Short")   return PrimitiveType::I16;
@@ -326,7 +347,6 @@ constexpr PrimitiveType friendly_type_to_primitive(std::string_view name) {
     if (name == "string" || name == "String") return PrimitiveType::Str;
     if (name == "char" || name == "Char")     return PrimitiveType::Char;
     if (name == "ptr")                        return PrimitiveType::Ptr;
-    // Legacy Rust-style names (backward compat)
     if (name == "i8")   return PrimitiveType::I8;
     if (name == "i16")  return PrimitiveType::I16;
     if (name == "i32")  return PrimitiveType::I32;
@@ -340,7 +360,7 @@ constexpr PrimitiveType friendly_type_to_primitive(std::string_view name) {
     if (name == "f32")  return PrimitiveType::F32;
     if (name == "f64")  return PrimitiveType::F64;
     if (name == "str")  return PrimitiveType::Str;
-    return PrimitiveType::Void;  // fallback
+    return std::nullopt;
 }
 
 } // namespace opus

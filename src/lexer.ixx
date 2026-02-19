@@ -82,7 +82,7 @@ enum class TokenKind : std::uint8_t {
     Shl, Shr,
     Eq, Ne, Lt, Gt, Le, Ge,
     AndAnd, OrOr, Bang,
-    Assign, PlusEq, MinusEq, StarEq, SlashEq,
+    Assign, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
     PlusPlus, MinusMinus,   // ++ and --
     
     // Delimiters
@@ -137,7 +137,7 @@ public:
         , mode_(SyntaxMode::CStyle)  // Default, but we detect per-token
         , mixed_mode_(true)
         , pos_(0)
-        , loc_{.line = 1, .column = 1, .offset = 0, .file = filename}
+        , loc_{.line = 1, .column = 1, .offset = 0, .file = std::string(filename)}
     {}
 
     Lexer(std::string_view source, std::string_view filename, SyntaxMode mode)
@@ -146,17 +146,16 @@ public:
         , mode_(mode)
         , mixed_mode_(false)
         , pos_(0)
-        , loc_{.line = 1, .column = 1, .offset = 0, .file = filename}
+        , loc_{.line = 1, .column = 1, .offset = 0, .file = std::string(filename)}
     {}
 
     Token next() {
         skip_whitespace();
         
         if (at_end()) {
-            return make_token(TokenKind::Eof, "");
+            return make_token(TokenKind::Eof, "", loc_);
         }
 
-        SourceLoc start_loc = loc_;
         char c = peek();
 
         if (std::isdigit(c) || (c == '.' && std::isdigit(peek(1)))) {
@@ -180,6 +179,7 @@ public:
 
     std::vector<Token> tokenize_all() {
         std::vector<Token> tokens;
+        tokens.reserve(source_.size() / 4);
         while (true) {
             Token tok = next();
             tokens.push_back(tok);
@@ -225,8 +225,8 @@ private:
     }
 
     char advance() {
-        char c = source_[pos_++];
         loc_.offset = static_cast<std::uint32_t>(pos_);
+        char c = source_[pos_++];
         if (c == '\n') {
             loc_.line++;
             loc_.column = 1;
@@ -240,10 +240,6 @@ private:
         while (!at_end()) {
             char c = peek();
             
-            // TODO: english mode should treat newlines as significant
-            if (c == '\n' && mode_ == SyntaxMode::English) {
-            }
-
             if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
                 advance();
             } else if (c == '/' && peek(1) == '/') {
@@ -260,11 +256,11 @@ private:
         }
     }
 
-    Token make_token(TokenKind kind, std::string_view text) {
+    Token make_token(TokenKind kind, std::string_view text, SourceLoc start) {
         Token tok;
         tok.kind = kind;
         tok.text = text;
-        tok.loc = loc_;
+        tok.loc = start;
         tok.value = std::monostate{};
         return tok;
     }
@@ -311,21 +307,45 @@ private:
         while (std::isalnum(peek())) advance();
 
         std::string_view text = source_.substr(start_pos, pos_ - start_pos);
-        Token tok = make_token(is_float ? TokenKind::FloatLit : TokenKind::IntLit, text);
-        tok.loc = start;
+        Token tok = make_token(is_float ? TokenKind::FloatLit : TokenKind::IntLit, text, start);
 
-        try {
-            if (is_float) {
-                tok.value = std::stod(std::string(text));
-            } else if (is_hex) {
-                tok.value = static_cast<std::int64_t>(std::stoull(std::string(text), nullptr, 16));
-            } else if (is_bin) {
-                tok.value = static_cast<std::int64_t>(std::stoull(std::string(text.substr(2)), nullptr, 2));
+        // parse numeric value with from_chars (no locale, no alloc)
+        if (is_float) {
+            double dval = 0.0;
+            auto [p, ec] = std::from_chars(text.data(), text.data() + text.size(), dval);
+            if (ec == std::errc{}) {
+                tok.value = dval;
             } else {
-                tok.value = std::stoll(std::string(text));
+                tok.kind = TokenKind::Error;
             }
-        } catch (...) {
-            tok.kind = TokenKind::Error;
+        } else if (is_hex) {
+            // skip the 0x prefix for from_chars
+            std::string_view digits = text.substr(2);
+            std::uint64_t uval = 0;
+            auto [p, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), uval, 16);
+            if (ec == std::errc{}) {
+                tok.value = static_cast<std::int64_t>(uval);
+            } else {
+                tok.kind = TokenKind::Error;
+            }
+        } else if (is_bin) {
+            // skip the 0b prefix for from_chars
+            std::string_view digits = text.substr(2);
+            std::uint64_t uval = 0;
+            auto [p, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), uval, 2);
+            if (ec == std::errc{}) {
+                tok.value = static_cast<std::int64_t>(uval);
+            } else {
+                tok.kind = TokenKind::Error;
+            }
+        } else {
+            std::int64_t ival = 0;
+            auto [p, ec] = std::from_chars(text.data(), text.data() + text.size(), ival);
+            if (ec == std::errc{}) {
+                tok.value = ival;
+            } else {
+                tok.kind = TokenKind::Error;
+            }
         }
 
         return tok;
@@ -356,12 +376,11 @@ private:
         }
 
         if (at_end()) {
-            return make_token(TokenKind::Error, "unterminated string");
+            return make_token(TokenKind::Error, "unterminated string", start);
         }
         advance();
 
-        Token tok = make_token(TokenKind::StringLit, source_.substr(start_pos, pos_ - start_pos));
-        tok.loc = start;
+        Token tok = make_token(TokenKind::StringLit, source_.substr(start_pos, pos_ - start_pos), start);
         tok.value = std::move(value);
         return tok;
     }
@@ -389,19 +408,16 @@ private:
         }
 
         if (peek() != '\'') {
-            return make_token(TokenKind::Error, "unterminated char");
+            return make_token(TokenKind::Error, "unterminated char", start);
         }
         advance();
 
-        Token tok = make_token(TokenKind::CharLit, source_.substr(start_pos, pos_ - start_pos));
-        tok.loc = start;
+        Token tok = make_token(TokenKind::CharLit, source_.substr(start_pos, pos_ - start_pos), start);
         tok.value = static_cast<std::int64_t>(value);
         return tok;
     }
 
-    Token lex_hex_string() {
-        SourceLoc start = loc_;
-        std::size_t start_pos = pos_;
+    Token lex_hex_string(SourceLoc start, std::size_t start_pos) {
         advance();
         
         std::vector<std::uint8_t> bytes;
@@ -427,15 +443,15 @@ private:
                     std::uint8_t byte = static_cast<std::uint8_t>(std::stoul(hex, nullptr, 16));
                     bytes.push_back(byte);
                 } catch (...) {
-                    return make_token(TokenKind::Error, "invalid hex in hex string");
+                    return make_token(TokenKind::Error, "invalid hex in hex string", start);
                 }
             } else {
-                return make_token(TokenKind::Error, "invalid character in hex string");
+                return make_token(TokenKind::Error, "invalid character in hex string", start);
             }
         }
         
         if (at_end()) {
-            return make_token(TokenKind::Error, "unterminated hex string");
+            return make_token(TokenKind::Error, "unterminated hex string", start);
         }
         advance();
         
@@ -445,8 +461,7 @@ private:
             hex_data += static_cast<char>(b);
         }
         
-        Token tok = make_token(TokenKind::HexStringLit, source_.substr(start_pos, pos_ - start_pos));
-        tok.loc = start;
+        Token tok = make_token(TokenKind::HexStringLit, source_.substr(start_pos, pos_ - start_pos), start);
         tok.value = std::move(hex_data);
         return tok;
     }
@@ -463,13 +478,12 @@ private:
         
         // hex"55 57 56..." syntax
         if (text == "hex" && peek() == '\"') {
-            return lex_hex_string();
+            return lex_hex_string(start, start_pos);
         }
         
         TokenKind kind = keyword_or_ident(text);
         
-        Token tok = make_token(kind, text);
-        tok.loc = start;
+        Token tok = make_token(kind, text, start);
         return tok;
     }
 
@@ -479,7 +493,7 @@ private:
             // Function/class keywords - ALL ALIASES WORK
             {"function", TokenKind::Function},
             {"func", TokenKind::Function},      // Alias: Go style
-            {"fn", TokenKind::Function},        // Alias: Rust style
+            {"fn", TokenKind::Fn},          // Alias: Rust style
             {"class", TokenKind::Class},
             {"struct", TokenKind::Struct},
             {"structure", TokenKind::Struct},   // Alias: verbose
@@ -629,21 +643,7 @@ private:
         char c = advance();
 
         auto single = [&](TokenKind k) {
-            Token tok = make_token(k, source_.substr(pos_ - 1, 1));
-            tok.loc = start;
-            return tok;
-        };
-
-        auto double_or_single = [&](char next, TokenKind double_kind, TokenKind single_kind) {
-            if (peek() == next) {
-                advance();
-                Token tok = make_token(double_kind, source_.substr(pos_ - 2, 2));
-                tok.loc = start;
-                return tok;
-            }
-            Token tok = make_token(single_kind, source_.substr(pos_ - 1, 1));
-            tok.loc = start;
-            return tok;
+            return make_token(k, source_.substr(pos_ - 1, 1), start);
         };
 
         switch (c) {
@@ -664,15 +664,11 @@ private:
             case '+': {
                 if (peek() == '=') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::PlusEq, "+=");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::PlusEq, "+=", start);
                 }
                 if (peek() == '+') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::PlusPlus, "++");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::PlusPlus, "++", start);
                 }
                 return single(TokenKind::Plus);
             }
@@ -680,21 +676,15 @@ private:
             case '-': {
                 if (peek() == '>') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::Arrow, "->");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::Arrow, "->", start);
                 }
                 if (peek() == '=') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::MinusEq, "-=");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::MinusEq, "-=", start);
                 }
                 if (peek() == '-') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::MinusMinus, "--");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::MinusMinus, "--", start);
                 }
                 return single(TokenKind::Minus);
             }
@@ -702,9 +692,7 @@ private:
             case '*': {
                 if (peek() == '=') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::StarEq, "*=");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::StarEq, "*=", start);
                 }
                 return single(TokenKind::Star);
             }
@@ -712,21 +700,23 @@ private:
             case '/': {
                 if (peek() == '=') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::SlashEq, "/=");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::SlashEq, "/=", start);
                 }
                 return single(TokenKind::Slash);
             }
 
-            case '%': return single(TokenKind::Percent);
+            case '%': {
+                if (peek() == '=') {
+                    advance();
+                    return make_token(TokenKind::PercentEq, "%=", start);
+                }
+                return single(TokenKind::Percent);
+            }
 
             case '&': {
                 if (peek() == '&') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::AndAnd, "&&");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::AndAnd, "&&", start);
                 }
                 return single(TokenKind::Ampersand);
             }
@@ -734,9 +724,7 @@ private:
             case '|': {
                 if (peek() == '|') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::OrOr, "||");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::OrOr, "||", start);
                 }
                 return single(TokenKind::Pipe);
             }
@@ -744,9 +732,7 @@ private:
             case '!': {
                 if (peek() == '=') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::Ne, "!=");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::Ne, "!=", start);
                 }
                 return single(TokenKind::Bang);
             }
@@ -754,15 +740,11 @@ private:
             case '=': {
                 if (peek() == '=') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::Eq, "==");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::Eq, "==", start);
                 }
                 if (peek() == '>') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::FatArrow, "=>");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::FatArrow, "=>", start);
                 }
                 return single(TokenKind::Assign);
             }
@@ -770,15 +752,11 @@ private:
             case '<': {
                 if (peek() == '<') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::Shl, "<<");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::Shl, "<<", start);
                 }
                 if (peek() == '=') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::Le, "<=");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::Le, "<=", start);
                 }
                 return single(TokenKind::Lt);
             }
@@ -786,15 +764,11 @@ private:
             case '>': {
                 if (peek() == '>') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::Shr, ">>");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::Shr, ">>", start);
                 }
                 if (peek() == '=') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::Ge, ">=");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::Ge, ">=", start);
                 }
                 return single(TokenKind::Gt);
             }
@@ -802,17 +776,13 @@ private:
             case ':': {
                 if (peek() == ':') { 
                     advance(); 
-                    Token tok = make_token(TokenKind::ColonColon, "::");
-                    tok.loc = start;
-                    return tok;
+                    return make_token(TokenKind::ColonColon, "::", start);
                 }
                 return single(TokenKind::Colon);
             }
 
             default: {
-                Token tok = make_token(TokenKind::Error, source_.substr(pos_ - 1, 1));
-                tok.loc = start;
-                return tok;
+                return make_token(TokenKind::Error, source_.substr(pos_ - 1, 1), start);
             }
         }
     }
