@@ -9,19 +9,19 @@ export namespace opus {
 
 // ansi colors
 namespace color {
-    constexpr const char* reset = "\033[0m";
-    constexpr const char* bold = "\033[1m";
-    constexpr const char* red = "\033[31m";
-    constexpr const char* green = "\033[32m";
-    constexpr const char* yellow = "\033[33m";
-    constexpr const char* blue = "\033[34m";
-    constexpr const char* magenta = "\033[35m";
-    constexpr const char* cyan = "\033[36m";
-    constexpr const char* white = "\033[37m";
-    constexpr const char* bright_red = "\033[91m";
-    constexpr const char* bright_green = "\033[92m";
-    constexpr const char* bright_yellow = "\033[93m";
-    constexpr const char* bright_blue = "\033[94m";
+    constexpr std::string_view reset = "\033[0m";
+    constexpr std::string_view bold = "\033[1m";
+    constexpr std::string_view red = "\033[31m";
+    constexpr std::string_view green = "\033[32m";
+    constexpr std::string_view yellow = "\033[33m";
+    constexpr std::string_view blue = "\033[34m";
+    constexpr std::string_view magenta = "\033[35m";
+    constexpr std::string_view cyan = "\033[36m";
+    constexpr std::string_view white = "\033[37m";
+    constexpr std::string_view bright_red = "\033[91m";
+    constexpr std::string_view bright_green = "\033[92m";
+    constexpr std::string_view bright_yellow = "\033[93m";
+    constexpr std::string_view bright_blue = "\033[94m";
 }
 
 enum class Severity {
@@ -36,8 +36,8 @@ struct RichError {
     std::string message;
     SourceLoc loc;
     std::string source_line;
-    std::size_t highlight_start;
-    std::size_t highlight_len;
+    std::size_t highlight_start = 0;
+    std::size_t highlight_len = 0;
     std::string suggestion;
     std::vector<std::string> notes;
 };
@@ -45,8 +45,8 @@ struct RichError {
 std::string format_error(const RichError& err) {
     std::string out;
     
-    const char* sev_color = color::bright_red;
-    const char* sev_text = "error";
+    std::string_view sev_color = color::bright_red;
+    std::string_view sev_text = "error";
     switch (err.severity) {
         case Severity::Warning: sev_color = color::bright_yellow; sev_text = "warning"; break;
         case Severity::Note: sev_color = color::bright_blue; sev_text = "note"; break;
@@ -61,10 +61,10 @@ std::string format_error(const RichError& err) {
         sev_color, sev_text, color::reset,
         color::bold, err.message, color::reset);
     
+    std::string line_num = std::format("{}", err.loc.line);
+    std::string padding(line_num.size(), ' ');
+    
     if (!err.source_line.empty()) {
-        std::string line_num = std::format("{}", err.loc.line);
-        std::string padding(line_num.size(), ' ');
-        
         out += std::format(" {} {}|{}\n", padding, color::blue, color::reset);
         out += std::format(" {}{}{} |{} {}\n", 
             color::blue, line_num, color::reset, color::reset, err.source_line);
@@ -78,14 +78,12 @@ std::string format_error(const RichError& err) {
     
     if (!err.suggestion.empty()) {
         out += std::format(" {} {}= {}help:{} {}\n",
-            std::string(std::format("{}", err.loc.line).size(), ' '),
-            color::bright_green, color::bold, color::reset, err.suggestion);
+            padding, color::bright_green, color::bold, color::reset, err.suggestion);
     }
     
     for (const auto& note : err.notes) {
         out += std::format(" {} {}= {}note:{} {}\n",
-            std::string(std::format("{}", err.loc.line).size(), ' '),
-            color::bright_blue, color::bold, color::reset, note);
+            padding, color::bright_blue, color::bold, color::reset, note);
     }
     
     return out;
@@ -108,6 +106,10 @@ std::string get_source_line(std::string_view source, std::size_t line_num) {
             ++current_line;
         }
     }
+    // last line with no trailing newline
+    if (current_line == line_num) {
+        return std::string(source.substr(start));
+    }
     return "";
 }
 
@@ -126,24 +128,28 @@ std::string format_simple_error(const std::string& message, const SourceLoc& loc
     return format_error(err);
 }
 
-// used for "did you mean X?" suggestions
+// two-row edit distance, O(n) memory instead of O(m*n)
 std::size_t edit_distance(std::string_view a, std::string_view b) {
-    std::vector<std::vector<std::size_t>> dp(a.size() + 1, std::vector<std::size_t>(b.size() + 1));
-    
-    for (std::size_t i = 0; i <= a.size(); ++i) dp[i][0] = i;
-    for (std::size_t j = 0; j <= b.size(); ++j) dp[0][j] = j;
-    
-    for (std::size_t i = 1; i <= a.size(); ++i) {
-        for (std::size_t j = 1; j <= b.size(); ++j) {
+    const auto m = a.size();
+    const auto n = b.size();
+    std::vector<std::size_t> prev(n + 1);
+    std::vector<std::size_t> curr(n + 1);
+
+    for (std::size_t j = 0; j <= n; ++j) prev[j] = j;
+
+    for (std::size_t i = 1; i <= m; ++i) {
+        curr[0] = i;
+        for (std::size_t j = 1; j <= n; ++j) {
             std::size_t cost = (a[i-1] == b[j-1]) ? 0 : 1;
-            dp[i][j] = std::min({
-                dp[i-1][j] + 1,
-                dp[i][j-1] + 1,
-                dp[i-1][j-1] + cost
+            curr[j] = std::min({
+                prev[j] + 1,
+                curr[j-1] + 1,
+                prev[j-1] + cost
             });
         }
+        std::swap(prev, curr);
     }
-    return dp[a.size()][b.size()];
+    return prev[n];
 }
 
 std::optional<std::string> find_closest_match(std::string_view input, 
@@ -165,5 +171,30 @@ std::optional<std::string> find_closest_match(std::string_view input,
     }
     return std::nullopt;
 }
+
+// collects errors and warnings for batch reporting
+class DiagnosticSink {
+    std::vector<RichError> errors_;
+    std::vector<RichError> warnings_;
+public:
+    void emit(RichError err) {
+        if (err.severity == Severity::Warning)
+            warnings_.push_back(std::move(err));
+        else
+            errors_.push_back(std::move(err));
+    }
+
+    bool has_errors() const { return !errors_.empty(); }
+    std::size_t error_count() const { return errors_.size(); }
+
+    std::string format_all() const {
+        std::string out;
+        for (const auto& w : warnings_)
+            out += format_error(w);
+        for (const auto& e : errors_)
+            out += format_error(e);
+        return out;
+    }
+};
 
 } // namespace opus

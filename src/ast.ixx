@@ -44,7 +44,7 @@ struct BinaryExpr {
         Eq, Ne, Lt, Gt, Le, Ge,
         And, Or,
         Assign,
-        AddAssign, SubAssign, MulAssign, DivAssign,
+        AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
     };
     Op op;
     ExprPtr lhs;
@@ -100,7 +100,7 @@ struct StructExpr {
 struct IfExpr {
     ExprPtr condition;
     std::vector<StmtPtr> then_block;
-    std::optional<std::vector<StmtPtr>> else_block;
+    std::vector<StmtPtr> else_block;
 };
 
 struct BlockExpr {
@@ -147,16 +147,26 @@ struct Expr {
     > kind;
     
     SourceSpan span;
-    std::optional<Type> resolved_type;  // Filled during type checking
+    std::optional<Type> resolved_type;
 
     template<typename T>
-    bool is() const { return std::holds_alternative<T>(kind); }
+    [[nodiscard]] bool is() const { return std::holds_alternative<T>(kind); }
 
     template<typename T>
-    T& as() { return std::get<T>(kind); }
+    [[nodiscard]] T& as() {
+        if (auto* p = std::get_if<T>(&kind)) return *p;
+        throw std::logic_error(std::format(
+            "expected ExprKind to hold {} but got index {} at line {}",
+            typeid(T).name(), kind.index(), span.start.line));
+    }
 
     template<typename T>
-    const T& as() const { return std::get<T>(kind); }
+    [[nodiscard]] const T& as() const {
+        if (auto* p = std::get_if<T>(&kind)) return *p;
+        throw std::logic_error(std::format(
+            "expected ExprKind to hold {} but got index {} at line {}",
+            typeid(T).name(), kind.index(), span.start.line));
+    }
 };
 
 // ============================================================================
@@ -181,7 +191,7 @@ struct ReturnStmt {
 struct IfStmt {
     ExprPtr condition;
     std::vector<StmtPtr> then_block;
-    std::optional<std::vector<StmtPtr>> else_block;
+    std::vector<StmtPtr> else_block;
 };
 
 struct WhileStmt {
@@ -190,7 +200,7 @@ struct WhileStmt {
 };
 
 struct ForStmt {
-    std::string var_name;
+    std::string name;
     ExprPtr iterable;
     std::vector<StmtPtr> body;
 };
@@ -208,7 +218,7 @@ struct BlockStmt {
 
 // parallel for i in range(start, end) { body } - splits work across cpu cores
 struct ParallelForStmt {
-    std::string var_name;
+    std::string name;
     ExprPtr start;
     ExprPtr end;
     std::vector<StmtPtr> body;
@@ -232,13 +242,23 @@ struct Stmt {
     SourceSpan span;
 
     template<typename T>
-    bool is() const { return std::holds_alternative<T>(kind); }
+    [[nodiscard]] bool is() const { return std::holds_alternative<T>(kind); }
 
     template<typename T>
-    T& as() { return std::get<T>(kind); }
+    [[nodiscard]] T& as() {
+        if (auto* p = std::get_if<T>(&kind)) return *p;
+        throw std::logic_error(std::format(
+            "expected StmtKind to hold {} but got index {} at line {}",
+            typeid(T).name(), kind.index(), span.start.line));
+    }
 
     template<typename T>
-    const T& as() const { return std::get<T>(kind); }
+    [[nodiscard]] const T& as() const {
+        if (auto* p = std::get_if<T>(&kind)) return *p;
+        throw std::logic_error(std::format(
+            "expected StmtKind to hold {} but got index {} at line {}",
+            typeid(T).name(), kind.index(), span.start.line));
+    }
 };
 
 // ============================================================================
@@ -280,7 +300,6 @@ struct ClassDecl {
     std::string name;
     std::vector<std::pair<std::string, Type>> fields;
     std::vector<MethodDecl> methods;
-    std::optional<std::string> parent;  // For future inheritance
     bool is_export = false;
 };
 
@@ -310,6 +329,9 @@ struct ImportDecl {
     std::optional<std::string> alias;
 };
 
+// healing mode for crash recovery
+enum class HealingMode { Auto, Freeze, Off };
+
 // Project configuration (opus.project)
 struct ProjectDecl {
     std::string name;
@@ -318,7 +340,7 @@ struct ProjectDecl {
     std::string mode;
     std::vector<std::string> includes;
     bool debug = false;
-    std::string healing;  // "auto", "freeze", "off", or empty (resolved from debug flag)
+    std::optional<HealingMode> healing;
 };
 
 struct Decl {
@@ -336,13 +358,23 @@ struct Decl {
     SourceSpan span;
 
     template<typename T>
-    bool is() const { return std::holds_alternative<T>(kind); }
+    [[nodiscard]] bool is() const { return std::holds_alternative<T>(kind); }
 
     template<typename T>
-    T& as() { return std::get<T>(kind); }
+    [[nodiscard]] T& as() {
+        if (auto* p = std::get_if<T>(&kind)) return *p;
+        throw std::logic_error(std::format(
+            "expected DeclKind to hold {} but got index {} at line {}",
+            typeid(T).name(), kind.index(), span.start.line));
+    }
 
     template<typename T>
-    const T& as() const { return std::get<T>(kind); }
+    [[nodiscard]] const T& as() const {
+        if (auto* p = std::get_if<T>(&kind)) return *p;
+        throw std::logic_error(std::format(
+            "expected DeclKind to hold {} but got index {} at line {}",
+            typeid(T).name(), kind.index(), span.start.line));
+    }
 };
 
 // ============================================================================
@@ -361,77 +393,56 @@ struct Module {
 // AST UTILITIES
 // ============================================================================
 
-inline ExprPtr make_literal_i64(std::int64_t val, SourceSpan span = {}) {
+// generic factory - constructs an Expr holding any ExprKind variant
+template<typename T>
+[[nodiscard]] inline ExprPtr make_expr(T&& node, SourceSpan span = {}) {
     auto expr = std::make_unique<Expr>();
-    LiteralExpr lit;
-    lit.value = val;
-    lit.type = Type::make_primitive(PrimitiveType::I64);
-    expr->kind.emplace<LiteralExpr>(std::move(lit));
+    expr->kind.emplace<std::decay_t<T>>(std::forward<T>(node));
     expr->span = span;
     return expr;
 }
 
-inline ExprPtr make_literal_f64(double val, SourceSpan span = {}) {
-    auto expr = std::make_unique<Expr>();
-    LiteralExpr lit;
-    lit.value = val;
-    lit.type = Type::make_primitive(PrimitiveType::F64);
-    expr->kind.emplace<LiteralExpr>(std::move(lit));
-    expr->span = span;
-    return expr;
+[[nodiscard]] inline ExprPtr make_literal_i64(std::int64_t val, SourceSpan span = {}) {
+    return make_expr(LiteralExpr{ .value = val, .type = Type::make_primitive(PrimitiveType::I64) }, span);
 }
 
-inline ExprPtr make_literal_bool(bool val, SourceSpan span = {}) {
-    auto expr = std::make_unique<Expr>();
-    LiteralExpr lit;
-    lit.value = val;
-    lit.type = Type::make_primitive(PrimitiveType::Bool);
-    expr->kind.emplace<LiteralExpr>(std::move(lit));
-    expr->span = span;
-    return expr;
+[[nodiscard]] inline ExprPtr make_literal_f64(double val, SourceSpan span = {}) {
+    return make_expr(LiteralExpr{ .value = val, .type = Type::make_primitive(PrimitiveType::F64) }, span);
 }
 
-inline ExprPtr make_literal_str(std::string val, SourceSpan span = {}) {
-    auto expr = std::make_unique<Expr>();
+[[nodiscard]] inline ExprPtr make_literal_bool(bool val, SourceSpan span = {}) {
+    return make_expr(LiteralExpr{ .value = val, .type = Type::make_primitive(PrimitiveType::Bool) }, span);
+}
+
+[[nodiscard]] inline ExprPtr make_literal_str(std::string val, SourceSpan span = {}) {
     LiteralExpr lit;
     lit.value = std::move(val);
     lit.type = Type::make_primitive(PrimitiveType::Str);
-    expr->kind.emplace<LiteralExpr>(std::move(lit));
-    expr->span = span;
-    return expr;
+    return make_expr(std::move(lit), span);
 }
 
-inline ExprPtr make_ident(std::string name, SourceSpan span = {}) {
-    auto expr = std::make_unique<Expr>();
+[[nodiscard]] inline ExprPtr make_ident(std::string name, SourceSpan span = {}) {
     IdentExpr ident;
     ident.name = std::move(name);
-    expr->kind.emplace<IdentExpr>(std::move(ident));
-    expr->span = span;
-    return expr;
+    return make_expr(std::move(ident), span);
 }
 
-inline ExprPtr make_binary(BinaryExpr::Op op, ExprPtr lhs, ExprPtr rhs, SourceSpan span = {}) {
-    auto expr = std::make_unique<Expr>();
+[[nodiscard]] inline ExprPtr make_binary(BinaryExpr::Op op, ExprPtr lhs, ExprPtr rhs, SourceSpan span = {}) {
     BinaryExpr bin;
     bin.op = op;
     bin.lhs = std::move(lhs);
     bin.rhs = std::move(rhs);
-    expr->kind.emplace<BinaryExpr>(std::move(bin));
-    expr->span = span;
-    return expr;
+    return make_expr(std::move(bin), span);
 }
 
-inline ExprPtr make_call(ExprPtr callee, std::vector<ExprPtr> args, SourceSpan span = {}) {
-    auto expr = std::make_unique<Expr>();
+[[nodiscard]] inline ExprPtr make_call(ExprPtr callee, std::vector<ExprPtr> args, SourceSpan span = {}) {
     CallExpr call;
     call.callee = std::move(callee);
     call.args = std::move(args);
-    expr->kind.emplace<CallExpr>(std::move(call));
-    expr->span = span;
-    return expr;
+    return make_expr(std::move(call), span);
 }
 
-inline StmtPtr make_let(std::string name, std::optional<Type> type, 
+[[nodiscard]] inline StmtPtr make_let(std::string name, std::optional<Type> type, 
                          ExprPtr init, bool is_mut = false, SourceSpan span = {}) {
     auto stmt = std::make_unique<Stmt>();
     LetStmt let;
@@ -446,7 +457,7 @@ inline StmtPtr make_let(std::string name, std::optional<Type> type,
     return stmt;
 }
 
-inline StmtPtr make_return(ExprPtr value = nullptr, SourceSpan span = {}) {
+[[nodiscard]] inline StmtPtr make_return(ExprPtr value = nullptr, SourceSpan span = {}) {
     auto stmt = std::make_unique<Stmt>();
     ReturnStmt ret;
     ret.value = value ? std::make_optional(std::move(value)) : std::nullopt;
@@ -455,7 +466,7 @@ inline StmtPtr make_return(ExprPtr value = nullptr, SourceSpan span = {}) {
     return stmt;
 }
 
-inline StmtPtr make_expr_stmt(ExprPtr expr, SourceSpan span = {}) {
+[[nodiscard]] inline StmtPtr make_expr_stmt(ExprPtr expr, SourceSpan span = {}) {
     auto stmt = std::make_unique<Stmt>();
     ExprStmt es;
     es.expr = std::move(expr);

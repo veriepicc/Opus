@@ -2,6 +2,8 @@
 
 module;
 
+#include <cassert>
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -25,7 +27,7 @@ enum class Reg : std::uint8_t {
     ESP = 4, EBP = 5, ESI = 6, EDI = 7,
 };
 
-constexpr std::string_view reg_name(Reg r) {
+[[nodiscard]] constexpr std::string_view reg_name(Reg r) {
     switch (r) {
         case Reg::RAX: return "rax"; case Reg::RCX: return "rcx";
         case Reg::RDX: return "rdx"; case Reg::RBX: return "rbx";
@@ -39,10 +41,10 @@ constexpr std::string_view reg_name(Reg r) {
     }
 }
 
-// Windows x64 calling convention
-constexpr Reg ARG_REGS[] = { Reg::RCX, Reg::RDX, Reg::R8, Reg::R9 };
-constexpr Reg CALLER_SAVED[] = { Reg::RAX, Reg::RCX, Reg::RDX, Reg::R8, Reg::R9, Reg::R10, Reg::R11 };
-constexpr Reg CALLEE_SAVED[] = { Reg::RBX, Reg::RSI, Reg::RDI, Reg::R12, Reg::R13, Reg::R14, Reg::R15 };
+// windows x64 calling convention
+constexpr std::array<Reg, 4> ARG_REGS = { Reg::RCX, Reg::RDX, Reg::R8, Reg::R9 };
+constexpr std::array<Reg, 7> CALLER_SAVED = { Reg::RAX, Reg::RCX, Reg::RDX, Reg::R8, Reg::R9, Reg::R10, Reg::R11 };
+constexpr std::array<Reg, 7> CALLEE_SAVED = { Reg::RBX, Reg::RSI, Reg::RDI, Reg::R12, Reg::R13, Reg::R14, Reg::R15 };
 
 // x64 CODE BUFFER
 
@@ -75,8 +77,7 @@ public:
         code_.insert(code_.end(), bytes.begin(), bytes.end());
     }
 
-    std::size_t size() const { return code_.size(); }
-    std::size_t pos() const { return code_.size(); }
+    [[nodiscard]] std::size_t pos() const { return code_.size(); }
     
     std::uint8_t* data() { return code_.data(); }
     const std::uint8_t* data() const { return code_.data(); }
@@ -85,15 +86,16 @@ public:
     std::span<const std::uint8_t> span() const { return std::span<const std::uint8_t>(code_); }
 
     void patch32(std::size_t offset, std::uint32_t value) {
+        assert(offset + 3 < code_.size() && "patch32: offset out of bounds");
         code_[offset]     = static_cast<std::uint8_t>(value);
         code_[offset + 1] = static_cast<std::uint8_t>(value >> 8);
         code_[offset + 2] = static_cast<std::uint8_t>(value >> 16);
         code_[offset + 3] = static_cast<std::uint8_t>(value >> 24);
     }
 
-    std::size_t create_label() { return pos(); }
+    [[nodiscard]] std::size_t create_label() { return pos(); }
     
-    std::int32_t rel32(std::size_t from, std::size_t to) {
+    [[nodiscard]] std::int32_t rel32(std::size_t from, std::size_t to) {
         return static_cast<std::int32_t>(to - from - 4);
     }
 
@@ -109,11 +111,13 @@ public:
     const CodeBuffer& buffer() const { return buf_; }
 
     static constexpr std::uint8_t REX_W = 0x48;  // 64-bit operand
-    static constexpr std::uint8_t REX_R = 0x44;  // Extension of ModRM reg
-    static constexpr std::uint8_t REX_X = 0x42;  // Extension of SIB index
-    static constexpr std::uint8_t REX_B = 0x41;  // Extension of ModRM r/m or SIB base
 
-    std::uint8_t rex(bool w, Reg reg, Reg rm) {
+    // modrm opcode extension fields (/0 through /7)
+    static constexpr std::uint8_t EXT_ADD = 0, EXT_OR = 1, EXT_CALL = 2, EXT_NOT = 2;
+    static constexpr std::uint8_t EXT_NEG = 3, EXT_MUL = 4, EXT_SUB = 5;
+    static constexpr std::uint8_t EXT_DIV = 6, EXT_IDIV = 7;
+
+    [[nodiscard]] constexpr std::uint8_t rex(bool w, Reg reg, Reg rm) {
         std::uint8_t r = 0x40;
         if (w) r |= 0x08;
         if (static_cast<std::uint8_t>(reg) >= 8) r |= 0x04;
@@ -121,7 +125,7 @@ public:
         return r;
     }
 
-    std::uint8_t modrm(std::uint8_t mod, Reg reg, Reg rm) {
+    [[nodiscard]] constexpr std::uint8_t modrm(std::uint8_t mod, Reg reg, Reg rm) {
         return (mod << 6) | ((static_cast<std::uint8_t>(reg) & 7) << 3) | (static_cast<std::uint8_t>(rm) & 7);
     }
 
@@ -148,49 +152,19 @@ public:
     void mov_load(Reg dst, Reg base, std::int32_t offset = 0) {
         buf_.emit8(rex(true, dst, base));
         buf_.emit8(0x8B);
-        if (offset == 0 && (static_cast<std::uint8_t>(base) & 7) != 5) {
-            buf_.emit8(modrm(0b00, dst, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);  // SIB for RSP
-        } else if (offset >= -128 && offset <= 127) {
-            buf_.emit8(modrm(0b01, dst, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit8(static_cast<std::uint8_t>(offset));
-        } else {
-            buf_.emit8(modrm(0b10, dst, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit32(static_cast<std::uint32_t>(offset));
-        }
+        emit_mem_operand(dst, base, offset);
     }
 
     void mov_store(Reg base, std::int32_t offset, Reg src) {
         buf_.emit8(rex(true, src, base));
         buf_.emit8(0x89);
-        if (offset == 0 && (static_cast<std::uint8_t>(base) & 7) != 5) {
-            buf_.emit8(modrm(0b00, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-        } else if (offset >= -128 && offset <= 127) {
-            buf_.emit8(modrm(0b01, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit8(static_cast<std::uint8_t>(offset));
-        } else {
-            buf_.emit8(modrm(0b10, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit32(static_cast<std::uint32_t>(offset));
-        }
+        emit_mem_operand(src, base, offset);
     }
 
     void lea(Reg dst, Reg base, std::int32_t offset) {
         buf_.emit8(rex(true, dst, base));
         buf_.emit8(0x8D);
-        if (offset >= -128 && offset <= 127) {
-            buf_.emit8(modrm(0b01, dst, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit8(static_cast<std::uint8_t>(offset));
-        } else {
-            buf_.emit8(modrm(0b10, dst, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit32(static_cast<std::uint32_t>(offset));
-        }
+        emit_mem_operand(dst, base, offset);
     }
 
     // ARITHMETIC
@@ -224,11 +198,11 @@ public:
         buf_.emit8(rex(true, Reg::RAX, dst));
         if (imm >= -128 && imm <= 127) {
             buf_.emit8(0x83);
-            buf_.emit8(modrm(0b11, Reg(5), dst));  // /5 = sub
+            buf_.emit8(modrm(0b11, Reg(EXT_SUB), dst));
             buf_.emit8(static_cast<std::uint8_t>(imm));
         } else {
             buf_.emit8(0x81);
-            buf_.emit8(modrm(0b11, Reg(5), dst));
+            buf_.emit8(modrm(0b11, Reg(EXT_SUB), dst));
             buf_.emit32(static_cast<std::uint32_t>(imm));
         }
     }
@@ -257,7 +231,7 @@ public:
     void idiv(Reg src) {
         buf_.emit8(rex(true, Reg::RAX, src));
         buf_.emit8(0xF7);
-        buf_.emit8(modrm(0b11, Reg(7), src));  // /7 = idiv
+        buf_.emit8(modrm(0b11, Reg(EXT_IDIV), src));
     }
 
     // cqo - sign-extend RAX into RDX:RAX
@@ -269,7 +243,7 @@ public:
     void neg(Reg dst) {
         buf_.emit8(rex(true, Reg::RAX, dst));
         buf_.emit8(0xF7);
-        buf_.emit8(modrm(0b11, Reg(3), dst));  // /3 = neg
+        buf_.emit8(modrm(0b11, Reg(EXT_NEG), dst));
     }
 
     // BITWISE
@@ -295,7 +269,7 @@ public:
     void not_(Reg dst) {
         buf_.emit8(rex(true, Reg::RAX, dst));
         buf_.emit8(0xF7);
-        buf_.emit8(modrm(0b11, Reg(2), dst));  // /2 = not
+        buf_.emit8(modrm(0b11, Reg(EXT_NOT), dst));
     }
 
     void shl_cl(Reg dst) {
@@ -346,7 +320,8 @@ public:
 
     // setcc - set byte based on condition code
     void setcc(std::uint8_t cc, Reg dst) {
-        if (static_cast<std::uint8_t>(dst) >= 8) buf_.emit8(0x41);
+        // always emit REX to avoid high-byte register ambiguity (AH/CH/DH/BH)
+        buf_.emit8(0x40 | (static_cast<std::uint8_t>(dst) >= 8 ? 0x01 : 0x00));
         buf_.emit8(0x0F);
         buf_.emit8(0x90 + cc);
         buf_.emit8(modrm(0b11, Reg::RAX, dst));
@@ -375,14 +350,14 @@ public:
         buf_.emit32(static_cast<std::uint32_t>(offset));
     }
 
-    std::size_t jmp_rel32_placeholder() {
+    [[nodiscard]] std::size_t jmp_rel32_placeholder() {
         buf_.emit8(0xE9);
         std::size_t pos = buf_.pos();
         buf_.emit32(0);
         return pos;
     }
 
-    std::size_t jcc_rel32(std::uint8_t cc) {
+    [[nodiscard]] std::size_t jcc_rel32(std::uint8_t cc) {
         buf_.emit8(0x0F);
         buf_.emit8(0x80 + cc);
         std::size_t pos = buf_.pos();
@@ -403,7 +378,7 @@ public:
     void call(Reg target) {
         if (static_cast<std::uint8_t>(target) >= 8) buf_.emit8(0x41);
         buf_.emit8(0xFF);
-        buf_.emit8(modrm(0b11, Reg(2), target));  // /2 = call
+        buf_.emit8(modrm(0b11, Reg(EXT_CALL), target));
     }
 
     void ret() {
@@ -432,9 +407,15 @@ public:
             push(r);
         }
         
-        // 16-byte aligned
-        std::size_t total = local_size + save_regs.size() * 8;
+        // after call: rsp is 8-aligned (return addr)
+        // each push subtracts 8, so after (1 + save_regs) pushes:
+        //   odd total pushes -> rsp is 16-aligned
+        //   even total pushes -> rsp is 8-aligned
+        std::size_t total_pushes = 1 + save_regs.size();
+        bool already_aligned = (total_pushes % 2) == 1;
+        std::size_t total = local_size;
         total = (total + 15) & ~15;
+        if (!already_aligned) total += 8;
         if (total > 0) {
             sub_imm(Reg::RSP, static_cast<std::int32_t>(total));
         }
@@ -484,18 +465,7 @@ public:
         buf_.emit8(rex(true, src, base));
         buf_.emit8(0x0F);
         buf_.emit8(0xC1);
-        if (offset == 0 && (static_cast<std::uint8_t>(base) & 7) != 5) {
-            buf_.emit8(modrm(0b00, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-        } else if (offset >= -128 && offset <= 127) {
-            buf_.emit8(modrm(0b01, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit8(static_cast<std::uint8_t>(offset));
-        } else {
-            buf_.emit8(modrm(0b10, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit32(static_cast<std::uint32_t>(offset));
-        }
+        emit_mem_operand(src, base, offset);
     }
 
     // lock cmpxchg [base+offset], src
@@ -505,36 +475,14 @@ public:
         buf_.emit8(rex(true, src, base));
         buf_.emit8(0x0F);
         buf_.emit8(0xB1);
-        if (offset == 0 && (static_cast<std::uint8_t>(base) & 7) != 5) {
-            buf_.emit8(modrm(0b00, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-        } else if (offset >= -128 && offset <= 127) {
-            buf_.emit8(modrm(0b01, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit8(static_cast<std::uint8_t>(offset));
-        } else {
-            buf_.emit8(modrm(0b10, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit32(static_cast<std::uint32_t>(offset));
-        }
+        emit_mem_operand(src, base, offset);
     }
 
     // xchg [base+offset], src (implicitly locked on x86)
     void xchg_mem(Reg base, std::int32_t offset, Reg src) {
         buf_.emit8(rex(true, src, base));
         buf_.emit8(0x87);
-        if (offset == 0 && (static_cast<std::uint8_t>(base) & 7) != 5) {
-            buf_.emit8(modrm(0b00, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-        } else if (offset >= -128 && offset <= 127) {
-            buf_.emit8(modrm(0b01, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit8(static_cast<std::uint8_t>(offset));
-        } else {
-            buf_.emit8(modrm(0b10, src, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit32(static_cast<std::uint32_t>(offset));
-        }
+        emit_mem_operand(src, base, offset);
     }
 
     // ========================================================================
@@ -548,7 +496,8 @@ public:
     // vvvv: source register (inverted, 1s complement)
     // L: 1 for 256-bit
     void emit_vex3(std::uint8_t mmmmm, std::uint8_t pp, bool W,
-                   std::uint8_t reg, std::uint8_t vvvv, std::uint8_t rm) {
+                   std::uint8_t reg, std::uint8_t vvvv, std::uint8_t rm,
+                   bool L = true) {
         buf_.emit8(0xC4);  // 3-byte VEX
         // byte 1: R~.X~.B~.mmmmm
         std::uint8_t b1 = mmmmm & 0x1F;
@@ -558,7 +507,7 @@ public:
         buf_.emit8(b1);
         // byte 2: W.vvvv~.L.pp
         std::uint8_t b2 = pp & 0x03;
-        b2 |= 0x04;  // L=1 for 256-bit
+        if (L) b2 |= 0x04;
         b2 |= ((~vvvv & 0x0F) << 3);  // vvvv inverted
         if (W) b2 |= 0x80;
         buf_.emit8(b2);
@@ -569,18 +518,7 @@ public:
         // VEX.256.F3.0F.WIG 6F /r
         emit_vex3(0x01, 0x02, false, ymm_dst, 0, static_cast<std::uint8_t>(base));
         buf_.emit8(0x6F);
-        if (offset == 0 && (static_cast<std::uint8_t>(base) & 7) != 5) {
-            buf_.emit8(modrm(0b00, Reg(ymm_dst & 7), base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-        } else if (offset >= -128 && offset <= 127) {
-            buf_.emit8(modrm(0b01, Reg(ymm_dst & 7), base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit8(static_cast<std::uint8_t>(offset));
-        } else {
-            buf_.emit8(modrm(0b10, Reg(ymm_dst & 7), base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit32(static_cast<std::uint32_t>(offset));
-        }
+        emit_mem_operand(Reg(ymm_dst & 7), base, offset);
     }
 
     // vmovdqu [base+offset], ymm (256-bit unaligned store)
@@ -588,18 +526,7 @@ public:
         // VEX.256.F3.0F.WIG 7F /r
         emit_vex3(0x01, 0x02, false, ymm_src, 0, static_cast<std::uint8_t>(base));
         buf_.emit8(0x7F);
-        if (offset == 0 && (static_cast<std::uint8_t>(base) & 7) != 5) {
-            buf_.emit8(modrm(0b00, Reg(ymm_src & 7), base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-        } else if (offset >= -128 && offset <= 127) {
-            buf_.emit8(modrm(0b01, Reg(ymm_src & 7), base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit8(static_cast<std::uint8_t>(offset));
-        } else {
-            buf_.emit8(modrm(0b10, Reg(ymm_src & 7), base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
-            buf_.emit32(static_cast<std::uint32_t>(offset));
-        }
+        emit_mem_operand(Reg(ymm_src & 7), base, offset);
     }
 
     // vpaddd ymm, ymm, ymm (packed 32-bit integer add)
@@ -645,14 +572,8 @@ public:
     // vpbroadcastd ymm, r32 (broadcast 32-bit value to all 8 lanes)
     // uses movd to xmm first, then vpbroadcastd
     void vpbroadcastd(std::uint8_t ymm_dst, Reg src) {
-        // step 1: vmovd xmm0, src (VEX.128.66.0F.W0 6E /r)
-        buf_.emit8(0xC4);
-        std::uint8_t b1 = 0x01;  // mmmmm = 0F
-        b1 |= 0x40;  // X~ = 1
-        if (!(ymm_dst & 0x08)) b1 |= 0x80;  // R~
-        if (!(static_cast<std::uint8_t>(src) & 0x08)) b1 |= 0x20;  // B~
-        buf_.emit8(b1);
-        buf_.emit8(0x79);  // W=0, vvvv=1111, L=0 (128-bit), pp=01 (66)
+        // step 1: vmovd xmm, src (VEX.128.66.0F.W0 6E /r)
+        emit_vex3(0x01, 0x01, false, ymm_dst, 0, static_cast<std::uint8_t>(src), false);
         buf_.emit8(0x6E);
         buf_.emit8(modrm(0b11, Reg(ymm_dst & 7), src));
 
@@ -666,13 +587,7 @@ public:
     // uses vmovq to xmm first, then vpbroadcastq
     void vpbroadcastq(std::uint8_t ymm_dst, Reg src) {
         // step 1: vmovq xmm, src (VEX.128.66.0F.W1 6E /r)
-        buf_.emit8(0xC4);
-        std::uint8_t b1 = 0x01;
-        b1 |= 0x40;
-        if (!(ymm_dst & 0x08)) b1 |= 0x80;
-        if (!(static_cast<std::uint8_t>(src) & 0x08)) b1 |= 0x20;
-        buf_.emit8(b1);
-        buf_.emit8(0xF9);  // W=1, vvvv=1111, L=0, pp=01
+        emit_vex3(0x01, 0x01, true, ymm_dst, 0, static_cast<std::uint8_t>(src), false);
         buf_.emit8(0x6E);
         buf_.emit8(modrm(0b11, Reg(ymm_dst & 7), src));
 
@@ -680,6 +595,23 @@ public:
         emit_vex3(0x02, 0x01, false, ymm_dst, 0, ymm_dst);
         buf_.emit8(0x59);
         buf_.emit8(modrm(0b11, Reg(ymm_dst & 7), Reg(ymm_dst & 7)));
+    }
+
+    // shared memory operand encoding: modrm + optional sib + displacement
+    // handles rsp needing sib byte, rbp needing explicit disp, disp8 vs disp32
+    void emit_mem_operand(Reg reg_field, Reg base, std::int32_t offset) {
+        if (offset == 0 && (static_cast<std::uint8_t>(base) & 7) != 5) {
+            buf_.emit8(modrm(0b00, reg_field, base));
+            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
+        } else if (offset >= -128 && offset <= 127) {
+            buf_.emit8(modrm(0b01, reg_field, base));
+            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
+            buf_.emit8(static_cast<std::uint8_t>(offset));
+        } else {
+            buf_.emit8(modrm(0b10, reg_field, base));
+            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
+            buf_.emit32(static_cast<std::uint32_t>(offset));
+        }
     }
 
 private:
@@ -693,8 +625,9 @@ private:
 class ExecutableMemory {
 public:
     ExecutableMemory(std::size_t size) {
+        // allocate as rw, flip to rx after code is written
         ptr_ = VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, 
-                           PAGE_EXECUTE_READWRITE);
+                           PAGE_READWRITE);
         size_ = size;
     }
 
@@ -704,15 +637,14 @@ public:
         }
     }
 
-    // Non-copyable
     ExecutableMemory(const ExecutableMemory&) = delete;
     ExecutableMemory& operator=(const ExecutableMemory&) = delete;
 
-    // Movable
     ExecutableMemory(ExecutableMemory&& other) noexcept 
-        : ptr_(other.ptr_), size_(other.size_) {
+        : ptr_(other.ptr_), size_(other.size_), finalized_(other.finalized_) {
         other.ptr_ = nullptr;
         other.size_ = 0;
+        other.finalized_ = false;
     }
 
     ExecutableMemory& operator=(ExecutableMemory&& other) noexcept {
@@ -720,8 +652,10 @@ public:
             if (ptr_) VirtualFree(ptr_, 0, MEM_RELEASE);
             ptr_ = other.ptr_;
             size_ = other.size_;
+            finalized_ = other.finalized_;
             other.ptr_ = nullptr;
             other.size_ = 0;
+            other.finalized_ = false;
         }
         return *this;
     }
@@ -730,13 +664,28 @@ public:
     std::size_t size() const { return size_; }
 
     void copy_from(const CodeBuffer& buf) {
-        if (buf.size() <= size_) {
-            std::memcpy(ptr_, buf.data(), buf.size());
-        }
+        if (buf.pos() > size_)
+            throw std::logic_error("code buffer too large for executable memory");
+        std::memcpy(ptr_, buf.data(), buf.pos());
+        finalized_ = false;
+    }
+
+    // flip from rw to rx so we can actually execute the code
+    void finalize() {
+        if (!ptr_)
+            throw std::logic_error("cannot finalize null executable memory");
+        DWORD old_protect{};
+        if (!VirtualProtect(ptr_, size_, PAGE_EXECUTE_READ, &old_protect))
+            throw std::logic_error("VirtualProtect failed during finalize");
+        finalized_ = true;
     }
 
     template<typename... Args>
     std::int64_t call(Args... args) {
+        if (!ptr_)
+            throw std::logic_error("cannot call null executable memory");
+        if (!finalized_)
+            throw std::logic_error("must call finalize() before executing code");
         using FnPtr = std::int64_t(*)(Args...);
         return reinterpret_cast<FnPtr>(ptr_)(args...);
     }
@@ -744,6 +693,7 @@ public:
 private:
     void* ptr_ = nullptr;
     std::size_t size_ = 0;
+    bool finalized_ = false;
 };
 
 #endif // _WIN32

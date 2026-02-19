@@ -16,7 +16,7 @@ struct ProjectConfig {
     std::string mode = "dll";
     std::vector<std::string> includes;
     bool debug = false;
-    std::string healing;  // "auto", "freeze", "off" - empty means resolve from debug flag
+    std::optional<ast::HealingMode> healing;
     
     std::filesystem::path project_dir;
     std::vector<std::filesystem::path> source_files;
@@ -70,14 +70,9 @@ std::expected<ProjectConfig, std::string> load_project(const std::filesystem::pa
         return std::unexpected("no project declaration found in opus.project");
     }
     
-    // only validate if user explicitly set it
-    if (!config.healing.empty() && config.healing != "auto" && config.healing != "freeze" && config.healing != "off") {
-        return std::unexpected(std::format("invalid healing mode: '{}', expected 'auto', 'freeze', or 'off'", config.healing));
-    }
-    
     // default: debug builds get auto healing, release gets none
-    if (config.healing.empty()) {
-        config.healing = config.debug ? "auto" : "off";
+    if (!config.healing.has_value()) {
+        config.healing = config.debug ? ast::HealingMode::Auto : ast::HealingMode::Off;
     }
     
     return config;
@@ -90,9 +85,17 @@ std::vector<std::filesystem::path> discover_files(const std::filesystem::path& d
         return files;
     }
     
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".op") {
-            files.push_back(entry.path());
+    // use error code overload so permission errors dont blow up
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(dir, std::filesystem::directory_options::skip_permission_denied, ec);
+         it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) {
+            std::println("warning: filesystem error during discovery: {}", ec.message());
+            ec.clear();
+            continue;
+        }
+        if (it->is_regular_file() && it->path().extension() == ".op") {
+            files.push_back(it->path());
         }
     }
     
@@ -110,12 +113,15 @@ std::expected<ProjectConfig, std::string> discover_project_files(ProjectConfig c
         }
     }
     
+    // set-based dedup instead of linear scan
+    std::set<std::filesystem::path> seen(config.source_files.begin(), config.source_files.end());
+    
     for (const auto& include : config.includes) {
         std::filesystem::path include_path = config.project_dir / include;
         auto files = discover_files(include_path);
-        for (const auto& file : files) {
-            if (std::find(config.source_files.begin(), config.source_files.end(), file) == config.source_files.end()) {
-                config.source_files.push_back(file);
+        for (auto& file : files) {
+            if (seen.insert(file).second) {
+                config.source_files.push_back(std::move(file));
             }
         }
     }
@@ -150,7 +156,7 @@ std::expected<std::string, std::string> merge_sources(const std::vector<std::fil
 std::optional<std::filesystem::path> find_project_file(const std::filesystem::path& start_dir) {
     std::filesystem::path current = start_dir;
     
-    while (!current.empty() && current.has_parent_path()) {
+    while (true) {
         std::filesystem::path project_file = current / "opus.project";
         if (std::filesystem::exists(project_file)) {
             return project_file;

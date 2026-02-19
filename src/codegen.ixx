@@ -31,6 +31,111 @@ extern "C" {
 
 export namespace opus {
 
+// visitor helper for std::visit dispatch
+template<typename... Ts> struct overloaded : Ts... { using Ts::operator()...; };
+
+// typed runtime function pointer signatures
+using RtVoidI64     = void(*)(std::int64_t);
+using RtVoidStr     = void(*)(const char*);
+using RtVoid        = void(*)();
+using RtI64I64      = std::int64_t(*)(std::int64_t);
+using RtI64I64I64   = std::int64_t(*)(std::int64_t, std::int64_t);
+using RtI64I64I64I64 = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t);
+using RtI64Str      = std::int64_t(*)(const char*);
+using RtVoidI64I64  = void(*)(std::int64_t, std::int64_t);
+using RtVoidI64I64I64 = void(*)(std::int64_t, std::int64_t, std::int64_t);
+using RtVoidI64Dbl  = void(*)(std::int64_t, double);
+using RtDblI64      = double(*)(std::int64_t);
+using RtI64I64I64I64I64 = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t);
+using RtI64I64I64I64I64I64 = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t);
+using RtI64I64I64I64I64I64I64 = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t);
+
+// all runtime function pointers passed from the host into codegen
+// typed so argument ordering bugs are caught at compile time
+struct RuntimePointers {
+    // core i/o
+    RtVoidI64   print_int = nullptr;
+    RtVoidStr   print_str = nullptr;
+    RtVoid      print_newline = nullptr;
+    RtI64I64    read_file = nullptr;
+    RtI64I64    string_length = nullptr;
+    RtI64I64I64 string_get_char = nullptr;
+    RtVoidI64   print_string = nullptr;
+    RtI64Str    make_string = nullptr;
+    RtI64I64I64 write_file = nullptr;
+
+    // memory
+    RtI64I64    malloc_fn = nullptr;
+    RtVoidI64   free_fn = nullptr;
+
+    // arrays
+    RtI64I64    array_new = nullptr;
+    RtI64I64I64 array_get = nullptr;
+    RtVoidI64I64I64 array_set = nullptr;
+    RtI64I64    array_len = nullptr;
+    RtVoidI64   array_free = nullptr;
+
+    // strings
+    RtI64I64I64 string_append = nullptr;
+    RtI64I64    int_to_string = nullptr;
+    RtVoidI64   print_char = nullptr;
+
+    // self-hosting helpers
+    RtI64I64I64 string_equals = nullptr;
+    RtI64I64I64I64 string_substring = nullptr;
+    RtI64I64    is_alpha = nullptr;
+    RtI64I64    is_digit = nullptr;
+    RtI64I64    is_alnum = nullptr;
+    RtI64I64    is_whitespace = nullptr;
+    RtI64I64I64 string_starts_with = nullptr;
+    RtVoidI64   exit_fn = nullptr;
+    RtI64I64I64I64 write_bytes = nullptr;
+    RtI64I64    buffer_new = nullptr;
+    RtVoidI64I64 buffer_push = nullptr;
+    RtI64I64    buffer_len = nullptr;
+    RtI64I64    parse_int = nullptr;
+
+    // raw memory access
+    RtI64I64    mem_read_i8 = nullptr;
+    RtI64I64    mem_read_i16 = nullptr;
+    RtI64I64    mem_read_i32 = nullptr;
+    RtI64I64    mem_read_i64 = nullptr;
+    RtDblI64    mem_read_f32 = nullptr;
+    RtDblI64    mem_read_f64 = nullptr;
+    RtI64I64    mem_read_ptr = nullptr;
+    RtVoidI64I64 mem_write_i8 = nullptr;
+    RtVoidI64I64 mem_write_i16 = nullptr;
+    RtVoidI64I64 mem_write_i32 = nullptr;
+    RtVoidI64I64 mem_write_i64 = nullptr;
+    RtVoidI64Dbl mem_write_f32 = nullptr;
+    RtVoidI64Dbl mem_write_f64 = nullptr;
+    RtVoidI64I64 mem_write_ptr = nullptr;
+    RtVoidI64I64I64 mem_copy = nullptr;
+    RtVoidI64I64I64 mem_set = nullptr;
+
+    // ffi
+    RtI64I64    get_module = nullptr;
+    RtI64I64    load_library = nullptr;
+    RtI64I64I64 get_proc = nullptr;
+    RtI64I64    ffi_call0 = nullptr;
+    RtI64I64I64 ffi_call1 = nullptr;
+    RtI64I64I64I64 ffi_call2 = nullptr;
+    RtI64I64I64I64I64 ffi_call3 = nullptr;
+    RtI64I64I64I64I64I64 ffi_call4 = nullptr;
+    RtI64I64I64I64I64I64I64 ffi_call5 = nullptr;
+    // ffi_call6 has 7 args
+    std::int64_t(*ffi_call6)(std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t) = nullptr;
+    RtI64I64I64I64 msgbox = nullptr;
+    std::int64_t(*get_last_error)() = nullptr;
+    RtI64I64I64I64 virtual_protect = nullptr;
+    std::int64_t(*get_current_process)() = nullptr;
+    std::int64_t(*get_current_process_id)() = nullptr;
+};
+
+// convert any function pointer to void* for the emitter
+template<typename F>
+void* as_void(F fn) { return reinterpret_cast<void*>(fn); }
+
 struct Symbol {
     std::string name;
     Type type;
@@ -102,57 +207,12 @@ public:
     void set_auto_parallel(bool enabled) { auto_parallel_ = enabled; }
     bool is_auto_parallel() const { return auto_parallel_; }
 
-    // Set runtime function pointers for builtins
-    void set_runtime_pointers(
-        void* print_int, void* print_str, void* read_file,
-        void* string_length, void* string_get_char, void* print_string,
-        void* make_string, void* write_file, void* malloc_fn,
-        void* free_fn, void* array_new, void* array_get,
-        void* array_set, void* array_len, void* array_free,
-        void* string_append, void* int_to_string, void* print_char,
-        // Self-hosting helpers
-        void* string_equals = nullptr, void* string_substring = nullptr,
-        void* is_alpha = nullptr, void* is_digit = nullptr, void* is_alnum = nullptr,
-        void* is_whitespace = nullptr, void* string_starts_with = nullptr,
-        void* exit_fn = nullptr, void* write_bytes = nullptr,
-        void* buffer_new = nullptr, void* buffer_push = nullptr,
-        void* buffer_len = nullptr, void* parse_int = nullptr) {
-        runtime_print_int_ = print_int;
-        runtime_print_str_ = print_str;
-        runtime_read_file_ = read_file;
-        runtime_string_length_ = string_length;
-        runtime_string_get_char_ = string_get_char;
-        runtime_print_string_ = print_string;
-        runtime_make_string_ = make_string;
-        runtime_write_file_ = write_file;
-        runtime_malloc_ = malloc_fn;
-        runtime_free_ = free_fn;
-        runtime_array_new_ = array_new;
-        runtime_array_get_ = array_get;
-        runtime_array_set_ = array_set;
-        runtime_array_len_ = array_len;
-        runtime_array_free_ = array_free;
-        runtime_string_append_ = string_append;
-        runtime_int_to_string_ = int_to_string;
-        runtime_print_char_ = print_char;
-        // Self-hosting helpers
-        runtime_string_equals_ = string_equals;
-        runtime_string_substring_ = string_substring;
-        runtime_is_alpha_ = is_alpha;
-        runtime_is_digit_ = is_digit;
-        runtime_is_alnum_ = is_alnum;
-        runtime_is_whitespace_ = is_whitespace;
-        runtime_string_starts_with_ = string_starts_with;
-        runtime_exit_ = exit_fn;
-        runtime_write_bytes_ = write_bytes;
-        runtime_buffer_new_ = buffer_new;
-        runtime_buffer_push_ = buffer_push;
-        runtime_buffer_len_ = buffer_len;
-        runtime_parse_int_ = parse_int;
+    void set_runtime_pointers(const RuntimePointers& rt) {
+        rt_ = rt;
     }
 
     // Generate code for a module
-    bool generate(const ast::Module& mod) {
+    [[nodiscard]] bool generate(const ast::Module& mod) {
         module_name_ = mod.name;
 
         // first pass: collect function signatures and globals
@@ -241,25 +301,54 @@ public:
     bool has_iat_fixups() const { return !iat_fixups_.empty(); }
     bool has_global_slot() const { return has_global_slot_; }
     
-    // Return fixups as (patch_site, iat_offset) pairs
-    std::vector<std::pair<std::size_t, std::size_t>> get_iat_fixups() const {
-        std::vector<std::pair<std::size_t, std::size_t>> result;
+    // return fixups using the pe named struct
+    std::vector<pe::IatFixup> get_iat_fixups() const {
+        std::vector<pe::IatFixup> result;
         for (const auto& f : iat_fixups_) {
-            result.emplace_back(f.patch_site, f.iat_offset);
+            result.push_back({f.patch_site, f.iat_offset});
         }
         return result;
     }
     
-    // Return line map as (instruction_offset, source_line) pairs
-    std::vector<std::pair<std::uint32_t, std::uint32_t>> get_line_map() const {
-        std::vector<std::pair<std::uint32_t, std::uint32_t>> result;
+    // return line map using the pe named struct
+    std::vector<pe::LineMapEntry> get_line_map() const {
+        std::vector<pe::LineMapEntry> result;
         for (const auto& e : line_map_) {
-            result.emplace_back(e.offset, e.line);
+            result.push_back({static_cast<std::uint32_t>(e.offset), e.line});
         }
         return result;
     }
 
 private:
+    // parallel for threading constants
+    static constexpr int PFOR_MAX_THREADS = 64;     // max worker threads we will ever spawn
+    static constexpr int PFOR_CTX_SIZE = 48;         // bytes per thread context (fn_ptr, start, end, parent_rbp, result, pad)
+    static constexpr int PFOR_CTX_EXTRA_SLOTS = 447; // 8-byte stack slots for context array (define() takes 1, loop takes rest)
+    static constexpr int PFOR_HDL_EXTRA_SLOTS = 63;  // 8-byte stack slots for handle array (define() takes 1, loop takes rest)
+
+    // thread context layout offsets (shared by spawn, await, and parallel for)
+    static constexpr std::int32_t CTX_FN_PTR  = 0x00;
+    static constexpr std::int32_t CTX_ARG0    = 0x08;
+    static constexpr std::int32_t CTX_ARG1    = 0x10;
+    static constexpr std::int32_t CTX_ARG2    = 0x18;
+    static constexpr std::int32_t CTX_RESULT  = 0x20;
+    static constexpr std::int32_t CTX_SIZE    = 0x28;
+
+    // shared state between pfor helper functions so we dont pass 15 args around
+    struct PforLayout {
+        std::int32_t start_off;    // __pfor_start stack offset
+        std::int32_t end_off;      // __pfor_end stack offset
+        std::int32_t ncores_off;   // __pfor_ncores stack offset
+        std::int32_t range_off;    // __pfor_range stack offset
+        std::int32_t chunk_off;    // __pfor_chunk stack offset
+        std::int32_t rem_off;      // __pfor_rem stack offset (division remainder)
+        std::int32_t idx_off;      // __pfor_i stack offset
+        std::int32_t ctx_arr_base; // bottom of context array on stack
+        std::int32_t hdl_arr_base; // bottom of handle array on stack
+        std::string body_fn;       // name of the emitted body function
+        std::size_t stub_offset;   // offset of the thread entry stub
+    };
+
     x64::Emitter emit_;
     std::string module_name_;
     std::string source_path_;
@@ -292,7 +381,7 @@ private:
     void emit_iat_call_raw(std::size_t iat_offset) {
         emit_.buffer().emit8(0xFF);
         emit_.buffer().emit8(0x15);
-        std::size_t patch_site = emit_.buffer().size();
+        std::size_t patch_site = emit_.buffer().pos();
         emit_.buffer().emit32(0);
         iat_fixups_.push_back({patch_site, iat_offset});
     }
@@ -307,7 +396,7 @@ private:
     // emit E8 rel32 call to a startup routine (print, set_title, alloc_console, etc)
     // target_offset is the routine offset in .text (e.g. DLL_PRINT_OFFSET)
     void emit_startup_call(std::size_t target_offset) {
-        std::size_t current = emit_.buffer().size();
+        std::size_t current = emit_.buffer().pos();
         std::int32_t rel = static_cast<std::int32_t>(target_offset)
             - static_cast<std::int32_t>(user_code_offset_ + current + 5);
         emit_.buffer().emit8(0xE8);
@@ -354,6 +443,7 @@ private:
         const ast::Expr* init = nullptr;  // initializer (may call functions)
     };
     std::unordered_map<std::string, GlobalVar> globals_;
+    std::vector<std::string> global_order_;  // tracks insertion order for deterministic init
     std::size_t next_global_offset_ = 0;
     std::size_t global_data_base_ = 0;  // set at runtime/linking
     
@@ -368,39 +458,8 @@ private:
     std::vector<std::string> string_literals_;
     std::unordered_map<std::string, std::size_t> string_indices_;
     
-    // Runtime function pointers (for builtins like print_int)
-    void* runtime_print_int_ = nullptr;
-    void* runtime_print_str_ = nullptr;
-    void* runtime_read_file_ = nullptr;
-    void* runtime_string_length_ = nullptr;
-    void* runtime_string_get_char_ = nullptr;
-    void* runtime_print_string_ = nullptr;
-    void* runtime_make_string_ = nullptr;
-    void* runtime_write_file_ = nullptr;
-    void* runtime_malloc_ = nullptr;
-    void* runtime_free_ = nullptr;
-    void* runtime_array_new_ = nullptr;
-    void* runtime_array_get_ = nullptr;
-    void* runtime_array_set_ = nullptr;
-    void* runtime_array_len_ = nullptr;
-    void* runtime_array_free_ = nullptr;
-    void* runtime_string_append_ = nullptr;
-    void* runtime_int_to_string_ = nullptr;
-    void* runtime_print_char_ = nullptr;
-    // Self-hosting helpers
-    void* runtime_string_equals_ = nullptr;
-    void* runtime_string_substring_ = nullptr;
-    void* runtime_is_alpha_ = nullptr;
-    void* runtime_is_digit_ = nullptr;
-    void* runtime_is_alnum_ = nullptr;
-    void* runtime_is_whitespace_ = nullptr;
-    void* runtime_string_starts_with_ = nullptr;
-    void* runtime_exit_ = nullptr;
-    void* runtime_write_bytes_ = nullptr;
-    void* runtime_buffer_new_ = nullptr;
-    void* runtime_buffer_push_ = nullptr;
-    void* runtime_buffer_len_ = nullptr;
-    void* runtime_parse_int_ = nullptr;
+    // runtime function pointers from host
+    RuntimePointers rt_;
 
     // DLL mode flag - when true, generates calls to embedded runtime instead of absolute addresses
     bool dll_mode_ = false;
@@ -420,13 +479,236 @@ private:
     // auto-parallelization flag
     bool auto_parallel_ = false;
     
+    // monotonic counter for deterministic spawn variable names
+    std::size_t spawn_counter_ = 0;
+    
     // rip-relative slot in code buffer that holds the global data base pointer
     // __opus_init writes HeapAlloc result here, all global accesses load from here
     std::size_t global_base_slot_ = 0;
     bool has_global_slot_ = false;
-    
-    // spawn/await context tracking (LIFO stack of context ptr offsets)
-    std::vector<std::int32_t> spawn_context_stack_;
+
+    // builtin dispatch tables - lazily initialized on first generate_call
+    using BuiltinHandler = std::function<bool(const ast::CallExpr&)>;
+    std::unordered_map<std::string_view, BuiltinHandler> dll_builtins_;
+    std::unordered_map<std::string_view, BuiltinHandler> jit_builtins_;
+    bool builtin_tables_initialized_ = false;
+
+    void init_builtin_tables() {
+        if (builtin_tables_initialized_) return;
+        builtin_tables_initialized_ = true;
+
+        // ---- dll-mode builtins (checked first when dll_mode_ is true) ----
+        dll_builtins_ = {
+            {"dll_print",       [this](const ast::CallExpr& c) { return generate_dll_builtin_print(c); }},
+            {"print",           [this](const ast::CallExpr& c) { return generate_dll_builtin_print(c); }},
+            {"dll_set_title",   [this](const ast::CallExpr& c) { return generate_dll_builtin_set_title(c); }},
+            {"set_title",       [this](const ast::CallExpr& c) { return generate_dll_builtin_set_title(c); }},
+            {"alloc_console",   [this](const ast::CallExpr& c) { return generate_dll_builtin_alloc_console(c); }},
+            {"print_int",       [this](const ast::CallExpr& c) { return generate_dll_builtin_print_dec(c); }},
+            {"print_dec",       [this](const ast::CallExpr& c) { return generate_dll_builtin_print_dec(c); }},
+            {"print_hex",       [this](const ast::CallExpr& c) { return generate_dll_builtin_print_hex(c); }},
+            // memory operations - inline, no runtime needed
+            {"mem_read",        [this](const ast::CallExpr& c) { return generate_dll_mem_read(c, 8); }},
+            {"mem_read_i64",    [this](const ast::CallExpr& c) { return generate_dll_mem_read(c, 8); }},
+            {"mem_read_i32",    [this](const ast::CallExpr& c) { return generate_dll_mem_read(c, 4); }},
+            {"mem_read_i16",    [this](const ast::CallExpr& c) { return generate_dll_mem_read(c, 2); }},
+            {"mem_read_i8",     [this](const ast::CallExpr& c) { return generate_dll_mem_read(c, 1); }},
+            {"mem_write",       [this](const ast::CallExpr& c) { return generate_dll_mem_write(c, 8); }},
+            {"mem_write_i64",   [this](const ast::CallExpr& c) { return generate_dll_mem_write(c, 8); }},
+            {"mem_write_i32",   [this](const ast::CallExpr& c) { return generate_dll_mem_write(c, 4); }},
+            {"mem_write_i16",   [this](const ast::CallExpr& c) { return generate_dll_mem_write(c, 2); }},
+            {"mem_write_i8",    [this](const ast::CallExpr& c) { return generate_dll_mem_write(c, 1); }},
+            // debug / crash handler
+            {"crash",                   [this](const ast::CallExpr& c) { return generate_dll_crash(c); }},
+            {"install_crash_handler",   [this](const ast::CallExpr& c) { return generate_dll_install_crash_handler(c); }},
+            {"trigger_illegal",         [this](const ast::CallExpr&) {
+                emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x0B);
+                return true;
+            }},
+            {"trigger_stack_overflow",  [this](const ast::CallExpr&) {
+                emit_.buffer().emit8(0xB9);
+                emit_.buffer().emit32(0xC00000FD);
+                emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);
+                emit_.xor_(x64::Reg::R8, x64::Reg::R8);
+                emit_.xor_(x64::Reg::R9, x64::Reg::R9);
+                emit_.sub_imm(x64::Reg::RSP, 32);
+                emit_iat_call_raw(pe::iat::RaiseException);
+                emit_.add_imm(x64::Reg::RSP, 32);
+                return true;
+            }},
+            {"breakpoint",      [this](const ast::CallExpr&) {
+                emit_.buffer().emit8(0xCC);
+                return true;
+            }},
+            {"breakpoint_if",   [this](const ast::CallExpr& c) {
+                if (c.args.empty()) {
+                    error("breakpoint_if requires 1 argument");
+                    return false;
+                }
+                if (!generate_expr(*c.args[0])) return false;
+                emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+                emit_.buffer().emit8(0x74); emit_.buffer().emit8(0x01);
+                emit_.buffer().emit8(0xCC);
+                return true;
+            }},
+            // memory block operations
+            {"memcpy",          [this](const ast::CallExpr& c) { return generate_dll_memcpy(c); }},
+            {"memset",          [this](const ast::CallExpr& c) { return generate_dll_memset(c); }},
+            {"memcmp",          [this](const ast::CallExpr& c) { return generate_dll_memcmp(c); }},
+            // timing
+            {"sleep",           [this](const ast::CallExpr& c) { return generate_dll_sleep(c); }},
+            {"get_tick_count",  [this](const ast::CallExpr& c) { return generate_dll_get_tick_count(c); }},
+            // math
+            {"sqrt",            [this](const ast::CallExpr& c) { return generate_dll_sqrt(c); }},
+            {"sin",             [this](const ast::CallExpr& c) { return generate_dll_sin(c); }},
+            {"cos",             [this](const ast::CallExpr& c) { return generate_dll_cos(c); }},
+            {"tan",             [this](const ast::CallExpr& c) { return generate_dll_tan(c); }},
+            {"atan2",           [this](const ast::CallExpr& c) { return generate_dll_atan2(c); }},
+            {"floor",           [this](const ast::CallExpr& c) { return generate_dll_floor(c); }},
+            {"ceil",            [this](const ast::CallExpr& c) { return generate_dll_ceil(c); }},
+            {"abs",             [this](const ast::CallExpr& c) { return generate_dll_abs(c); }},
+            {"fabs",            [this](const ast::CallExpr& c) { return generate_dll_abs(c); }},
+            {"pow",             [this](const ast::CallExpr& c) { return generate_dll_pow(c); }},
+            // memory allocation
+            {"malloc",          [this](const ast::CallExpr& c) { return generate_dll_malloc(c); }},
+            {"free",            [this](const ast::CallExpr& c) { return generate_dll_free(c); }},
+            // arrays
+            {"array_new",       [this](const ast::CallExpr& c) { return generate_dll_array_new(c); }},
+            {"new_array",       [this](const ast::CallExpr& c) { return generate_dll_array_new(c); }},
+            {"array_get",       [this](const ast::CallExpr& c) { return generate_dll_array_get(c); }},
+            {"array_set",       [this](const ast::CallExpr& c) { return generate_dll_array_set(c); }},
+            {"array_len",       [this](const ast::CallExpr& c) { return generate_dll_array_len(c); }},
+            {"array_free",      [this](const ast::CallExpr& c) { return generate_dll_array_free(c); }},
+            // strings
+            {"string_length",   [this](const ast::CallExpr& c) { return generate_dll_string_length(c); }},
+            {"strlen",          [this](const ast::CallExpr& c) { return generate_dll_string_length(c); }},
+            {"string_append",   [this](const ast::CallExpr& c) { return generate_dll_string_append(c); }},
+            {"concat",          [this](const ast::CallExpr& c) { return generate_dll_string_append(c); }},
+            {"int_to_string",   [this](const ast::CallExpr& c) { return generate_dll_int_to_string(c); }},
+            {"itoa",            [this](const ast::CallExpr& c) { return generate_dll_int_to_string(c); }},
+            {"string_equals",   [this](const ast::CallExpr& c) { return generate_dll_string_equals(c); }},
+            {"streq",           [this](const ast::CallExpr& c) { return generate_dll_string_equals(c); }},
+            {"string_substring",[this](const ast::CallExpr& c) { return generate_dll_string_substring(c); }},
+            {"substr",          [this](const ast::CallExpr& c) { return generate_dll_string_substring(c); }},
+            {"print_char",      [this](const ast::CallExpr& c) { return generate_dll_print_char(c); }},
+            {"putc",            [this](const ast::CallExpr& c) { return generate_dll_print_char(c); }},
+            // memory protection
+            {"virtual_protect", [this](const ast::CallExpr& c) { return generate_dll_virtual_protect(c); }},
+            {"virtual_alloc",   [this](const ast::CallExpr& c) { return generate_dll_virtual_alloc(c); }},
+            {"virtual_free",    [this](const ast::CallExpr& c) { return generate_dll_virtual_free(c); }},
+            // pattern scanner
+            {"scan",            [this](const ast::CallExpr& c) { return generate_dll_scan(c); }},
+            // module functions
+            {"get_module",      [this](const ast::CallExpr& c) { return generate_dll_get_module(c); }},
+        };
+
+        // ---- shared builtins (both jit and dll mode) ----
+        // note: "print" and "println" have dual-mode logic baked into their handlers
+        jit_builtins_ = {
+            {"print_int",       [this](const ast::CallExpr& c) { return generate_builtin_print_int(c); }},
+            {"print",           [this](const ast::CallExpr& c) {
+                if (dll_mode_) return generate_dll_builtin_print(c);
+                return generate_builtin_one_arg(c, as_void(rt_.print_str));
+            }},
+            {"println",         [this](const ast::CallExpr& c) {
+                if (dll_mode_) {
+                    if (!generate_dll_builtin_print(c)) return false;
+                    emit_.sub_imm(x64::Reg::RSP, 32);
+                    emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x04);
+                    emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x0A);
+                    emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x44);
+                    emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x01);
+                    emit_.buffer().emit8(0x00);
+                    emit_.mov(x64::Reg::RCX, x64::Reg::RSP);
+                    emit_startup_call(print_offset_);
+                    emit_.add_imm(x64::Reg::RSP, 32);
+                } else {
+                    if (!generate_builtin_one_arg(c, as_void(rt_.print_str))) return false;
+                }
+                return true;
+            }},
+            {"read_file",       [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.read_file)); }},
+            {"string_length",   [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.string_length)); }},
+            {"strlen",          [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.string_length)); }},
+            {"string_get_char", [this](const ast::CallExpr& c) { return generate_builtin_string_get_char(c); }},
+            {"char_at",         [this](const ast::CallExpr& c) { return generate_builtin_string_get_char(c); }},
+            {"print_string",    [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.print_string)); }},
+            {"puts",            [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.print_string)); }},
+            {"write_file",      [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.write_file)); }},
+            {"malloc",          [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.malloc_fn)); }},
+            {"free",            [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.free_fn)); }},
+            {"array_new",       [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.array_new)); }},
+            {"new_array",       [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.array_new)); }},
+            {"array_get",       [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.array_get)); }},
+            {"array_set",       [this](const ast::CallExpr& c) { return generate_builtin_three_arg(c, as_void(rt_.array_set)); }},
+            {"array_len",       [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.array_len)); }},
+            {"array_free",      [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.array_free)); }},
+            {"string_append",   [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.string_append)); }},
+            {"concat",          [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.string_append)); }},
+            {"int_to_string",   [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.int_to_string)); }},
+            {"itoa",            [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.int_to_string)); }},
+            {"print_char",      [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.print_char)); }},
+            {"putc",            [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.print_char)); }},
+            {"string_equals",   [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.string_equals)); }},
+            {"streq",           [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.string_equals)); }},
+            {"string_substring",[this](const ast::CallExpr& c) { return generate_builtin_three_arg(c, as_void(rt_.string_substring)); }},
+            {"substr",          [this](const ast::CallExpr& c) { return generate_builtin_three_arg(c, as_void(rt_.string_substring)); }},
+            {"is_alpha",        [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.is_alpha)); }},
+            {"is_digit",        [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.is_digit)); }},
+            {"is_alnum",        [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.is_alnum)); }},
+            {"is_whitespace",   [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.is_whitespace)); }},
+            {"string_starts_with", [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.string_starts_with)); }},
+            {"starts_with",     [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.string_starts_with)); }},
+            {"exit",            [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.exit_fn)); }},
+            {"write_bytes",     [this](const ast::CallExpr& c) { return generate_builtin_three_arg(c, as_void(rt_.write_bytes)); }},
+            {"buffer_new",      [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.buffer_new)); }},
+            {"buffer_push",     [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.buffer_push)); }},
+            {"buffer_len",      [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.buffer_len)); }},
+            {"parse_int",       [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.parse_int)); }},
+            {"atoi",            [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.parse_int)); }},
+            // memory operations
+            {"mem_read",        [this](const ast::CallExpr& c) { return generate_builtin_mem_read_i64(c); }},
+            {"mem_read_i64",    [this](const ast::CallExpr& c) { return generate_builtin_mem_read_i64(c); }},
+            {"memory_read",     [this](const ast::CallExpr& c) { return generate_builtin_mem_read_i64(c); }},
+            {"mem_read_i32",    [this](const ast::CallExpr& c) { return generate_builtin_mem_read_i32(c); }},
+            {"mem_read_i16",    [this](const ast::CallExpr& c) { return generate_builtin_mem_read_i16(c); }},
+            {"mem_read_i8",     [this](const ast::CallExpr& c) { return generate_builtin_mem_read_i8(c); }},
+            {"mem_read_ptr",    [this](const ast::CallExpr& c) { return generate_builtin_mem_read_i64(c); }},
+            {"read_ptr",        [this](const ast::CallExpr& c) { return generate_builtin_mem_read_i64(c); }},
+            {"mem_write",       [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i64(c); }},
+            {"mem_write_i64",   [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i64(c); }},
+            {"memory_write",    [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i64(c); }},
+            {"mem_write_i32",   [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i32(c); }},
+            {"mem_write_i16",   [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i16(c); }},
+            {"mem_write_i8",    [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i8(c); }},
+            {"mem_write_ptr",   [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i64(c); }},
+            {"write_ptr",       [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i64(c); }},
+            // ffi - windows api
+            {"get_module",      [this](const ast::CallExpr& c) { return generate_builtin_ffi_one_arg(c, "get_module"); }},
+            {"load_library",    [this](const ast::CallExpr& c) { return generate_builtin_ffi_one_arg(c, "load_library"); }},
+            {"get_proc",        [this](const ast::CallExpr& c) { return generate_builtin_ffi_two_arg(c, "get_proc"); }},
+            {"ffi_call",        [this](const ast::CallExpr& c) { return generate_builtin_ffi_one_arg(c, "ffi_call0"); }},
+            {"ffi_call0",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_one_arg(c, "ffi_call0"); }},
+            {"ffi_call1",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_two_arg(c, "ffi_call1"); }},
+            {"ffi_call2",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call2"); }},
+            {"ffi_call3",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_four_arg(c, "ffi_call3"); }},
+            {"ffi_call4",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_five_arg(c, "ffi_call4"); }},
+            {"msgbox",          [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "msgbox"); }},
+            {"get_last_error",  [this](const ast::CallExpr&) { return generate_builtin_ffi_zero_arg("get_last_error"); }},
+            {"virtual_protect", [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "virtual_protect"); }},
+            {"get_current_process",    [this](const ast::CallExpr&) { return generate_builtin_ffi_zero_arg("get_current_process"); }},
+            {"get_current_process_id", [this](const ast::CallExpr&) { return generate_builtin_ffi_zero_arg("get_current_process_id"); }},
+            {"getpid",          [this](const ast::CallExpr&) { return generate_builtin_ffi_zero_arg("get_current_process_id"); }},
+            {"alloc_console",   [this](const ast::CallExpr&) { return generate_builtin_ffi_zero_arg("alloc_console"); }},
+            {"free_console",    [this](const ast::CallExpr&) { return generate_builtin_ffi_zero_arg("free_console"); }},
+            {"set_console_title", [this](const ast::CallExpr& c) { return generate_builtin_ffi_one_arg(c, "set_console_title"); }},
+            // range() called directly just returns 0
+            {"range",           [this](const ast::CallExpr&) {
+                emit_.mov_imm32(x64::Reg::RAX, 0);
+                return true;
+            }},
+        };
+    }
 
     void error(std::string_view msg) {
         errors_.push_back(std::string(msg));
@@ -450,10 +732,76 @@ private:
     }
 
     // ========================================================================
+    // codegen helpers - shared patterns extracted to avoid duplication
+    // ========================================================================
+
+    // emit lea <dst>, [rip+disp32] and return the disp32 patch site
+    std::size_t emit_lea_rip_disp32(x64::Reg dst) {
+        emit_.buffer().emit8(0x48);  // REX.W
+        emit_.buffer().emit8(0x8D);  // LEA opcode
+        emit_.buffer().emit8(static_cast<std::uint8_t>((static_cast<std::uint8_t>(dst) & 7) << 3) | 0x05);
+        std::size_t site = emit_.buffer().pos();
+        emit_.buffer().emit32(0);
+        return site;
+    }
+
+    // emit lea <dst>, [rip+global_base_slot_] with immediate patching
+    void emit_lea_rip_slot(x64::Reg dst) {
+        std::size_t site = emit_lea_rip_disp32(dst);
+        std::int32_t rel = static_cast<std::int32_t>(global_base_slot_)
+            - static_cast<std::int32_t>(site + 4);
+        emit_.buffer().patch32(site, static_cast<std::uint32_t>(rel));
+    }
+
+    // extract struct/class name from a Type, handling both StructType and string variants
+    std::optional<std::string> get_struct_name(const Type& type) {
+        if (std::holds_alternative<StructType>(type.kind))
+            return std::get<StructType>(type.kind).name;
+        if (std::holds_alternative<std::string>(type.kind))
+            return std::get<std::string>(type.kind);
+        return std::nullopt;
+    }
+
+    // inline strlen: rcx = string ptr on entry, rax = length on exit
+    // clobbers rcx (walks past end of string)
+    void emit_inline_strlen() {
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t loop_top = emit_.buffer().pos();
+        // cmp byte [rcx], 0
+        emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x39); emit_.buffer().emit8(0x00);
+        std::size_t done = emit_.jcc_rel32(x64::Emitter::CC_E);
+        // inc rcx, inc rax
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC0);
+        emit_.jmp_rel32(static_cast<std::int32_t>(loop_top - emit_.buffer().pos() - 5));
+        emit_.patch_jump(done);
+    }
+
+    // inline memcpy: rcx = src, rdx = dst, r8 = count
+    // copies r8 bytes from [rcx] to [rdx], advances rcx/rdx past the copied region
+    // clobbers rax, rcx, rdx, r8
+    void emit_inline_memcpy() {
+        std::size_t loop_top = emit_.buffer().pos();
+        emit_.test(x64::Reg::R8, x64::Reg::R8);
+        std::size_t done = emit_.jcc_rel32(x64::Emitter::CC_E);
+        // movzx rax, byte [rcx]
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0xB6); emit_.buffer().emit8(0x01);
+        // mov byte [rdx], al
+        emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x02);
+        // inc rcx, inc rdx, dec r8
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC2);
+        emit_.buffer().emit8(0x49); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC8);
+        emit_.jmp_rel32(static_cast<std::int32_t>(loop_top - emit_.buffer().pos() - 5));
+        emit_.patch_jump(done);
+    }
+
+    // ========================================================================
     // declarations
     // ========================================================================
 
-    bool generate_decl(const ast::Decl& decl) {
+    [[nodiscard]] bool generate_decl(const ast::Decl& decl) {
         if (decl.is<ast::FnDecl>()) {
             return generate_fn(decl.as<ast::FnDecl>());
         }
@@ -476,7 +824,7 @@ private:
     }
     
     // resolve and compile an imported module
-    bool generate_import(const ast::ImportDecl& imp) {
+    [[nodiscard]] bool generate_import(const ast::ImportDecl& imp) {
         // convert dot-separated path to filesystem path (foo.bar -> foo/bar.op)
         std::string rel_path = imp.path;
         for (auto& c : rel_path) {
@@ -575,6 +923,7 @@ private:
         }
         
         globals_[sd.name] = std::move(gv);
+        global_order_.push_back(sd.name);
         return true;
     }
     
@@ -599,7 +948,7 @@ private:
             emit_iat_call_raw(pe::iat::GetProcessHeap);
             
             emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
-            emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor edx, edx
+            emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
             emit_.mov_imm32(x64::Reg::R8, static_cast<std::int32_t>(next_global_offset_));
             
             emit_iat_call_raw(pe::iat::HeapAlloc);
@@ -607,30 +956,19 @@ private:
             emit_.add_imm(x64::Reg::RSP, 32);
             
             // store base pointer to rip-relative slot so other functions can find it
-            emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D);
-            emit_.buffer().emit8(0x0D); // lea rcx, [rip+disp32]
-            std::size_t lea_site = emit_.buffer().size();
-            emit_.buffer().emit32(0);
-            std::int32_t slot_rel = static_cast<std::int32_t>(global_base_slot_)
-                - static_cast<std::int32_t>(lea_site + 4);
-            emit_.buffer().patch32(lea_site, static_cast<std::uint32_t>(slot_rel));
+            emit_lea_rip_slot(x64::Reg::RCX);
             emit_.mov_store(x64::Reg::RCX, 0, x64::Reg::RAX);
             
             // run initializers
-            for (auto& [name, gv] : globals_) {
+            for (const auto& name : global_order_) {
+                auto& gv = globals_[name];
                 if (gv.init) {
                     // evaluate initializer -> RAX
-                    generate_expr(*gv.init);
+                    if (!generate_expr(*gv.init)) return;
                     emit_.mov(x64::Reg::RCX, x64::Reg::RAX); // save value
                     
                     // reload base from slot
-                    emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D);
-                    emit_.buffer().emit8(0x05); // lea rax, [rip+disp32]
-                    std::size_t init_lea = emit_.buffer().size();
-                    emit_.buffer().emit32(0);
-                    std::int32_t init_rel = static_cast<std::int32_t>(global_base_slot_)
-                        - static_cast<std::int32_t>(init_lea + 4);
-                    emit_.buffer().patch32(init_lea, static_cast<std::uint32_t>(init_rel));
+                    emit_lea_rip_slot(x64::Reg::RAX);
                     emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0); // deref: rax = *slot
                     
                     // store value at base + offset
@@ -645,7 +983,7 @@ private:
         info.code_size = emit_.buffer().pos() - info.code_offset;
     }
 
-    bool generate_struct_decl(const ast::StructDecl& s) {
+    [[nodiscard]] bool generate_struct_decl(const ast::StructDecl& s) {
         StructInfo info;
         info.name = s.name;
         for (const auto& [name, type] : s.fields) {
@@ -656,7 +994,7 @@ private:
         return true;
     }
     
-    bool generate_class_decl(const ast::ClassDecl& c) {
+    [[nodiscard]] bool generate_class_decl(const ast::ClassDecl& c) {
         // Register fields (same as struct)
         StructInfo info;
         info.name = c.name;
@@ -729,10 +1067,11 @@ private:
             func_info.code_size = emit_.buffer().pos() - func_info.code_offset;
         }
         
+        current_class_name_.clear();
         return true;
     }
 
-    bool generate_enum_decl(const ast::EnumDecl& e) {
+    [[nodiscard]] bool generate_enum_decl(const ast::EnumDecl& e) {
         std::unordered_map<std::string, std::int64_t> variants;
         std::int64_t next_value = 0;
         for (const auto& [name, value] : e.variants) {
@@ -746,7 +1085,7 @@ private:
         return true;
     }
 
-    bool generate_fn(const ast::FnDecl& fn) {
+    [[nodiscard]] bool generate_fn(const ast::FnDecl& fn) {
         if (fn.is_extern) {
             // External functions don't need code generation
             return true;
@@ -764,7 +1103,7 @@ private:
         if (fn.name == "main" && !globals_.empty()) {
             emit_.sub_imm(x64::Reg::RSP, 32); // shadow space
             emit_.buffer().emit8(0xE8); // CALL rel32
-            std::size_t init_fixup = emit_.buffer().size();
+            std::size_t init_fixup = emit_.buffer().pos();
             emit_.buffer().emit32(0);
             call_fixups_.push_back(CallFixup{
                 .call_site = init_fixup,
@@ -819,63 +1158,40 @@ private:
     // statements
     // ========================================================================
 
-    bool generate_stmt(const ast::Stmt& stmt) {
-        // Record line mapping for debug
+    [[nodiscard]] bool generate_stmt(const ast::Stmt& stmt) {
         if (stmt.span.start.line > 0) {
             line_map_.push_back({
                 static_cast<std::uint32_t>(emit_.buffer().pos()),
                 stmt.span.start.line
             });
         }
-        
-        if (stmt.is<ast::LetStmt>()) {
-            return generate_let(stmt.as<ast::LetStmt>());
-        }
-        if (stmt.is<ast::ReturnStmt>()) {
-            return generate_return(stmt.as<ast::ReturnStmt>());
-        }
-        if (stmt.is<ast::ExprStmt>()) {
-            return generate_expr_stmt(stmt.as<ast::ExprStmt>());
-        }
-        if (stmt.is<ast::IfStmt>()) {
-            return generate_if(stmt.as<ast::IfStmt>());
-        }
-        if (stmt.is<ast::WhileStmt>()) {
-            return generate_while(stmt.as<ast::WhileStmt>());
-        }
-        if (stmt.is<ast::LoopStmt>()) {
-            return generate_loop(stmt.as<ast::LoopStmt>());
-        }
-        if (stmt.is<ast::ForStmt>()) {
-            return generate_for(stmt.as<ast::ForStmt>());
-        }
-        if (stmt.is<ast::ParallelForStmt>()) {
-            return generate_parallel_for(stmt.as<ast::ParallelForStmt>());
-        }
-        if (stmt.is<ast::BreakStmt>()) {
-            return generate_break();
-        }
-        if (stmt.is<ast::ContinueStmt>()) {
-            return generate_continue();
-        }
-        if (stmt.is<ast::BlockStmt>()) {
-            const auto& block = stmt.as<ast::BlockStmt>();
-            push_scope();
-            for (const auto& s : block.stmts) {
-                if (!generate_stmt(*s)) {
-                    pop_scope();
-                    return false;
+
+        return std::visit(overloaded{
+            [&](const ast::LetStmt& s)         { return generate_let(s); },
+            [&](const ast::ReturnStmt& s)      { return generate_return(s); },
+            [&](const ast::ExprStmt& s)        { return generate_expr_stmt(s); },
+            [&](const ast::IfStmt& s)          { return generate_if(s); },
+            [&](const ast::WhileStmt& s)       { return generate_while(s); },
+            [&](const ast::LoopStmt& s)        { return generate_loop(s); },
+            [&](const ast::ForStmt& s)         { return generate_for(s); },
+            [&](const ast::ParallelForStmt& s) { return generate_parallel_for(s); },
+            [&](const ast::BreakStmt&)         { return generate_break(); },
+            [&](const ast::ContinueStmt&)      { return generate_continue(); },
+            [&](const ast::BlockStmt& block) -> bool {
+                push_scope();
+                for (const auto& s : block.stmts) {
+                    if (!generate_stmt(*s)) {
+                        pop_scope();
+                        return false;
+                    }
                 }
-            }
-            pop_scope();
-            return true;
-        }
-        
-        error("unknown statement type");
-        return false;
+                pop_scope();
+                return true;
+            },
+        }, stmt.kind);
     }
 
-    bool generate_let(const ast::LetStmt& let) {
+    [[nodiscard]] bool generate_let(const ast::LetStmt& let) {
         Type type;
         if (let.type) {
             type = let.type->clone();
@@ -903,7 +1219,7 @@ private:
         return true;
     }
 
-    bool generate_return(const ast::ReturnStmt& ret) {
+    [[nodiscard]] bool generate_return(const ast::ReturnStmt& ret) {
         if (ret.value) {
             if (!generate_expr(*ret.value.value())) return false;
         } else {
@@ -913,11 +1229,11 @@ private:
         return true;
     }
 
-    bool generate_expr_stmt(const ast::ExprStmt& stmt) {
+    [[nodiscard]] bool generate_expr_stmt(const ast::ExprStmt& stmt) {
         return generate_expr(*stmt.expr);
     }
 
-    bool generate_if(const ast::IfStmt& if_stmt) {
+    [[nodiscard]] bool generate_if(const ast::IfStmt& if_stmt) {
         if (!generate_expr(*if_stmt.condition)) return false;
         
         emit_.test(x64::Reg::RAX, x64::Reg::RAX);
@@ -932,12 +1248,12 @@ private:
         }
         pop_scope();
 
-        if (if_stmt.else_block) {
+        if (!if_stmt.else_block.empty()) {
             std::size_t jmp_patch = emit_.jmp_rel32_placeholder();
             emit_.patch_jump(jz_patch);
 
             push_scope();
-            for (const auto& stmt : *if_stmt.else_block) {
+            for (const auto& stmt : if_stmt.else_block) {
                 if (!generate_stmt(*stmt)) {
                     pop_scope();
                     return false;
@@ -953,7 +1269,7 @@ private:
         return true;
     }
 
-    bool generate_while(const ast::WhileStmt& while_stmt) {
+    [[nodiscard]] bool generate_while(const ast::WhileStmt& while_stmt) {
         break_patches_.push_back({});
         continue_patches_.push_back({});
         std::size_t loop_start = emit_.buffer().pos();
@@ -996,13 +1312,14 @@ private:
         return true;
     }
 
-    bool generate_loop(const ast::LoopStmt& loop_stmt) {
+    [[nodiscard]] bool generate_loop(const ast::LoopStmt& loop_stmt) {
+        push_scope();
         break_patches_.push_back({});
         continue_patches_.push_back({});
         std::size_t loop_start = emit_.buffer().pos();
 
         for (const auto& stmt : loop_stmt.body) {
-            if (!generate_stmt(*stmt)) return false;
+            if (!generate_stmt(*stmt)) { pop_scope(); return false; }
         }
 
         // continue target = loop_start
@@ -1019,10 +1336,11 @@ private:
         }
         break_patches_.pop_back();
 
+        pop_scope();
         return true;
     }
 
-    bool generate_for(const ast::ForStmt& for_stmt) {
+    [[nodiscard]] bool generate_for(const ast::ForStmt& for_stmt) {
         push_scope();
         break_patches_.push_back({});
         continue_patches_.push_back({});
@@ -1037,6 +1355,12 @@ private:
         if (!call.callee->is<ast::IdentExpr>() || 
             call.callee->as<ast::IdentExpr>().name != "range") {
             error("for-in requires a range() call");
+            pop_scope();
+            return false;
+        }
+        
+        if (call.args.size() > 2) {
+            error("range() accepts 1 or 2 arguments");
             pop_scope();
             return false;
         }
@@ -1064,7 +1388,7 @@ private:
         emit_.mov_store(x64::Reg::RBP, end_sym.stack_offset, x64::Reg::RAX);
         
         // loop variable = start
-        auto& sym = current_scope_->define(for_stmt.var_name, 
+        auto& sym = current_scope_->define(for_stmt.name, 
             Type::make_primitive(PrimitiveType::I64), true);
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, start_sym.stack_offset);
         emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
@@ -1119,7 +1443,7 @@ private:
         }
     }
 
-    bool generate_break() {
+    [[nodiscard]] bool generate_break() {
         if (break_patches_.empty()) {
             error("break outside of loop");
             return false;
@@ -1129,7 +1453,7 @@ private:
         return true;
     }
 
-    bool generate_continue() {
+    [[nodiscard]] bool generate_continue() {
         if (continue_patches_.empty()) {
             error("continue outside of loop");
             return false;
@@ -1143,47 +1467,25 @@ private:
     // expressions - result always in rax
     // ========================================================================
 
-    bool generate_expr(const ast::Expr& expr) {
-        if (expr.is<ast::LiteralExpr>()) {
-            return generate_literal(expr.as<ast::LiteralExpr>());
-        }
-        if (expr.is<ast::IdentExpr>()) {
-            return generate_ident(expr.as<ast::IdentExpr>());
-        }
-        if (expr.is<ast::BinaryExpr>()) {
-            return generate_binary(expr.as<ast::BinaryExpr>());
-        }
-        if (expr.is<ast::UnaryExpr>()) {
-            return generate_unary(expr.as<ast::UnaryExpr>());
-        }
-        if (expr.is<ast::CallExpr>()) {
-            return generate_call(expr.as<ast::CallExpr>());
-        }
-        if (expr.is<ast::IndexExpr>()) {
-            return generate_index(expr.as<ast::IndexExpr>());
-        }
-        if (expr.is<ast::FieldExpr>()) {
-            return generate_field(expr.as<ast::FieldExpr>());
-        }
-        if (expr.is<ast::CastExpr>()) {
-            // For now, casts just evaluate the expression (no type checking)
-            return generate_expr(*expr.as<ast::CastExpr>().expr);
-        }
-        if (expr.is<ast::StructExpr>()) {
-            return generate_struct_literal(expr.as<ast::StructExpr>());
-        }
-        if (expr.is<ast::SpawnExpr>()) {
-            return generate_spawn(expr.as<ast::SpawnExpr>());
-        }
-        if (expr.is<ast::AwaitExpr>()) {
-            return generate_await(expr.as<ast::AwaitExpr>());
-        }
-        if (expr.is<ast::AtomicOpExpr>()) {
-            return generate_atomic_op(expr.as<ast::AtomicOpExpr>());
-        }
-        
-        error("unknown expression type");
-        return false;
+    [[nodiscard]] bool generate_expr(const ast::Expr& expr) {
+        return std::visit(overloaded{
+            [&](const ast::LiteralExpr& e) { return generate_literal(e); },
+            [&](const ast::IdentExpr& e)   { return generate_ident(e); },
+            [&](const ast::BinaryExpr& e)  { return generate_binary(e); },
+            [&](const ast::UnaryExpr& e)   { return generate_unary(e); },
+            [&](const ast::CallExpr& e)    { return generate_call(e); },
+            [&](const ast::IndexExpr& e)   { return generate_index(e); },
+            [&](const ast::FieldExpr& e)   { return generate_field(e); },
+            [&](const ast::CastExpr& e)    { return generate_expr(*e.expr); },
+            [&](const ast::StructExpr& e)  { return generate_struct_literal(e); },
+            [&](const ast::SpawnExpr& e)   { return generate_spawn(e); },
+            [&](const ast::AwaitExpr& e)   { return generate_await(e); },
+            [&](const ast::AtomicOpExpr& e){ return generate_atomic_op(e); },
+            [&](const auto&) -> bool {
+                error("unknown expression type");
+                return false;
+            },
+        }, expr.kind);
     }
 
     // resolve the struct type name that a field expression evaluates to
@@ -1195,11 +1497,9 @@ private:
             const auto& name = field.base->as<ast::IdentExpr>().name;
             Symbol* sym = current_scope_->lookup(name);
             if (!sym) return std::nullopt;
-            if (std::holds_alternative<StructType>(sym->type.kind))
-                base_struct = std::get<StructType>(sym->type.kind).name;
-            else if (std::holds_alternative<std::string>(sym->type.kind))
-                base_struct = std::get<std::string>(sym->type.kind);
-            else return std::nullopt;
+            auto sn = get_struct_name(sym->type);
+            if (!sn) return std::nullopt;
+            base_struct = *sn;
         } else if (field.base->is<ast::FieldExpr>()) {
             auto inner = resolve_field_type(field.base->as<ast::FieldExpr>());
             if (!inner) return std::nullopt;
@@ -1214,17 +1514,13 @@ private:
         
         for (const auto& [fname, ftype] : it->second.fields) {
             if (fname == field.field) {
-                if (std::holds_alternative<StructType>(ftype.kind))
-                    return std::get<StructType>(ftype.kind).name;
-                if (std::holds_alternative<std::string>(ftype.kind))
-                    return std::get<std::string>(ftype.kind);
-                return std::nullopt; // primitive field, no struct type
+                return get_struct_name(ftype);
             }
         }
         return std::nullopt;
     }
 
-    bool generate_field(const ast::FieldExpr& field) {
+    [[nodiscard]] bool generate_field(const ast::FieldExpr& field) {
         // check if this is an enum variant access (EnumName.Variant)
         if (field.base->is<ast::IdentExpr>()) {
             const std::string& base_name = field.base->as<ast::IdentExpr>().name;
@@ -1250,14 +1546,12 @@ private:
                 error(std::format("undefined variable: {}", var_name));
                 return false;
             }
-            if (std::holds_alternative<StructType>(sym->type.kind))
-                struct_name = std::get<StructType>(sym->type.kind).name;
-            else if (std::holds_alternative<std::string>(sym->type.kind))
-                struct_name = std::get<std::string>(sym->type.kind);
-            else {
+            auto sn = get_struct_name(sym->type);
+            if (!sn) {
                 error(std::format("variable '{}' is not a struct type", var_name));
                 return false;
             }
+            struct_name = *sn;
             // load base pointer from variable
             emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
         } else {
@@ -1302,7 +1596,7 @@ private:
         return true;
     }
 
-    bool generate_struct_literal(const ast::StructExpr& lit) {
+    [[nodiscard]] bool generate_struct_literal(const ast::StructExpr& lit) {
         // Look up struct definition
         auto it = structs_.find(lit.name);
         if (it == structs_.end()) {
@@ -1322,16 +1616,16 @@ private:
             emit_iat_call_raw(pe::iat::GetProcessHeap);
             
             emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap -> RCX
-            emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor edx, edx (flags = 0)
+            emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
             emit_.mov_imm32(x64::Reg::R8, static_cast<std::int32_t>(size));  // size -> R8
             
             emit_iat_call_raw(pe::iat::HeapAlloc);
             
             emit_.add_imm(x64::Reg::RSP, 32);
-        } else if (runtime_malloc_) {
+        } else if (rt_.malloc_fn) {
             emit_.mov_imm32(x64::Reg::RCX, static_cast<std::int32_t>(size));
             emit_.sub_imm(x64::Reg::RSP, 32);
-            emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(runtime_malloc_));
+            emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.malloc_fn));
             emit_.call(x64::Reg::RAX);
             emit_.add_imm(x64::Reg::RSP, 32);
         }
@@ -1345,13 +1639,17 @@ private:
             auto offset_opt = info.get_field_offset(field_name);
             if (!offset_opt) {
                 error(std::format("struct '{}' has no field '{}'", lit.name, field_name));
+                emit_.pop(x64::Reg::RAX); // clean up struct pointer before bailing
                 return false;
             }
             
             std::size_t offset = *offset_opt;
             
             // Generate value expression -> RAX
-            if (!generate_expr(*value_expr)) return false;
+            if (!generate_expr(*value_expr)) {
+                emit_.pop(x64::Reg::RAX); // clean up struct pointer before bailing
+                return false;
+            }
             
             // Save value
             emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
@@ -1372,7 +1670,7 @@ private:
         return true;
     }
 
-    bool generate_index(const ast::IndexExpr& idx) {
+    [[nodiscard]] bool generate_index(const ast::IndexExpr& idx) {
         // Generate base address -> RAX
         if (!generate_expr(*idx.base)) return false;
         emit_.push(x64::Reg::RAX);  // Save base
@@ -1395,7 +1693,7 @@ private:
         return true;
     }
 
-    bool generate_literal(const ast::LiteralExpr& lit) {
+    [[nodiscard]] bool generate_literal(const ast::LiteralExpr& lit) {
         if (auto* i = std::get_if<std::int64_t>(&lit.value)) {
             if (*i >= std::numeric_limits<std::int32_t>::min() && *i <= std::numeric_limits<std::int32_t>::max()) {
                 emit_.mov_imm32(x64::Reg::RAX, static_cast<std::int32_t>(*i));
@@ -1413,10 +1711,7 @@ private:
             return true;
         }
         if (auto* d = std::get_if<double>(&lit.value)) {
-            // Store double as raw bits
-            std::uint64_t bits;
-            std::memcpy(&bits, d, sizeof(double));
-            emit_.mov_imm64(x64::Reg::RAX, bits);
+            emit_.mov_imm64(x64::Reg::RAX, std::bit_cast<std::uint64_t>(*d));
             return true;
         }
         if (auto* c = std::get_if<char32_t>(&lit.value)) {
@@ -1468,7 +1763,7 @@ private:
                 }
                 
                 // Record position of string data
-                std::size_t string_start = emit_.buffer().size();
+                std::size_t string_start = emit_.buffer().pos();
                 
                 // Emit string bytes
                 for (char c : str) {
@@ -1479,7 +1774,7 @@ private:
                 }
                 
                 // Now emit: lea rax, [rip - string_len_with_lea]
-                std::size_t current_pos = emit_.buffer().size();
+                std::size_t current_pos = emit_.buffer().pos();
                 std::int32_t offset = static_cast<std::int32_t>(string_start) - static_cast<std::int32_t>(current_pos + 7);
                 
                 emit_.buffer().emit8(0x48);  // REX.W
@@ -1490,10 +1785,9 @@ private:
                 emit_.buffer().emit8(static_cast<std::uint8_t>((offset >> 16) & 0xFF));
                 emit_.buffer().emit8(static_cast<std::uint8_t>((offset >> 24) & 0xFF));
             }
-            else if (runtime_make_string_) {
+            else if (rt_.make_string) {
                 // Normal mode: use runtime string table
-                using MakeStringFn = std::int64_t(*)(const char*);
-                auto make_string = reinterpret_cast<MakeStringFn>(runtime_make_string_);
+                auto make_string = rt_.make_string;
                 std::int64_t handle = make_string(s->c_str());
                 emit_.mov_imm64(x64::Reg::RAX, static_cast<std::uint64_t>(handle));
             } else {
@@ -1507,7 +1801,7 @@ private:
         return false;
     }
 
-    bool generate_ident(const ast::IdentExpr& ident) {
+    [[nodiscard]] bool generate_ident(const ast::IdentExpr& ident) {
         // try local scope first
         Symbol* sym = current_scope_->lookup(ident.name);
         if (sym) {
@@ -1522,13 +1816,7 @@ private:
             
             if (has_global_slot_ && dll_mode_) {
                 // load base pointer from rip-relative slot, then load value at offset
-                emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D);
-                emit_.buffer().emit8(0x05); // lea rax, [rip+disp32]
-                std::size_t lea_site = emit_.buffer().size();
-                emit_.buffer().emit32(0);
-                std::int32_t rel = static_cast<std::int32_t>(global_base_slot_)
-                    - static_cast<std::int32_t>(lea_site + 4);
-                emit_.buffer().patch32(lea_site, static_cast<std::uint32_t>(rel));
+                emit_lea_rip_slot(x64::Reg::RAX);
                 emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0); // deref slot -> base ptr
                 emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, static_cast<std::int32_t>(gv.offset));
                 return true;
@@ -1551,7 +1839,7 @@ private:
         return false;
     }
 
-    bool generate_binary(const ast::BinaryExpr& bin) {
+    [[nodiscard]] bool generate_binary(const ast::BinaryExpr& bin) {
         using Op = ast::BinaryExpr::Op;
 
         // Handle assignment and compound assignment specially
@@ -1559,7 +1847,8 @@ private:
             return generate_assignment(bin);
         }
         if (bin.op == Op::AddAssign || bin.op == Op::SubAssign || 
-            bin.op == Op::MulAssign || bin.op == Op::DivAssign) {
+            bin.op == Op::MulAssign || bin.op == Op::DivAssign ||
+            bin.op == Op::ModAssign) {
             return generate_compound_assign(bin);
         }
 
@@ -1681,7 +1970,7 @@ private:
         return true;
     }
 
-    bool generate_assignment(const ast::BinaryExpr& bin) {
+    [[nodiscard]] bool generate_assignment(const ast::BinaryExpr& bin) {
         // Right side -> RAX
         if (!generate_expr(*bin.rhs)) return false;
 
@@ -1707,14 +1996,12 @@ private:
                     error(std::format("cannot assign to field of immutable variable: {}", var_name));
                     return false;
                 }
-                if (std::holds_alternative<StructType>(sym->type.kind))
-                    struct_name = std::get<StructType>(sym->type.kind).name;
-                else if (std::holds_alternative<std::string>(sym->type.kind))
-                    struct_name = std::get<std::string>(sym->type.kind);
-                else {
+                auto sn = get_struct_name(sym->type);
+                if (!sn) {
                     error(std::format("variable '{}' is not a struct type", var_name));
                     return false;
                 }
+                struct_name = *sn;
                 // load base pointer
                 emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
             } else if (field.base->is<ast::FieldExpr>()) {
@@ -1795,13 +2082,7 @@ private:
                 emit_.push(x64::Reg::RAX);
                 
                 // load base pointer from rip-relative slot
-                emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D);
-                emit_.buffer().emit8(0x05); // lea rax, [rip+disp32]
-                std::size_t lea_site = emit_.buffer().size();
-                emit_.buffer().emit32(0);
-                std::int32_t rel = static_cast<std::int32_t>(global_base_slot_)
-                    - static_cast<std::int32_t>(lea_site + 4);
-                emit_.buffer().patch32(lea_site, static_cast<std::uint32_t>(rel));
+                emit_lea_rip_slot(x64::Reg::RAX);
                 emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0); // deref slot -> base ptr
                 
                 // pop value into RCX, store at base + offset
@@ -1818,7 +2099,7 @@ private:
         return false;
     }
 
-    bool generate_compound_assign(const ast::BinaryExpr& bin) {
+    [[nodiscard]] bool generate_compound_assign(const ast::BinaryExpr& bin) {
         using Op = ast::BinaryExpr::Op;
         
         // handle field compound assign: player.health += 10
@@ -1837,14 +2118,12 @@ private:
             }
             
             std::string struct_name;
-            if (std::holds_alternative<StructType>(sym->type.kind)) {
-                struct_name = std::get<StructType>(sym->type.kind).name;
-            } else if (std::holds_alternative<std::string>(sym->type.kind)) {
-                struct_name = std::get<std::string>(sym->type.kind);
-            } else {
+            auto sn = get_struct_name(sym->type);
+            if (!sn) {
                 error(std::format("variable '{}' is not a struct type", var_name));
                 return false;
             }
+            struct_name = *sn;
             
             auto struct_it = structs_.find(struct_name);
             if (struct_it == structs_.end()) {
@@ -1876,6 +2155,7 @@ private:
                 case Op::SubAssign: emit_.sub(x64::Reg::RAX, x64::Reg::RCX); break;
                 case Op::MulAssign: emit_.imul(x64::Reg::RAX, x64::Reg::RCX); break;
                 case Op::DivAssign: emit_.cqo(); emit_.idiv(x64::Reg::RCX); break;
+                case Op::ModAssign: emit_.cqo(); emit_.idiv(x64::Reg::RCX); emit_.mov(x64::Reg::RAX, x64::Reg::RDX); break;
                 default: error("unsupported compound op"); return false;
             }
             
@@ -1926,6 +2206,11 @@ private:
                 emit_.cqo();
                 emit_.idiv(x64::Reg::RCX);
                 break;
+            case Op::ModAssign:
+                emit_.cqo();
+                emit_.idiv(x64::Reg::RCX);
+                emit_.mov(x64::Reg::RAX, x64::Reg::RDX);  // remainder lives in rdx
+                break;
             default:
                 error("unsupported compound assignment operator");
                 return false;
@@ -1936,7 +2221,7 @@ private:
         return true;
     }
 
-    bool generate_unary(const ast::UnaryExpr& un) {
+    [[nodiscard]] bool generate_unary(const ast::UnaryExpr& un) {
         using Op = ast::UnaryExpr::Op;
 
         // Generate operand -> RAX
@@ -2031,7 +2316,7 @@ private:
         return true;
     }
 
-    bool generate_method_call(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_method_call(const ast::CallExpr& call) {
         // method call: player.damage(50) -> Player_damage(player, 50)
         // self is implicit first arg, so total args = 1 + call.args.size()
         const auto& field = call.callee->as<ast::FieldExpr>();
@@ -2051,14 +2336,12 @@ private:
         }
         
         std::string class_name;
-        if (std::holds_alternative<StructType>(sym->type.kind)) {
-            class_name = std::get<StructType>(sym->type.kind).name;
-        } else if (std::holds_alternative<std::string>(sym->type.kind)) {
-            class_name = std::get<std::string>(sym->type.kind);
-        } else {
+        auto sn = get_struct_name(sym->type);
+        if (!sn) {
             error(std::format("variable '{}' is not a class type", var_name));
             return false;
         }
+        class_name = *sn;
         
         std::string mangled_name = class_name + "_" + method_name;
         
@@ -2107,7 +2390,7 @@ private:
         
         // call
         emit_.buffer().emit8(0xE8);
-        std::size_t fixup_site = emit_.buffer().size();
+        std::size_t fixup_site = emit_.buffer().pos();
         emit_.buffer().emit32(0);
         call_fixups_.push_back({fixup_site, mangled_name});
         
@@ -2117,7 +2400,7 @@ private:
         return true;
     }
 
-    bool generate_call(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_call(const ast::CallExpr& call) {
         // Handle method calls: player.damage(50) -> Player_damage(player, 50)
         if (call.callee->is<ast::FieldExpr>()) {
             return generate_method_call(call);
@@ -2131,425 +2414,39 @@ private:
 
         const std::string& raw_fn_name = call.callee->as<ast::IdentExpr>().name;
         
-        // Normalize namespace syntax: Mem.read -> mem_read
-        // This allows PascalCase namespaces like Mem.read, Console.println
-        std::string fn_name;
-        fn_name.reserve(raw_fn_name.size());
+        // normalize for builtin lookup only (dots -> underscores, lowercase)
+        // user-defined calls keep their original casing
+        std::string normalized;
+        normalized.reserve(raw_fn_name.size());
         for (char c : raw_fn_name) {
             if (c == '.') {
-                fn_name += '_';
+                normalized += '_';
             } else if (c >= 'A' && c <= 'Z') {
-                fn_name += static_cast<char>(c + 32);  // lowercase
+                normalized += static_cast<char>(c + 32);
             } else {
-                fn_name += c;
+                normalized += c;
             }
         }
         
-        // DLL-mode builtins - these emit relative calls to embedded runtime
+        // builtin dispatch via lookup tables
+        init_builtin_tables();
+
+        // dll-mode builtins get first crack at the name
         if (dll_mode_) {
-            if (fn_name == "dll_print" || fn_name == "print") {
-                return generate_dll_builtin_print(call);
-            }
-            if (fn_name == "dll_set_title" || fn_name == "set_title") {
-                return generate_dll_builtin_set_title(call);
-            }
-            if (fn_name == "alloc_console") {
-                return generate_dll_builtin_alloc_console(call);
-            }
-            if (fn_name == "print_int" || fn_name == "print_dec") {
-                return generate_dll_builtin_print_dec(call);
-            }
-            if (fn_name == "print_hex") {
-                return generate_dll_builtin_print_int(call);
-            }
-            // Memory operations - inline, no runtime needed
-            if (fn_name == "mem_read" || fn_name == "mem_read_i64") {
-                return generate_dll_mem_read(call, 8);
-            }
-            if (fn_name == "mem_read_i32") {
-                return generate_dll_mem_read(call, 4);
-            }
-            if (fn_name == "mem_read_i16") {
-                return generate_dll_mem_read(call, 2);
-            }
-            if (fn_name == "mem_read_i8") {
-                return generate_dll_mem_read(call, 1);
-            }
-            if (fn_name == "mem_write" || fn_name == "mem_write_i64") {
-                return generate_dll_mem_write(call, 8);
-            }
-            if (fn_name == "mem_write_i32") {
-                return generate_dll_mem_write(call, 4);
-            }
-            if (fn_name == "mem_write_i16") {
-                return generate_dll_mem_write(call, 2);
-            }
-            if (fn_name == "mem_write_i8") {
-                return generate_dll_mem_write(call, 1);
-            }
-            // Debug: crash() triggers access violation to test crash handler
-            if (fn_name == "crash") {
-                return generate_dll_crash(call);
-            }
-            // Install crash handler (opt-in)
-            if (fn_name == "install_crash_handler") {
-                return generate_dll_install_crash_handler(call);
-            }
-            // test builtins for crash handler verification
-            if (fn_name == "trigger_illegal") {
-                emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x0B);  // ud2
-                return true;
-            }
-            if (fn_name == "trigger_stack_overflow") {
-                // RaiseException(0xC00000FD, 0, 0, NULL) - directly fires stack overflow
-                // injected DLL threads dont have guard pages so we cant trigger it naturally
-                // cant use mov_imm32 here because it sign-extends with REX.W
-                emit_.buffer().emit8(0xB9);                     // mov ecx, imm32 (zero-extends to rcx)
-                emit_.buffer().emit32(0xC00000FD);
-                emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);     // dwExceptionFlags = 0
-                emit_.xor_(x64::Reg::R8, x64::Reg::R8);       // nNumberOfArguments = 0
-                emit_.xor_(x64::Reg::R9, x64::Reg::R9);       // lpArguments = NULL
-                emit_.sub_imm(x64::Reg::RSP, 32);
-                emit_iat_call_raw(pe::iat::RaiseException);
-                emit_.add_imm(x64::Reg::RSP, 32);
-                return true;
-            }
-            // breakpoint - emit INT3, VEH catches it and opens REPL
-            if (fn_name == "breakpoint") {
-                emit_.buffer().emit8(0xCC);
-                return true;
-            }
-            // conditional breakpoint - only fires when arg is nonzero
-            if (fn_name == "breakpoint_if") {
-                if (call.args.empty()) {
-                    error("breakpoint_if requires 1 argument");
-                    return false;
-                }
-                if (!generate_expr(*call.args[0])) return false;
-                emit_.test(x64::Reg::RAX, x64::Reg::RAX);
-                // jz +1 (skip the int3)
-                emit_.buffer().emit8(0x74); emit_.buffer().emit8(0x01);
-                emit_.buffer().emit8(0xCC);
-                return true;
-            }
-            // Memory block operations
-            if (fn_name == "memcpy") {
-                return generate_dll_memcpy(call);
-            }
-            if (fn_name == "memset") {
-                return generate_dll_memset(call);
-            }
-            if (fn_name == "memcmp") {
-                return generate_dll_memcmp(call);
-            }
-            // Timing
-            if (fn_name == "sleep" || fn_name == "Sleep") {
-                return generate_dll_sleep(call);
-            }
-            if (fn_name == "get_tick_count" || fn_name == "GetTickCount") {
-                return generate_dll_get_tick_count(call);
-            }
-            // Math - basic float operations
-            if (fn_name == "sqrt") {
-                return generate_dll_sqrt(call);
-            }
-            if (fn_name == "sin") {
-                return generate_dll_sin(call);
-            }
-            if (fn_name == "cos") {
-                return generate_dll_cos(call);
-            }
-            if (fn_name == "tan") {
-                return generate_dll_tan(call);
-            }
-            if (fn_name == "atan2") {
-                return generate_dll_atan2(call);
-            }
-            if (fn_name == "floor") {
-                return generate_dll_floor(call);
-            }
-            if (fn_name == "ceil") {
-                return generate_dll_ceil(call);
-            }
-            if (fn_name == "abs" || fn_name == "fabs") {
-                return generate_dll_abs(call);
-            }
-            if (fn_name == "pow") {
-                return generate_dll_pow(call);
-            }
-            // Memory allocation
-            if (fn_name == "malloc") {
-                return generate_dll_malloc(call);
-            }
-            if (fn_name == "free") {
-                return generate_dll_free(call);
-            }
-            // array builtins
-            if (fn_name == "array_new" || fn_name == "new_array") {
-                return generate_dll_array_new(call);
-            }
-            if (fn_name == "array_get") {
-                return generate_dll_array_get(call);
-            }
-            if (fn_name == "array_set") {
-                return generate_dll_array_set(call);
-            }
-            if (fn_name == "array_len") {
-                return generate_dll_array_len(call);
-            }
-            if (fn_name == "array_free") {
-                return generate_dll_array_free(call);
-            }
-            // String builtins
-            if (fn_name == "string_length" || fn_name == "strlen") {
-                return generate_dll_string_length(call);
-            }
-            if (fn_name == "string_append" || fn_name == "concat") {
-                return generate_dll_string_append(call);
-            }
-            if (fn_name == "int_to_string" || fn_name == "itoa") {
-                return generate_dll_int_to_string(call);
-            }
-            if (fn_name == "string_equals" || fn_name == "streq") {
-                return generate_dll_string_equals(call);
-            }
-            if (fn_name == "string_substring" || fn_name == "substr") {
-                return generate_dll_string_substring(call);
-            }
-            if (fn_name == "print_char" || fn_name == "putc") {
-                return generate_dll_print_char(call);
-            }
-            // Memory protection
-            if (fn_name == "virtual_protect" || fn_name == "VirtualProtect") {
-                return generate_dll_virtual_protect(call);
-            }
-            if (fn_name == "virtual_alloc" || fn_name == "VirtualAlloc") {
-                return generate_dll_virtual_alloc(call);
-            }
-            if (fn_name == "virtual_free" || fn_name == "VirtualFree") {
-                return generate_dll_virtual_free(call);
-            }
-            // Pattern scanner
-            if (fn_name == "scan") {
-                return generate_dll_scan(call);
-            }
-            // Module functions
-            if (fn_name == "get_module" || fn_name == "GetModuleHandle") {
-                return generate_dll_get_module(call);
-            }
+            auto dit = dll_builtins_.find(normalized);
+            if (dit != dll_builtins_.end()) return dit->second(call);
+        }
+
+        // shared builtins (jit mode, or dll fallthrough for things like println)
+        {
+            auto jit = jit_builtins_.find(normalized);
+            if (jit != jit_builtins_.end()) return jit->second(call);
         }
         
-        // Check for builtins first
-        if (fn_name == "print_int") {
-            return generate_builtin_print_int(call);
-        }
-        if (fn_name == "print") {
-            // DLL mode uses embedded print, JIT uses runtime
-            if (dll_mode_) {
-                return generate_dll_builtin_print(call);
-            }
-            return generate_builtin_string_op(call, runtime_print_str_);
-        }
-        if (fn_name == "println") {
-            // Print string then newline
-            if (dll_mode_) {
-                if (!generate_dll_builtin_print(call)) return false;
-                // Add newline
-                emit_.sub_imm(x64::Reg::RSP, 32);
-                // Put "\n" on stack
-                emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x04);
-                emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x0A);  // mov byte [rsp], '\n'
-                emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x44);
-                emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x01);
-                emit_.buffer().emit8(0x00);  // mov byte [rsp+1], 0
-                emit_.mov(x64::Reg::RCX, x64::Reg::RSP);
-                
-                emit_startup_call(print_offset_);
-                
-                emit_.add_imm(x64::Reg::RSP, 32);
-            } else {
-                if (!generate_builtin_string_op(call, runtime_print_str_)) return false;
-            }
-            return true;
-        }
-        if (fn_name == "read_file") {
-            return generate_builtin_string_op(call, runtime_read_file_);
-        }
-        if (fn_name == "string_length" || fn_name == "strlen") {
-            return generate_builtin_string_op(call, runtime_string_length_);
-        }
-        if (fn_name == "string_get_char" || fn_name == "char_at") {
-            return generate_builtin_string_get_char(call);
-        }
-        if (fn_name == "print_string" || fn_name == "puts") {
-            return generate_builtin_string_op(call, runtime_print_string_);
-        }
-        if (fn_name == "write_file") {
-            return generate_builtin_two_arg(call, runtime_write_file_);
-        }
-        if (fn_name == "malloc") {
-            return generate_builtin_string_op(call, runtime_malloc_);
-        }
-        if (fn_name == "free") {
-            return generate_builtin_string_op(call, runtime_free_);
-        }
-        if (fn_name == "array_new" || fn_name == "new_array") {
-            return generate_builtin_string_op(call, runtime_array_new_);
-        }
-        if (fn_name == "array_get") {
-            return generate_builtin_two_arg(call, runtime_array_get_);
-        }
-        if (fn_name == "array_set") {
-            return generate_builtin_three_arg(call, runtime_array_set_);
-        }
-        if (fn_name == "array_len") {
-            return generate_builtin_string_op(call, runtime_array_len_);
-        }
-        if (fn_name == "array_free") {
-            return generate_builtin_string_op(call, runtime_array_free_);
-        }
-        if (fn_name == "string_append" || fn_name == "concat") {
-            return generate_builtin_two_arg(call, runtime_string_append_);
-        }
-        if (fn_name == "int_to_string" || fn_name == "itoa") {
-            return generate_builtin_string_op(call, runtime_int_to_string_);
-        }
-        if (fn_name == "print_char" || fn_name == "putc") {
-            return generate_builtin_string_op(call, runtime_print_char_);
-        }
-        // Self-hosting helpers
-        if (fn_name == "string_equals" || fn_name == "streq") {
-            return generate_builtin_two_arg(call, runtime_string_equals_);
-        }
-        if (fn_name == "string_substring" || fn_name == "substr") {
-            return generate_builtin_three_arg(call, runtime_string_substring_);
-        }
-        if (fn_name == "is_alpha") {
-            return generate_builtin_string_op(call, runtime_is_alpha_);
-        }
-        if (fn_name == "is_digit") {
-            return generate_builtin_string_op(call, runtime_is_digit_);
-        }
-        if (fn_name == "is_alnum") {
-            return generate_builtin_string_op(call, runtime_is_alnum_);
-        }
-        if (fn_name == "is_whitespace") {
-            return generate_builtin_string_op(call, runtime_is_whitespace_);
-        }
-        if (fn_name == "string_starts_with" || fn_name == "starts_with") {
-            return generate_builtin_two_arg(call, runtime_string_starts_with_);
-        }
-        if (fn_name == "exit") {
-            return generate_builtin_string_op(call, runtime_exit_);
-        }
-        if (fn_name == "write_bytes") {
-            return generate_builtin_three_arg(call, runtime_write_bytes_);
-        }
-        if (fn_name == "buffer_new") {
-            return generate_builtin_string_op(call, runtime_buffer_new_);
-        }
-        if (fn_name == "buffer_push") {
-            return generate_builtin_two_arg(call, runtime_buffer_push_);
-        }
-        if (fn_name == "buffer_len") {
-            return generate_builtin_string_op(call, runtime_buffer_len_);
-        }
-        if (fn_name == "parse_int" || fn_name == "atoi") {
-            return generate_builtin_string_op(call, runtime_parse_int_);
-        }
-        // Memory operations - Load function address dynamically from symbol
-        // These use the extern "C" functions defined in opus.ixx
-        if (fn_name == "mem_read" || fn_name == "mem_read_i64" || fn_name == "memory_read") {
-            return generate_builtin_mem_read_i64(call);
-        }
-        if (fn_name == "mem_read_i32") {
-            return generate_builtin_mem_read_i32(call);
-        }
-        if (fn_name == "mem_read_i16") {
-            return generate_builtin_mem_read_i16(call);
-        }
-        if (fn_name == "mem_read_i8") {
-            return generate_builtin_mem_read_i8(call);
-        }
-        if (fn_name == "mem_read_ptr" || fn_name == "read_ptr") {
-            return generate_builtin_mem_read_i64(call);  // Same as i64
-        }
-        if (fn_name == "mem_write" || fn_name == "mem_write_i64" || fn_name == "memory_write") {
-            return generate_builtin_mem_write_i64(call);
-        }
-        if (fn_name == "mem_write_i32") {
-            return generate_builtin_mem_write_i32(call);
-        }
-        if (fn_name == "mem_write_i16") {
-            return generate_builtin_mem_write_i16(call);
-        }
-        if (fn_name == "mem_write_i8") {
-            return generate_builtin_mem_write_i8(call);
-        }
-        if (fn_name == "mem_write_ptr" || fn_name == "write_ptr") {
-            return generate_builtin_mem_write_i64(call);  // Same as i64
-        }
-        // FFI - Windows API
-        if (fn_name == "get_module" || fn_name == "GetModuleHandle") {
-            return generate_builtin_ffi_one_arg(call, "get_module");
-        }
-        if (fn_name == "load_library" || fn_name == "LoadLibrary") {
-            return generate_builtin_ffi_one_arg(call, "load_library");
-        }
-        if (fn_name == "get_proc" || fn_name == "GetProcAddress") {
-            return generate_builtin_ffi_two_arg(call, "get_proc");
-        }
-        if (fn_name == "ffi_call" || fn_name == "ffi_call0") {
-            return generate_builtin_ffi_one_arg(call, "ffi_call0");
-        }
-        if (fn_name == "ffi_call1") {
-            return generate_builtin_ffi_two_arg(call, "ffi_call1");
-        }
-        if (fn_name == "ffi_call2") {
-            return generate_builtin_ffi_three_arg(call, "ffi_call2");
-        }
-        if (fn_name == "ffi_call3") {
-            return generate_builtin_ffi_four_arg(call, "ffi_call3");
-        }
-        if (fn_name == "ffi_call4") {
-            return generate_builtin_ffi_five_arg(call, "ffi_call4");
-        }
-        if (fn_name == "msgbox" || fn_name == "MessageBox") {
-            return generate_builtin_ffi_three_arg(call, "msgbox");
-        }
-        if (fn_name == "get_last_error" || fn_name == "GetLastError") {
-            return generate_builtin_ffi_zero_arg("get_last_error");
-        }
-        if (fn_name == "virtual_protect" || fn_name == "VirtualProtect") {
-            return generate_builtin_ffi_three_arg(call, "virtual_protect");
-        }
-        if (fn_name == "get_current_process" || fn_name == "GetCurrentProcess") {
-            return generate_builtin_ffi_zero_arg("get_current_process");
-        }
-        if (fn_name == "get_current_process_id" || fn_name == "GetCurrentProcessId" || fn_name == "getpid") {
-            return generate_builtin_ffi_zero_arg("get_current_process_id");
-        }
-        // Console functions
-        if (fn_name == "alloc_console" || fn_name == "AllocConsole") {
-            return generate_builtin_ffi_zero_arg("alloc_console");
-        }
-        if (fn_name == "free_console" || fn_name == "FreeConsole") {
-            return generate_builtin_ffi_zero_arg("free_console");
-        }
-        if (fn_name == "set_console_title" || fn_name == "SetConsoleTitle") {
-            return generate_builtin_ffi_one_arg(call, "set_console_title");
-        }
-        if (fn_name == "range") {
-            // range() is handled specially in for loops, not as a regular call
-            // If called directly, just return 0
-            emit_.mov_imm32(x64::Reg::RAX, 0);
-            return true;
-        }
-        
-        // Look up function (to verify it exists)
-        auto it = functions_.find(fn_name);
+        // user-defined function - use original name to preserve casing
+        auto it = functions_.find(raw_fn_name);
         if (it == functions_.end()) {
-            error(std::format("undefined function: {}", fn_name));
+            error(std::format("undefined function: {}", raw_fn_name));
             return false;
         }
 
@@ -2619,13 +2516,13 @@ private:
 
         // Emit call with placeholder offset (will be patched in fixup pass)
         emit_.buffer().emit8(0xE8);  // CALL rel32
-        std::size_t fixup_site = emit_.buffer().size();
+        std::size_t fixup_site = emit_.buffer().pos();
         emit_.buffer().emit32(0);  // Placeholder - will be patched
         
         // Record fixup for later patching
         call_fixups_.push_back(CallFixup{
             .call_site = fixup_site,
-            .target_fn = fn_name
+            .target_fn = raw_fn_name
         });
         
         // Restore stack (alloc + pushed args)
@@ -2634,7 +2531,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_print_int(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_print_int(const ast::CallExpr& call) {
         if (call.args.empty()) {
             error("print_int requires an argument");
             return false;
@@ -2650,9 +2547,9 @@ private:
         emit_.sub_imm(x64::Reg::RSP, 32);
         
         // Load function pointer and call
-        if (runtime_print_int_) {
+        if (rt_.print_int) {
             // Load function pointer into RAX
-            emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(runtime_print_int_));
+            emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.print_int));
             // Call through RAX
             emit_.call(x64::Reg::RAX);
         }
@@ -2671,7 +2568,7 @@ private:
     // offsets come from pe::DllGenerator constexpr chain
     // ========================================================================
     
-    bool generate_dll_builtin_print(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_builtin_print(const ast::CallExpr& call) {
         if (call.args.empty()) {
             error("dll_print requires a string argument");
             return false;
@@ -2688,7 +2585,7 @@ private:
         return true;
     }
     
-    bool generate_dll_builtin_set_title(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_builtin_set_title(const ast::CallExpr& call) {
         if (call.args.empty()) {
             error("set_title requires a string argument");
             return false;
@@ -2705,7 +2602,7 @@ private:
         return true;
     }
     
-    bool generate_dll_builtin_alloc_console([[maybe_unused]] const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_builtin_alloc_console([[maybe_unused]] const ast::CallExpr& call) {
         emit_.sub_imm(x64::Reg::RSP, 32);
         emit_startup_call(alloc_console_offset_);
         emit_.add_imm(x64::Reg::RSP, 32);
@@ -2714,7 +2611,7 @@ private:
         return true;
     }
     
-    bool generate_dll_builtin_print_int(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_builtin_print_hex(const ast::CallExpr& call) {
         // prints value as "0x" + 8 hex digits + newline
         if (call.args.empty()) {
             error("print_int requires an argument");
@@ -2737,7 +2634,7 @@ private:
         emit_.buffer().emit8(0x41); emit_.buffer().emit8(0xB0); emit_.buffer().emit8(0x08);  // mov r8b, 8
         
         // nibble extraction loop: shift top nibble out, convert to ascii, store
-        std::size_t loop_start = emit_.buffer().size();
+        std::size_t loop_start = emit_.buffer().pos();
         
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xCE);  // mov rsi, rcx
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xC1); emit_.buffer().emit8(0xEE); emit_.buffer().emit8(0x1C);  // shr rsi, 28
@@ -2756,7 +2653,7 @@ private:
         
         emit_.buffer().emit8(0x41); emit_.buffer().emit8(0xFE); emit_.buffer().emit8(0xC8);  // dec r8b
         emit_.buffer().emit8(0x75);  // jnz
-        std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().size() - 1);
+        std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().pos() - 1);
         emit_.buffer().emit8(static_cast<std::uint8_t>(loop_offset));
         
         // terminate and print
@@ -2773,7 +2670,7 @@ private:
         return true;
     }
     
-    bool generate_dll_builtin_print_dec(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_builtin_print_dec(const ast::CallExpr& call) {
         // signed decimal print with negative handling
         if (call.args.empty()) {
             error("print_dec requires an argument");
@@ -2781,6 +2678,9 @@ private:
         }
         
         if (!generate_expr(*call.args[0])) return false;
+        
+        emit_.push(x64::Reg::RDI);
+        emit_.push(x64::Reg::RSI);
         
         emit_.sub_imm(x64::Reg::RSP, 64);
         emit_.mov(x64::Reg::R8, x64::Reg::RAX);
@@ -2790,7 +2690,7 @@ private:
         
         // check sign
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xC0);  // test r8, r8
-        std::size_t jns_pos = emit_.buffer().size();
+        std::size_t jns_pos = emit_.buffer().pos();
         emit_.buffer().emit8(0x79); emit_.buffer().emit8(0x00);  // jns .positive
         
         // negative: negate r8, set r9=1
@@ -2799,8 +2699,12 @@ private:
         emit_.buffer().emit8(0x01); emit_.buffer().emit8(0x00); emit_.buffer().emit8(0x00); emit_.buffer().emit8(0x00);  // mov r9, 1
         
         // .positive:
-        std::size_t positive_label = emit_.buffer().size();
-        emit_.buffer().data()[jns_pos + 1] = static_cast<std::uint8_t>(positive_label - jns_pos - 2);
+        std::size_t positive_label = emit_.buffer().pos();
+        {
+            auto off = static_cast<std::int64_t>(positive_label) - static_cast<std::int64_t>(jns_pos) - 2;
+            if (off < -128 || off > 127) throw std::logic_error("short jump offset out of range");
+            emit_.buffer().data()[jns_pos + 1] = static_cast<std::uint8_t>(off);
+        }
         
         // rdi = end of stack buffer, fill backwards
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D); emit_.buffer().emit8(0x7C);
@@ -2813,24 +2717,28 @@ private:
         
         // zero check
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xC0);  // test r8, r8
-        std::size_t jnz_pos = emit_.buffer().size();
+        std::size_t jnz_pos = emit_.buffer().pos();
         emit_.buffer().emit8(0x75); emit_.buffer().emit8(0x00);  // jnz .nonzero
         
         emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x07); emit_.buffer().emit8(0x30);  // mov byte [rdi], '0'
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
-        std::size_t jmp_to_print_pos = emit_.buffer().size();
+        std::size_t jmp_to_print_pos = emit_.buffer().pos();
         emit_.buffer().emit8(0xEB); emit_.buffer().emit8(0x00);  // jmp .print
         
         // .nonzero:
-        std::size_t after_zero = emit_.buffer().size();
-        emit_.buffer().data()[jnz_pos + 1] = static_cast<std::uint8_t>(after_zero - jnz_pos - 2);
+        std::size_t after_zero = emit_.buffer().pos();
+        {
+            auto off = static_cast<std::int64_t>(after_zero) - static_cast<std::int64_t>(jnz_pos) - 2;
+            if (off < -128 || off > 127) throw std::logic_error("short jump offset out of range");
+            emit_.buffer().data()[jnz_pos + 1] = static_cast<std::uint8_t>(off);
+        }
         
         // div-by-10 loop on the now-positive value in r8
         emit_.buffer().emit8(0xB9); emit_.buffer().emit32(10);  // mov ecx, 10
         
-        std::size_t loop_start = emit_.buffer().size();
+        std::size_t loop_start = emit_.buffer().pos();
         emit_.buffer().emit8(0x4C); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xC0);  // mov rax, r8
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor rdx, rdx
+        emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xF7); emit_.buffer().emit8(0xF1);  // div rcx
         emit_.buffer().emit8(0x49); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xC0);  // mov r8, rax (quotient)
         emit_.buffer().emit8(0x80); emit_.buffer().emit8(0xC2); emit_.buffer().emit8(0x30);  // add dl, '0'
@@ -2838,22 +2746,30 @@ private:
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xC0);  // test r8, r8
         emit_.buffer().emit8(0x75);  // jnz
-        std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().size() - 1);
+        std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().pos() - 1);
         emit_.buffer().emit8(static_cast<std::uint8_t>(loop_offset));
         
         // prepend '-' if negative
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xC9);  // test r9, r9
-        std::size_t jz_nosign = emit_.buffer().size();
+        std::size_t jz_nosign = emit_.buffer().pos();
         emit_.buffer().emit8(0x74); emit_.buffer().emit8(0x00);  // jz .no_sign
         emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x07); emit_.buffer().emit8(0x2D);  // mov byte [rdi], '-'
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
         // .no_sign:
-        std::size_t nosign_label = emit_.buffer().size();
-        emit_.buffer().data()[jz_nosign + 1] = static_cast<std::uint8_t>(nosign_label - jz_nosign - 2);
+        std::size_t nosign_label = emit_.buffer().pos();
+        {
+            auto off = static_cast<std::int64_t>(nosign_label) - static_cast<std::int64_t>(jz_nosign) - 2;
+            if (off < -128 || off > 127) throw std::logic_error("short jump offset out of range");
+            emit_.buffer().data()[jz_nosign + 1] = static_cast<std::uint8_t>(off);
+        }
         
         // .print:
-        std::size_t print_label = emit_.buffer().size();
-        emit_.buffer().data()[jmp_to_print_pos + 1] = static_cast<std::uint8_t>(print_label - jmp_to_print_pos - 2);
+        std::size_t print_label = emit_.buffer().pos();
+        {
+            auto off = static_cast<std::int64_t>(print_label) - static_cast<std::int64_t>(jmp_to_print_pos) - 2;
+            if (off < -128 || off > 127) throw std::logic_error("short jump offset out of range");
+            emit_.buffer().data()[jmp_to_print_pos + 1] = static_cast<std::uint8_t>(off);
+        }
         
         // inc rdi (point to first char)
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC7);  // inc rdi
@@ -2865,10 +2781,13 @@ private:
         
         emit_.add_imm(x64::Reg::RSP, 64);
         
+        emit_.pop(x64::Reg::RSI);
+        emit_.pop(x64::Reg::RDI);
+        
         return true;
     }
     
-    bool generate_dll_crash([[maybe_unused]] const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_crash([[maybe_unused]] const ast::CallExpr& call) {
         // write to null pointer - triggers access violation for crash handler testing
         emit_.buffer().emit8(0x48);  // REX.W
         emit_.buffer().emit8(0xC7);  // MOV r/m64, imm32
@@ -2879,7 +2798,7 @@ private:
         return true;
     }
     
-    bool generate_dll_install_crash_handler([[maybe_unused]] const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_install_crash_handler([[maybe_unused]] const ast::CallExpr& call) {
         // register our VEH as first handler so it catches before anything else
         emit_.sub_imm(x64::Reg::RSP, 32);
         
@@ -2887,7 +2806,7 @@ private:
         emit_.buffer().emit32(1);  // ecx = 1 (first handler)
         
         // lea rdx to the crash handler in .text via rip-relative
-        std::size_t current_offset = emit_.buffer().size();
+        std::size_t current_offset = emit_.buffer().pos();
         std::int32_t crash_handler_rel = static_cast<std::int32_t>(crash_handler_offset_)
             - static_cast<std::int32_t>(user_code_offset_ + current_offset + 7);
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D); emit_.buffer().emit8(0x15);
@@ -2899,7 +2818,7 @@ private:
         return true;
     }
     
-    bool generate_dll_mem_read(const ast::CallExpr& call, int size) {
+    [[nodiscard]] bool generate_dll_mem_read(const ast::CallExpr& call, int size) {
         // mem_read(addr) - read value from memory
         if (call.args.empty()) {
             error("mem_read requires an address argument");
@@ -2931,7 +2850,7 @@ private:
         return true;
     }
     
-    bool generate_dll_mem_write(const ast::CallExpr& call, int size) {
+    [[nodiscard]] bool generate_dll_mem_write(const ast::CallExpr& call, int size) {
         // mem_write(addr, value) - write value to memory
         if (call.args.size() < 2) {
             error("mem_write requires address and value arguments");
@@ -2968,7 +2887,7 @@ private:
         return true;
     }
 
-    bool generate_dll_memcpy(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_memcpy(const ast::CallExpr& call) {
         // memcpy(dst, src, len) - copy memory
         if (call.args.size() < 3) {
             error("memcpy requires dst, src, and len arguments");
@@ -2992,12 +2911,15 @@ private:
         return true;
     }
     
-    bool generate_dll_memset(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_memset(const ast::CallExpr& call) {
         // memset(ptr, value, len) - fill memory
         if (call.args.size() < 3) {
             error("memset requires ptr, value, and len arguments");
             return false;
         }
+        
+        emit_.push(x64::Reg::RDI);
+        emit_.push(x64::Reg::RSI);
         
         if (!generate_expr(*call.args[2])) return false;
         emit_.push(x64::Reg::RAX);  // len
@@ -3012,15 +2934,21 @@ private:
         emit_.buffer().emit8(0xF3);
         emit_.buffer().emit8(0xAA);
         
+        emit_.pop(x64::Reg::RSI);
+        emit_.pop(x64::Reg::RDI);
+        
         return true;
     }
     
-    bool generate_dll_memcmp(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_memcmp(const ast::CallExpr& call) {
         // memcmp(a, b, len) -> int - compare memory, returns 0 if equal
         if (call.args.size() < 3) {
             error("memcmp requires a, b, and len arguments");
             return false;
         }
+        
+        emit_.push(x64::Reg::RDI);
+        emit_.push(x64::Reg::RSI);
         
         if (!generate_expr(*call.args[2])) return false;
         emit_.push(x64::Reg::RAX);  // len
@@ -3041,10 +2969,13 @@ private:
         // If equal, returns 1; otherwise 0. Invert for C-style (0 = equal)
         emit_.buffer().emit8(0x83); emit_.buffer().emit8(0xF0); emit_.buffer().emit8(0x01);  // xor eax, 1
         
+        emit_.pop(x64::Reg::RSI);
+        emit_.pop(x64::Reg::RDI);
+        
         return true;
     }
     
-    bool generate_dll_sleep(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_sleep(const ast::CallExpr& call) {
         // sleep(ms) - call Windows Sleep
         if (call.args.empty()) {
             error("sleep requires milliseconds argument");
@@ -3063,7 +2994,7 @@ private:
         return true;
     }
     
-    bool generate_dll_get_tick_count([[maybe_unused]] const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_get_tick_count([[maybe_unused]] const ast::CallExpr& call) {
         // get_tick_count() -> int - call Windows GetTickCount64
         emit_.sub_imm(x64::Reg::RSP, 32);
         
@@ -3076,7 +3007,7 @@ private:
     }
     
     // Math functions using x87 FPU
-    bool generate_dll_sqrt(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_sqrt(const ast::CallExpr& call) {
         if (call.args.empty()) { error("sqrt requires an argument"); return false; }
         if (!generate_expr(*call.args[0])) return false;
         
@@ -3092,14 +3023,12 @@ private:
         return true;
     }
     
-    bool generate_dll_sin(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_sin(const ast::CallExpr& call) {
         if (call.args.empty()) { error("sin requires an argument"); return false; }
         if (!generate_expr(*call.args[0])) return false;
         
-        // Use x87: fld, fsin, fstp
+        // use x87: fld, fsin, fstp
         emit_.sub_imm(x64::Reg::RSP, 16);
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x04);
-        emit_.buffer().emit8(0x24);  // mov [rsp], rax
         emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x2A); emit_.buffer().emit8(0xC0);  // cvtsi2sd xmm0, rax  
         emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x11);
@@ -3116,7 +3045,7 @@ private:
         return true;
     }
     
-    bool generate_dll_cos(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_cos(const ast::CallExpr& call) {
         if (call.args.empty()) { error("cos requires an argument"); return false; }
         if (!generate_expr(*call.args[0])) return false;
         
@@ -3137,7 +3066,7 @@ private:
         return true;
     }
     
-    bool generate_dll_tan(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_tan(const ast::CallExpr& call) {
         if (call.args.empty()) { error("tan requires an argument"); return false; }
         if (!generate_expr(*call.args[0])) return false;
         
@@ -3159,46 +3088,52 @@ private:
         return true;
     }
     
-    bool generate_dll_atan2(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_atan2(const ast::CallExpr& call) {
         if (call.args.size() < 2) { error("atan2 requires y and x arguments"); return false; }
         
-        // atan2(y, x)
-        if (!generate_expr(*call.args[1])) return false;
-        emit_.push(x64::Reg::RAX);  // x
-        if (!generate_expr(*call.args[0])) return false;
-        // RAX = y, [rsp] = x
-        
+        // atan2(y, x) via x87 fpatan
+        // allocate scratch space up front so all addressing is rsp-relative and stable
         emit_.sub_imm(x64::Reg::RSP, 16);
-        // Push y as double
+        
+        // evaluate x, store to [rsp+8]
+        if (!generate_expr(*call.args[1])) return false;
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x44);
+        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x08);  // mov [rsp+8], rax
+        
+        // evaluate y into rax
+        if (!generate_expr(*call.args[0])) return false;
+        
+        // convert y to double, load onto x87 stack
         emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x2A); emit_.buffer().emit8(0xC0);  // cvtsi2sd xmm0, rax  
         emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x11);
         emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24);  // movsd [rsp], xmm0
         emit_.buffer().emit8(0xDD); emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24);  // fld qword [rsp] - y
         
-        // Get x
+        // load x from saved slot, convert to double, load onto x87 stack
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8B); emit_.buffer().emit8(0x44);
-        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x10);  // mov rax, [rsp+16]
+        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x08);  // mov rax, [rsp+8]
         emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x2A); emit_.buffer().emit8(0xC0);  // cvtsi2sd xmm0, rax  
         emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x11);
         emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24);  // movsd [rsp], xmm0
         emit_.buffer().emit8(0xDD); emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24);  // fld qword [rsp] - x
         
-        // fpatan: arctan(st(1)/st(0))
+        // fpatan: st(1)/st(0) = y/x
         emit_.buffer().emit8(0xD9); emit_.buffer().emit8(0xF3);  // fpatan
         
+        // store result back
         emit_.buffer().emit8(0xDD); emit_.buffer().emit8(0x1C); emit_.buffer().emit8(0x24);  // fstp qword [rsp]
         emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x10);
         emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24);  // movsd xmm0, [rsp]
         emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x2C); emit_.buffer().emit8(0xC0);  // cvttsd2si rax, xmm0
-        emit_.add_imm(x64::Reg::RSP, 24);  // 16 + 8 for pushed x
+        emit_.add_imm(x64::Reg::RSP, 16);
         
         return true;
     }
     
-    bool generate_dll_floor(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_floor(const ast::CallExpr& call) {
         if (call.args.empty()) { error("floor requires an argument"); return false; }
         if (!generate_expr(*call.args[0])) return false;
         
@@ -3213,7 +3148,7 @@ private:
         return true;
     }
     
-    bool generate_dll_ceil(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_ceil(const ast::CallExpr& call) {
         if (call.args.empty()) { error("ceil requires an argument"); return false; }
         if (!generate_expr(*call.args[0])) return false;
         
@@ -3228,7 +3163,7 @@ private:
         return true;
     }
     
-    bool generate_dll_abs(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_abs(const ast::CallExpr& call) {
         if (call.args.empty()) { error("abs requires an argument"); return false; }
         if (!generate_expr(*call.args[0])) return false;
         
@@ -3241,7 +3176,7 @@ private:
         return true;
     }
     
-    bool generate_dll_pow(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_pow(const ast::CallExpr& call) {
         // pow(base, exp) - simple integer power for now
         if (call.args.size() < 2) { error("pow requires base and exponent arguments"); return false; }
         
@@ -3255,20 +3190,20 @@ private:
         emit_.mov_imm32(x64::Reg::RAX, 1);  // result = 1
         
         // Loop: while (rdx > 0) { rax *= rcx; rdx--; }
-        std::size_t loop_start = emit_.buffer().size();
+        std::size_t loop_start = emit_.buffer().pos();
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xD2);  // test rdx, rdx
         emit_.buffer().emit8(0x74); emit_.buffer().emit8(0x09);  // jz +9 (exit loop)
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0xAF);
         emit_.buffer().emit8(0xC1);  // imul rax, rcx
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCA);  // dec rdx
         emit_.buffer().emit8(0xEB);  // jmp
-        std::int8_t offset = static_cast<std::int8_t>(loop_start - emit_.buffer().size() - 1);
+        std::int8_t offset = static_cast<std::int8_t>(loop_start - emit_.buffer().pos() - 1);
         emit_.buffer().emit8(static_cast<std::uint8_t>(offset));
         
         return true;
     }
 
-    bool generate_dll_malloc(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_malloc(const ast::CallExpr& call) {
         // malloc(size) -> HeapAlloc(GetProcessHeap(), 0, size)
         if (call.args.empty()) {
             error("malloc requires size argument");
@@ -3284,7 +3219,7 @@ private:
         
         // set up HeapAlloc args: rcx=heap, rdx=0, r8=size
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
-        emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor edx, edx
+        emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
         emit_.pop(x64::Reg::R8);  // restore size
         
         emit_.sub_imm(x64::Reg::RSP, 32);
@@ -3294,7 +3229,7 @@ private:
         return true;
     }
     
-    bool generate_dll_free(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_free(const ast::CallExpr& call) {
         // free(ptr) - use Windows HeapFree  
         // HeapFree(GetProcessHeap(), 0, ptr)
         if (call.args.empty()) {
@@ -3310,7 +3245,7 @@ private:
         emit_.add_imm(x64::Reg::RSP, 32);
         
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
-        emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor edx, edx
+        emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
         emit_.pop(x64::Reg::R8);  // ptr from stack
         
         emit_.sub_imm(x64::Reg::RSP, 32);
@@ -3320,7 +3255,7 @@ private:
         return true;
     }
 
-    bool generate_dll_array_new(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_array_new(const ast::CallExpr& call) {
         // array_new(capacity) -> heap ptr past 16-byte header
         // layout: [length 8b][capacity 8b][elements...]
         if (call.args.empty()) {
@@ -3346,7 +3281,7 @@ private:
 
         // HeapAlloc(heap, 0, total_size)
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
-        emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor edx, edx
+        emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
         emit_.pop(x64::Reg::R8);  // total_size  [stack: capacity]
 
         emit_.sub_imm(x64::Reg::RSP, 32);
@@ -3368,7 +3303,7 @@ private:
         return true;
     }
 
-    bool generate_dll_array_get(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_array_get(const ast::CallExpr& call) {
         // array_get(arr, index) -> load 64-bit value at arr + index*8
         if (call.args.size() < 2) {
             error("array_get requires arr and index arguments");
@@ -3399,7 +3334,7 @@ private:
         return true;
     }
 
-    bool generate_dll_array_set(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_array_set(const ast::CallExpr& call) {
         // array_set(arr, index, value) -> store value at arr + index*8, update length
         if (call.args.size() < 3) {
             error("array_set requires arr, index, and value arguments");
@@ -3442,7 +3377,7 @@ private:
         return true;
     }
 
-    bool generate_dll_array_len(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_array_len(const ast::CallExpr& call) {
         // array_len(arr) -> load length from header at arr - 16
         if (call.args.empty()) {
             error("array_len requires arr argument");
@@ -3456,7 +3391,7 @@ private:
         return true;
     }
 
-    bool generate_dll_array_free(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_array_free(const ast::CallExpr& call) {
         // array_free(arr) -> HeapFree(heap, 0, arr - 16)
         if (call.args.empty()) {
             error("array_free requires arr argument");
@@ -3474,7 +3409,7 @@ private:
 
         // HeapFree(heap, 0, alloc_ptr)
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
-        emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor edx, edx (flags = 0)
+        emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
         emit_.pop(x64::Reg::R8);  // alloc base from stack
 
         emit_.sub_imm(x64::Reg::RSP, 32);
@@ -3484,7 +3419,7 @@ private:
         return true;
     }
 
-    bool generate_dll_string_length(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_string_length(const ast::CallExpr& call) {
         // inline strlen: scan bytes from str ptr until null, count in rax
         if (call.args.empty()) {
             error("string_length requires str argument");
@@ -3497,33 +3432,12 @@ private:
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);  // rax = counter = 0
 
         // loop top
-        std::size_t loop_top = emit_.buffer().pos();
-
-        // cmp byte [rcx], 0
-        emit_.buffer().emit8(0x80);
-        emit_.buffer().emit8(0x39);
-        emit_.buffer().emit8(0x00);
-
-        // je done
-        std::size_t done_patch = emit_.jcc_rel32(x64::Emitter::CC_E);
-
-        // inc rcx
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
-        // inc rax
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC0);
-
-        // jmp loop_top
-        std::int32_t loop_rel = static_cast<std::int32_t>(
-            loop_top - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(loop_rel);
-
-        // done: rax = length
-        emit_.patch_jump(done_patch);
+        emit_inline_strlen();
 
         return true;
     }
 
-    bool generate_dll_string_append(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_string_append(const ast::CallExpr& call) {
         // string_append(a, b) -> heap-allocated concatenation of a and b
         if (call.args.size() < 2) {
             error("string_append requires two string arguments");
@@ -3540,34 +3454,14 @@ private:
         // --- inline strlen(a) ---
         // load str_a from [rsp+8]
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 8);
-        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-
-        std::size_t len_a_loop = emit_.buffer().pos();
-        // cmp byte [rcx], 0
-        emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x39); emit_.buffer().emit8(0x00);
-        std::size_t len_a_done = emit_.jcc_rel32(x64::Emitter::CC_E);
-        // inc rcx, inc rax
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC0);
-        emit_.jmp_rel32(static_cast<std::int32_t>(len_a_loop - emit_.buffer().pos() - 5));
-        emit_.patch_jump(len_a_done);
-        // rax = len_a
+        emit_inline_strlen();
         emit_.push(x64::Reg::RAX);  // save len_a
         // stack: [str_a, str_b, len_a]
 
         // --- inline strlen(b) ---
         // load str_b from [rsp+8]
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 8);
-        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-
-        std::size_t len_b_loop = emit_.buffer().pos();
-        emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x39); emit_.buffer().emit8(0x00);
-        std::size_t len_b_done = emit_.jcc_rel32(x64::Emitter::CC_E);
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC0);
-        emit_.jmp_rel32(static_cast<std::int32_t>(len_b_loop - emit_.buffer().pos() - 5));
-        emit_.patch_jump(len_b_done);
-        // rax = len_b
+        emit_inline_strlen();
         emit_.push(x64::Reg::RAX);  // save len_b
         // stack: [str_a, str_b, len_a, len_b]
 
@@ -3588,7 +3482,7 @@ private:
 
         // HeapAlloc(heap, 0, total_size)
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
-        emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor edx, edx (flags=0)
+        emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
         emit_.pop(x64::Reg::R8);  // total_size -> r8
         // stack: [str_a, str_b, len_a, len_b]
 
@@ -3602,51 +3496,16 @@ private:
         // offsets: buffer=[rsp+0], len_b=[rsp+8], len_a=[rsp+16], str_b=[rsp+24], str_a=[rsp+32]
 
         // --- memcpy a into buffer ---
-        // rcx = src (str_a), rdx = dst (buffer), r8 = count (len_a)
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 32);  // str_a
         emit_.mov(x64::Reg::RDX, x64::Reg::RAX);             // buffer
         emit_.mov_load(x64::Reg::R8, x64::Reg::RSP, 16);    // len_a
-
-        std::size_t cpy_a_loop = emit_.buffer().pos();
-        // test r8, r8 / je done
-        emit_.test(x64::Reg::R8, x64::Reg::R8);
-        std::size_t cpy_a_done = emit_.jcc_rel32(x64::Emitter::CC_E);
-        // movzx rax, byte [rcx]
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F);
-        emit_.buffer().emit8(0xB6); emit_.buffer().emit8(0x01);
-        // mov byte [rdx], al
-        emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x02);
-        // inc rcx
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
-        // inc rdx
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC2);
-        // dec r8
-        emit_.buffer().emit8(0x49); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC8);
-        emit_.jmp_rel32(static_cast<std::int32_t>(cpy_a_loop - emit_.buffer().pos() - 5));
-        emit_.patch_jump(cpy_a_done);
+        emit_inline_memcpy();
         // rdx now points to buffer + len_a
 
         // --- memcpy b into buffer + len_a ---
-        // rcx = src (str_b), rdx = already at right spot, r8 = count (len_b)
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 24);  // str_b
         emit_.mov_load(x64::Reg::R8, x64::Reg::RSP, 8);     // len_b
-
-        std::size_t cpy_b_loop = emit_.buffer().pos();
-        emit_.test(x64::Reg::R8, x64::Reg::R8);
-        std::size_t cpy_b_done = emit_.jcc_rel32(x64::Emitter::CC_E);
-        // movzx rax, byte [rcx]
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F);
-        emit_.buffer().emit8(0xB6); emit_.buffer().emit8(0x01);
-        // mov byte [rdx], al
-        emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x02);
-        // inc rcx
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
-        // inc rdx
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC2);
-        // dec r8
-        emit_.buffer().emit8(0x49); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC8);
-        emit_.jmp_rel32(static_cast<std::int32_t>(cpy_b_loop - emit_.buffer().pos() - 5));
-        emit_.patch_jump(cpy_b_done);
+        emit_inline_memcpy();
 
         // null terminate: mov byte [rdx], 0
         emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x02); emit_.buffer().emit8(0x00);
@@ -3659,7 +3518,7 @@ private:
         return true;
     }
 
-    bool generate_dll_int_to_string(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_int_to_string(const ast::CallExpr& call) {
         // int_to_string(n) -> heap-allocated decimal string
         if (call.args.empty()) {
             error("int_to_string requires an argument");
@@ -3676,7 +3535,7 @@ private:
         emit_.add_imm(x64::Reg::RSP, 32);
 
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
-        emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor edx, edx (flags=0)
+        emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
         emit_.mov_imm32(x64::Reg::R8, 24);  // 24 bytes
         emit_.sub_imm(x64::Reg::RSP, 32);
         emit_iat_call_raw(pe::iat::HeapAlloc);
@@ -3698,7 +3557,7 @@ private:
         // check sign, r9 = is_negative flag
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xC9);  // xor r9, r9
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xC0);  // test r8, r8
-        std::size_t jns_pos = emit_.buffer().size();
+        std::size_t jns_pos = emit_.buffer().pos();
         emit_.buffer().emit8(0x79); emit_.buffer().emit8(0x00);  // jns .positive (short jump)
 
         // negative: negate and set flag
@@ -3707,29 +3566,37 @@ private:
         emit_.buffer().emit8(0x01); emit_.buffer().emit8(0x00); emit_.buffer().emit8(0x00); emit_.buffer().emit8(0x00);  // mov r9, 1
 
         // .positive:
-        std::size_t positive_label = emit_.buffer().size();
-        emit_.buffer().data()[jns_pos + 1] = static_cast<std::uint8_t>(positive_label - jns_pos - 2);
+        std::size_t positive_label = emit_.buffer().pos();
+        {
+            auto off = static_cast<std::int64_t>(positive_label) - static_cast<std::int64_t>(jns_pos) - 2;
+            if (off < -128 || off > 127) throw std::logic_error("short jump offset out of range");
+            emit_.buffer().data()[jns_pos + 1] = static_cast<std::uint8_t>(off);
+        }
 
         // zero check
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xC0);  // test r8, r8
-        std::size_t jnz_pos = emit_.buffer().size();
+        std::size_t jnz_pos = emit_.buffer().pos();
         emit_.buffer().emit8(0x75); emit_.buffer().emit8(0x00);  // jnz .nonzero
 
         // its zero, just write '0'
         emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x07); emit_.buffer().emit8(0x30);  // mov byte [rdi], '0'
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
-        std::size_t jmp_done_pos = emit_.buffer().size();
+        std::size_t jmp_done_pos = emit_.buffer().pos();
         emit_.buffer().emit8(0xEB); emit_.buffer().emit8(0x00);  // jmp .done
 
         // .nonzero: div-by-10 loop
-        std::size_t nonzero_label = emit_.buffer().size();
-        emit_.buffer().data()[jnz_pos + 1] = static_cast<std::uint8_t>(nonzero_label - jnz_pos - 2);
+        std::size_t nonzero_label = emit_.buffer().pos();
+        {
+            auto off = static_cast<std::int64_t>(nonzero_label) - static_cast<std::int64_t>(jnz_pos) - 2;
+            if (off < -128 || off > 127) throw std::logic_error("short jump offset out of range");
+            emit_.buffer().data()[jnz_pos + 1] = static_cast<std::uint8_t>(off);
+        }
 
         emit_.buffer().emit8(0xB9); emit_.buffer().emit32(10);  // mov ecx, 10
 
-        std::size_t loop_start = emit_.buffer().size();
+        std::size_t loop_start = emit_.buffer().pos();
         emit_.buffer().emit8(0x4C); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xC0);  // mov rax, r8
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor rdx, rdx
+        emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xF7); emit_.buffer().emit8(0xF1);  // div rcx
         emit_.buffer().emit8(0x49); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xC0);  // mov r8, rax (quotient)
         emit_.buffer().emit8(0x80); emit_.buffer().emit8(0xC2); emit_.buffer().emit8(0x30);  // add dl, '0'
@@ -3737,24 +3604,32 @@ private:
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xC0);  // test r8, r8
         emit_.buffer().emit8(0x75);  // jnz .loop
-        std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().size() - 1);
+        std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().pos() - 1);
         emit_.buffer().emit8(static_cast<std::uint8_t>(loop_offset));
 
         // .done:
-        std::size_t done_label = emit_.buffer().size();
-        emit_.buffer().data()[jmp_done_pos + 1] = static_cast<std::uint8_t>(done_label - jmp_done_pos - 2);
+        std::size_t done_label = emit_.buffer().pos();
+        {
+            auto off = static_cast<std::int64_t>(done_label) - static_cast<std::int64_t>(jmp_done_pos) - 2;
+            if (off < -128 || off > 127) throw std::logic_error("short jump offset out of range");
+            emit_.buffer().data()[jmp_done_pos + 1] = static_cast<std::uint8_t>(off);
+        }
 
         // prepend '-' if negative
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xC9);  // test r9, r9
-        std::size_t jz_nosign_pos = emit_.buffer().size();
+        std::size_t jz_nosign_pos = emit_.buffer().pos();
         emit_.buffer().emit8(0x74); emit_.buffer().emit8(0x00);  // jz .no_sign
 
         emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x07); emit_.buffer().emit8(0x2D);  // mov byte [rdi], '-'
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
 
         // .no_sign:
-        std::size_t nosign_label = emit_.buffer().size();
-        emit_.buffer().data()[jz_nosign_pos + 1] = static_cast<std::uint8_t>(nosign_label - jz_nosign_pos - 2);
+        std::size_t nosign_label = emit_.buffer().pos();
+        {
+            auto off = static_cast<std::int64_t>(nosign_label) - static_cast<std::int64_t>(jz_nosign_pos) - 2;
+            if (off < -128 || off > 127) throw std::logic_error("short jump offset out of range");
+            emit_.buffer().data()[jz_nosign_pos + 1] = static_cast<std::uint8_t>(off);
+        }
 
         // rdi points one before first char, inc to get start of string
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC7);  // inc rdi
@@ -3769,7 +3644,7 @@ private:
         return true;
     }
 
-    bool generate_dll_string_equals(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_string_equals(const ast::CallExpr& call) {
         // string_equals(a, b) -> 1 if identical, 0 if different
         if (call.args.size() < 2) {
             error("string_equals requires two string arguments");
@@ -3832,7 +3707,7 @@ private:
         return true;
     }
 
-    bool generate_dll_string_substring(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_string_substring(const ast::CallExpr& call) {
         // string_substring(str, start, len) -> heap-allocated substring
         if (call.args.size() < 3) {
             error("string_substring requires str, start, and len arguments");
@@ -3860,7 +3735,7 @@ private:
         // rax = heap handle
 
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
-        emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xD2);  // xor edx, edx (flags=0)
+        emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
         emit_.pop(x64::Reg::R8);  // alloc_size
         // stack: [str, start, len]
 
@@ -3879,23 +3754,7 @@ private:
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 24);    // rcx = str
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 16);    // rax = start
         emit_.add(x64::Reg::RCX, x64::Reg::RAX);              // rcx = str + start
-
-        std::size_t cpy_loop = emit_.buffer().pos();
-        emit_.test(x64::Reg::R8, x64::Reg::R8);
-        std::size_t cpy_done = emit_.jcc_rel32(x64::Emitter::CC_E);
-        // movzx rax, byte [rcx]
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F);
-        emit_.buffer().emit8(0xB6); emit_.buffer().emit8(0x01);
-        // mov byte [rdx], al
-        emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x02);
-        // inc rcx
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
-        // inc rdx
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC2);
-        // dec r8
-        emit_.buffer().emit8(0x49); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC8);
-        emit_.jmp_rel32(static_cast<std::int32_t>(cpy_loop - emit_.buffer().pos() - 5));
-        emit_.patch_jump(cpy_done);
+        emit_inline_memcpy();
 
         // null terminate: mov byte [rdx], 0
         emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x02); emit_.buffer().emit8(0x00);
@@ -3907,7 +3766,7 @@ private:
         return true;
     }
 
-    bool generate_dll_print_char(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_print_char(const ast::CallExpr& call) {
         // print a single char by making a tiny null-terminated string on the stack
         if (call.args.empty()) {
             error("print_char requires a character argument");
@@ -3917,7 +3776,7 @@ private:
         if (!generate_expr(*call.args[0])) return false;
         // rax = char value
 
-        // sub rsp, 16 — stack space for our 2-byte string (aligned)
+        // sub rsp, 16 ? stack space for our 2-byte string (aligned)
         emit_.sub_imm(x64::Reg::RSP, 16);
 
         // mov byte [rsp], al  (88 04 24)
@@ -3943,7 +3802,7 @@ private:
         return true;
     }
 
-    bool generate_dll_virtual_protect(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_virtual_protect(const ast::CallExpr& call) {
         // virtual_protect(addr, size, new_protect) -> old_protect
         // VirtualProtect(lpAddress, dwSize, flNewProtect, lpflOldProtect)
         if (call.args.size() < 3) {
@@ -3979,7 +3838,7 @@ private:
         return true;
     }
     
-    bool generate_dll_virtual_alloc(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_virtual_alloc(const ast::CallExpr& call) {
         // virtual_alloc(addr, size, type, protect) -> ptr
         // VirtualAlloc(lpAddress, dwSize, flAllocationType, flProtect)
         if (call.args.size() < 4) {
@@ -4009,7 +3868,7 @@ private:
         return true;
     }
     
-    bool generate_dll_virtual_free(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_virtual_free(const ast::CallExpr& call) {
         // virtual_free(addr, size, type) -> bool
         // VirtualFree(lpAddress, dwSize, dwFreeType)
         if (call.args.size() < 3) {
@@ -4035,7 +3894,7 @@ private:
         return true;
     }
 
-    bool generate_dll_get_module(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_get_module(const ast::CallExpr& call) {
         // get_module(name) -> handle
         // GetModuleHandleA(lpModuleName)
         if (call.args.empty()) {
@@ -4056,7 +3915,7 @@ private:
         return true;
     }
 
-    bool generate_dll_scan(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_dll_scan(const ast::CallExpr& call) {
         // scan(base, size, pattern) -> address or 0
         // SSE2 OPTIMIZED: uses pcmpeqb to check 16 bytes at once
         if (call.args.size() < 3) {
@@ -4119,6 +3978,10 @@ private:
         }
         std::uint8_t anchor_byte = bytes[anchor_idx];
         
+        // anchor_idx is used as a disp8 in movdqu encoding, must fit signed byte
+        if (static_cast<std::int64_t>(anchor_idx) < -128 || static_cast<std::int64_t>(anchor_idx) > 127)
+            throw std::logic_error("short jump offset out of range");
+        
         // Save callee-saved registers (Windows x64 ABI)
         emit_.push(x64::Reg::RDI);
         emit_.push(x64::Reg::RSI);
@@ -4167,13 +4030,13 @@ private:
         emit_.buffer().emit8(0x00);
         
         // Main SSE2 loop
-        std::size_t loop_start = emit_.buffer().size();
+        std::size_t loop_start = emit_.buffer().pos();
         
         // cmp rdi, r12; jae scalar_fallback
         emit_.buffer().emit8(0x4C); emit_.buffer().emit8(0x39);
         emit_.buffer().emit8(0xE7);
         emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x83);
-        std::size_t scalar_jmp = emit_.buffer().size();
+        std::size_t scalar_jmp = emit_.buffer().pos();
         emit_.buffer().emit32(0);
         
         // movdqu xmm1, [rdi + anchor_idx]
@@ -4197,13 +4060,13 @@ private:
         // test eax, eax; jz next_16
         emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xC0);
         emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x84);
-        std::size_t next16_jmp = emit_.buffer().size();
+        std::size_t next16_jmp = emit_.buffer().pos();
         emit_.buffer().emit32(0);
         
         // Found matches! Save mask in EBX
         emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xC3);
         
-        std::size_t bit_loop = emit_.buffer().size();
+        std::size_t bit_loop = emit_.buffer().pos();
         
         // bsf ecx, ebx
         emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0xBC);
@@ -4232,7 +4095,7 @@ private:
                 // jne try_next_bit
                 emit_.buffer().emit8(0x0F);
                 emit_.buffer().emit8(0x85);
-                fail_jumps.push_back(emit_.buffer().size());
+                fail_jumps.push_back(emit_.buffer().pos());
                 emit_.buffer().emit32(0);
             }
         }
@@ -4240,11 +4103,11 @@ private:
         // All matched! Return RSI
         emit_.mov(x64::Reg::RAX, x64::Reg::RSI);
         emit_.buffer().emit8(0xE9);  // jmp done
-        std::size_t done_jmp = emit_.buffer().size();
+        std::size_t done_jmp = emit_.buffer().pos();
         emit_.buffer().emit32(0);
         
         // try_next_bit:
-        std::size_t try_next_bit = emit_.buffer().size();
+        std::size_t try_next_bit = emit_.buffer().pos();
         for (std::size_t pos : fail_jumps) {
             std::int32_t offset = static_cast<std::int32_t>(try_next_bit - pos - 4);
             auto* data = emit_.buffer().data();
@@ -4262,11 +4125,11 @@ private:
         emit_.buffer().emit8(0x85); emit_.buffer().emit8(0xDB);
         emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x85);
         std::int32_t bit_back = static_cast<std::int32_t>(bit_loop) - 
-                               static_cast<std::int32_t>(emit_.buffer().size() + 4);
+                               static_cast<std::int32_t>(emit_.buffer().pos() + 4);
         emit_.buffer().emit32(static_cast<std::uint32_t>(bit_back));
         
         // next_16:
-        std::size_t next16_label = emit_.buffer().size();
+        std::size_t next16_label = emit_.buffer().pos();
         {
             std::int32_t offset = static_cast<std::int32_t>(next16_label - next16_jmp - 4);
             auto* data = emit_.buffer().data();
@@ -4281,11 +4144,11 @@ private:
         emit_.buffer().emit8(0xC7); emit_.buffer().emit8(0x10);
         emit_.buffer().emit8(0xE9);
         std::int32_t loop_back = static_cast<std::int32_t>(loop_start) - 
-                                static_cast<std::int32_t>(emit_.buffer().size() + 4);
+                                static_cast<std::int32_t>(emit_.buffer().pos() + 4);
         emit_.buffer().emit32(static_cast<std::uint32_t>(loop_back));
         
         // scalar_fallback:
-        std::size_t scalar_label = emit_.buffer().size();
+        std::size_t scalar_label = emit_.buffer().pos();
         {
             std::int32_t offset = static_cast<std::int32_t>(scalar_label - scalar_jmp - 4);
             auto* data = emit_.buffer().data();
@@ -4296,12 +4159,12 @@ private:
         }
         
         // Scalar loop for tail
-        std::size_t scalar_loop = emit_.buffer().size();
+        std::size_t scalar_loop = emit_.buffer().pos();
         
         // cmp rdi, rdx; jae not_found
         emit_.cmp(x64::Reg::RDI, x64::Reg::RDX);
         emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x83);
-        std::size_t notfound_jmp = emit_.buffer().size();
+        std::size_t notfound_jmp = emit_.buffer().pos();
         emit_.buffer().emit32(0);
         
         // Check anchor
@@ -4315,7 +4178,7 @@ private:
         
         // jne scalar_next
         emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x85);
-        std::size_t scalar_next_jmp = emit_.buffer().size();
+        std::size_t scalar_next_jmp = emit_.buffer().pos();
         emit_.buffer().emit32(0);
         
         // Verify full pattern
@@ -4330,7 +4193,7 @@ private:
                 }
                 emit_.buffer().emit8(bytes[j]);
                 emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x85);
-                scalar_fail.push_back(emit_.buffer().size());
+                scalar_fail.push_back(emit_.buffer().pos());
                 emit_.buffer().emit32(0);
             }
         }
@@ -4338,11 +4201,11 @@ private:
         // Match! Return RDI
         emit_.mov(x64::Reg::RAX, x64::Reg::RDI);
         emit_.buffer().emit8(0xE9);
-        std::size_t done_jmp2 = emit_.buffer().size();
+        std::size_t done_jmp2 = emit_.buffer().pos();
         emit_.buffer().emit32(0);
         
         // scalar_next:
-        std::size_t scalar_next = emit_.buffer().size();
+        std::size_t scalar_next = emit_.buffer().pos();
         {
             std::int32_t offset = static_cast<std::int32_t>(scalar_next - scalar_next_jmp - 4);
             auto* data = emit_.buffer().data();
@@ -4364,11 +4227,11 @@ private:
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC7);
         emit_.buffer().emit8(0xE9);
         std::int32_t scalar_back = static_cast<std::int32_t>(scalar_loop) - 
-                                  static_cast<std::int32_t>(emit_.buffer().size() + 4);
+                                  static_cast<std::int32_t>(emit_.buffer().pos() + 4);
         emit_.buffer().emit32(static_cast<std::uint32_t>(scalar_back));
         
         // not_found:
-        std::size_t notfound_label = emit_.buffer().size();
+        std::size_t notfound_label = emit_.buffer().pos();
         {
             std::int32_t offset = static_cast<std::int32_t>(notfound_label - notfound_jmp - 4);
             auto* data = emit_.buffer().data();
@@ -4380,7 +4243,7 @@ private:
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xC0);  // xor rax, rax
         
         // done:
-        std::size_t done_label = emit_.buffer().size();
+        std::size_t done_label = emit_.buffer().pos();
         {
             std::int32_t offset = static_cast<std::int32_t>(done_label - done_jmp - 4);
             auto* data = emit_.buffer().data();
@@ -4407,8 +4270,8 @@ private:
         return true;
     }
 
-    // Generic single-arg builtin (like string_length, print_string)
-    bool generate_builtin_string_op(const ast::CallExpr& call, void* fn_ptr) {
+    // generic single-arg builtin caller
+    [[nodiscard]] bool generate_builtin_one_arg(const ast::CallExpr& call, void* fn_ptr) {
         if (call.args.empty()) {
             error("builtin requires an argument");
             return false;
@@ -4432,7 +4295,7 @@ private:
     }
     
     // Variadic print: print(a, b, c) or println(a, b, c)
-    bool generate_builtin_print_variadic(const ast::CallExpr& call, bool add_newline) {
+    [[nodiscard]] bool generate_builtin_print_variadic(const ast::CallExpr& call, bool add_newline) {
         // For each argument, print it
         for (std::size_t i = 0; i < call.args.size(); ++i) {
             const auto& arg = call.args[i];
@@ -4440,7 +4303,7 @@ private:
             // Add space before (except first arg)
             if (i > 0) {
                 // Print a space character
-                if (dll_mode_ && runtime_print_str_) {
+                if (dll_mode_ && rt_.print_str) {
                     // Skip space for now - just print args directly
                 }
             }
@@ -4455,14 +4318,14 @@ private:
                     if (!generate_expr(*arg)) return false;
                     emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
                     emit_.sub_imm(x64::Reg::RSP, 32);
-                    if (runtime_print_str_) {
-                        emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(runtime_print_str_));
+                    if (rt_.print_str) {
+                        emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.print_str));
                         emit_.call(x64::Reg::RAX);
                     } else if (dll_mode_) {
                         // DLL mode: call print stub
                         emit_.buffer().emit8(0xE8);  // call rel32
                         std::int32_t rel = static_cast<std::int32_t>(0x100) - 
-                            static_cast<std::int32_t>(0x240 + emit_.buffer().size() + 4);
+                            static_cast<std::int32_t>(0x240 + emit_.buffer().pos() + 4);
                         emit_.buffer().emit32(static_cast<std::uint32_t>(rel));
                     }
                     emit_.add_imm(x64::Reg::RSP, 32);
@@ -4474,8 +4337,7 @@ private:
             if (!generate_expr(*arg)) return false;
             
             if (dll_mode_) {
-                // DLL mode: call the print_int function
-                // We need to replicate what generate_dll_builtin_print_int does
+                // DLL mode: replicate what generate_dll_builtin_print_hex does
                 // but with value already in RAX
                 emit_.sub_imm(x64::Reg::RSP, 64);
                 emit_.mov(x64::Reg::R8, x64::Reg::RAX);  // Save value in R8
@@ -4499,7 +4361,7 @@ private:
                 // Convert to hex: 8 nibbles
                 emit_.buffer().emit8(0xB9); emit_.buffer().emit32(8);  // mov ecx, 8
                 
-                std::size_t loop_start = emit_.buffer().size();
+                std::size_t loop_start = emit_.buffer().pos();
                 
                 // mov rax, r8; rol rax, 4 (rotate left to get high nibble)
                 emit_.buffer().emit8(0x49); emit_.buffer().emit8(0xC1);
@@ -4524,7 +4386,7 @@ private:
                 // Loop
                 emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC9);  // dec ecx
                 emit_.buffer().emit8(0x75);  // jnz
-                std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().size() - 1);
+                std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().pos() - 1);
                 emit_.buffer().emit8(static_cast<std::uint8_t>(loop_offset));
                 
                 // Null terminate
@@ -4538,10 +4400,10 @@ private:
                 emit_startup_call(print_offset_);
                 
                 emit_.add_imm(x64::Reg::RSP, 64);
-            } else if (runtime_print_int_) {
+            } else if (rt_.print_int) {
                 emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
                 emit_.sub_imm(x64::Reg::RSP, 32);
-                emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(runtime_print_int_));
+                emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.print_int));
                 emit_.call(x64::Reg::RAX);
                 emit_.add_imm(x64::Reg::RSP, 32);
             }
@@ -4562,7 +4424,7 @@ private:
                 emit_startup_call(print_offset_);
                 
                 emit_.add_imm(x64::Reg::RSP, 32);
-            } else if (runtime_print_str_) {
+            } else if (rt_.print_str) {
                 // jit mode doesnt have println yet
             }
         }
@@ -4571,7 +4433,7 @@ private:
     }
 
     // Two-argument builtin (like write_file, array_get, string_append)
-    bool generate_builtin_two_arg(const ast::CallExpr& call, void* fn_ptr) {
+    [[nodiscard]] bool generate_builtin_two_arg(const ast::CallExpr& call, void* fn_ptr) {
         if (call.args.size() < 2) {
             error("builtin requires two arguments");
             return false;
@@ -4600,7 +4462,7 @@ private:
     }
 
     // Three-argument builtin (like array_set)
-    bool generate_builtin_three_arg(const ast::CallExpr& call, void* fn_ptr) {
+    [[nodiscard]] bool generate_builtin_three_arg(const ast::CallExpr& call, void* fn_ptr) {
         if (call.args.size() < 3) {
             error("builtin requires three arguments");
             return false;
@@ -4636,7 +4498,7 @@ private:
     }
 
     // string_get_char(handle, index) - two args
-    bool generate_builtin_string_get_char(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_string_get_char(const ast::CallExpr& call) {
         if (call.args.size() < 2) {
             error("string_get_char requires handle and index arguments");
             return false;
@@ -4655,8 +4517,8 @@ private:
         
         emit_.sub_imm(x64::Reg::RSP, 32);
         
-        if (runtime_string_get_char_) {
-            emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(runtime_string_get_char_));
+        if (rt_.string_get_char) {
+            emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.string_get_char));
             emit_.call(x64::Reg::RAX);
         }
         
@@ -4670,7 +4532,7 @@ private:
     // memory ops - direct inline codegen, no function call overhead
     // ========================================================================
 
-    bool generate_builtin_mem_read_i64(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_mem_read_i64(const ast::CallExpr& call) {
         if (call.args.empty()) {
             error("mem_read requires an address argument");
             return false;
@@ -4682,7 +4544,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_mem_read_i32(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_mem_read_i32(const ast::CallExpr& call) {
         if (call.args.empty()) {
             error("mem_read_i32 requires an address argument");
             return false;
@@ -4697,7 +4559,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_mem_read_i16(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_mem_read_i16(const ast::CallExpr& call) {
         if (call.args.empty()) {
             error("mem_read_i16 requires an address argument");
             return false;
@@ -4710,7 +4572,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_mem_read_i8(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_mem_read_i8(const ast::CallExpr& call) {
         if (call.args.empty()) {
             error("mem_read_i8 requires an address argument");
             return false;
@@ -4723,7 +4585,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_mem_write_i64(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_mem_write_i64(const ast::CallExpr& call) {
         if (call.args.size() < 2) {
             error("mem_write requires address and value arguments");
             return false;
@@ -4744,7 +4606,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_mem_write_i32(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_mem_write_i32(const ast::CallExpr& call) {
         if (call.args.size() < 2) {
             error("mem_write_i32 requires address and value arguments");
             return false;
@@ -4766,7 +4628,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_mem_write_i16(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_mem_write_i16(const ast::CallExpr& call) {
         if (call.args.size() < 2) {
             error("mem_write_i16 requires address and value arguments");
             return false;
@@ -4783,7 +4645,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_mem_write_i8(const ast::CallExpr& call) {
+    [[nodiscard]] bool generate_builtin_mem_write_i8(const ast::CallExpr& call) {
         if (call.args.size() < 2) {
             error("mem_write_i8 requires address and value arguments");
             return false;
@@ -4805,27 +4667,29 @@ private:
 
     // Helper to get FFI function pointer by name (uses extern C declarations)
     void* get_ffi_fn(const std::string& name) {
-        if (name == "get_module") return reinterpret_cast<void*>(&opus_get_module);
-        if (name == "load_library") return reinterpret_cast<void*>(&opus_load_library);
-        if (name == "get_proc") return reinterpret_cast<void*>(&opus_get_proc);
-        if (name == "ffi_call0") return reinterpret_cast<void*>(&opus_ffi_call0);
-        if (name == "ffi_call1") return reinterpret_cast<void*>(&opus_ffi_call1);
-        if (name == "ffi_call2") return reinterpret_cast<void*>(&opus_ffi_call2);
-        if (name == "ffi_call3") return reinterpret_cast<void*>(&opus_ffi_call3);
-        if (name == "ffi_call4") return reinterpret_cast<void*>(&opus_ffi_call4);
-        if (name == "msgbox") return reinterpret_cast<void*>(&opus_msgbox);
-        if (name == "get_last_error") return reinterpret_cast<void*>(&opus_get_last_error);
-        if (name == "virtual_protect") return reinterpret_cast<void*>(&opus_virtual_protect);
-        if (name == "get_current_process") return reinterpret_cast<void*>(&opus_get_current_process);
-        if (name == "get_current_process_id") return reinterpret_cast<void*>(&opus_get_current_process_id);
-        // Console functions
-        if (name == "alloc_console") return reinterpret_cast<void*>(&opus_alloc_console);
-        if (name == "free_console") return reinterpret_cast<void*>(&opus_free_console);
-        if (name == "set_console_title") return reinterpret_cast<void*>(&opus_set_console_title);
-        return nullptr;
+        static const std::unordered_map<std::string_view, void*> ffi_table = {
+            {"get_module",              reinterpret_cast<void*>(&opus_get_module)},
+            {"load_library",            reinterpret_cast<void*>(&opus_load_library)},
+            {"get_proc",                reinterpret_cast<void*>(&opus_get_proc)},
+            {"ffi_call0",               reinterpret_cast<void*>(&opus_ffi_call0)},
+            {"ffi_call1",               reinterpret_cast<void*>(&opus_ffi_call1)},
+            {"ffi_call2",               reinterpret_cast<void*>(&opus_ffi_call2)},
+            {"ffi_call3",               reinterpret_cast<void*>(&opus_ffi_call3)},
+            {"ffi_call4",               reinterpret_cast<void*>(&opus_ffi_call4)},
+            {"msgbox",                  reinterpret_cast<void*>(&opus_msgbox)},
+            {"get_last_error",          reinterpret_cast<void*>(&opus_get_last_error)},
+            {"virtual_protect",         reinterpret_cast<void*>(&opus_virtual_protect)},
+            {"get_current_process",     reinterpret_cast<void*>(&opus_get_current_process)},
+            {"get_current_process_id",  reinterpret_cast<void*>(&opus_get_current_process_id)},
+            {"alloc_console",           reinterpret_cast<void*>(&opus_alloc_console)},
+            {"free_console",            reinterpret_cast<void*>(&opus_free_console)},
+            {"set_console_title",       reinterpret_cast<void*>(&opus_set_console_title)},
+        };
+        auto it = ffi_table.find(name);
+        return it != ffi_table.end() ? it->second : nullptr;
     }
 
-    bool generate_builtin_ffi_zero_arg(const std::string& fn_name) {
+    [[nodiscard]] bool generate_builtin_ffi_zero_arg(const std::string& fn_name) {
         void* fn_ptr = get_ffi_fn(fn_name);
         if (!fn_ptr) {
             error(std::format("unknown FFI function: {}", fn_name));
@@ -4838,7 +4702,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_ffi_one_arg(const ast::CallExpr& call, const std::string& fn_name) {
+    [[nodiscard]] bool generate_builtin_ffi_one_arg(const ast::CallExpr& call, const std::string& fn_name) {
         void* fn_ptr = get_ffi_fn(fn_name);
         if (!fn_ptr) {
             error(std::format("unknown FFI function: {}", fn_name));
@@ -4858,7 +4722,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_ffi_two_arg(const ast::CallExpr& call, const std::string& fn_name) {
+    [[nodiscard]] bool generate_builtin_ffi_two_arg(const ast::CallExpr& call, const std::string& fn_name) {
         void* fn_ptr = get_ffi_fn(fn_name);
         if (!fn_ptr) {
             error(std::format("unknown FFI function: {}", fn_name));
@@ -4884,7 +4748,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_ffi_three_arg(const ast::CallExpr& call, const std::string& fn_name) {
+    [[nodiscard]] bool generate_builtin_ffi_three_arg(const ast::CallExpr& call, const std::string& fn_name) {
         void* fn_ptr = get_ffi_fn(fn_name);
         if (!fn_ptr) {
             error(std::format("unknown FFI function: {}", fn_name));
@@ -4915,7 +4779,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_ffi_four_arg(const ast::CallExpr& call, const std::string& fn_name) {
+    [[nodiscard]] bool generate_builtin_ffi_four_arg(const ast::CallExpr& call, const std::string& fn_name) {
         void* fn_ptr = get_ffi_fn(fn_name);
         if (!fn_ptr) {
             error(std::format("unknown FFI function: {}", fn_name));
@@ -4945,7 +4809,7 @@ private:
         return true;
     }
 
-    bool generate_builtin_ffi_five_arg(const ast::CallExpr& call, const std::string& fn_name) {
+    [[nodiscard]] bool generate_builtin_ffi_five_arg(const ast::CallExpr& call, const std::string& fn_name) {
         void* fn_ptr = get_ffi_fn(fn_name);
         if (!fn_ptr) {
             error(std::format("unknown FFI function: {}", fn_name));
@@ -4971,7 +4835,7 @@ private:
         emit_.pop(x64::Reg::R9);
         // 5th arg stays on stack (part of shadow space usage)
         
-        emit_.sub_imm(x64::Reg::RSP, 40);  // 32 shadow + 8 for 5th arg alignment
+        emit_.sub_imm(x64::Reg::RSP, 48);  // shadow space + 5th arg + alignment
         emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(fn_ptr));
         emit_.call(x64::Reg::RAX);
         emit_.add_imm(x64::Reg::RSP, 48);  // Clean up including pushed 5th arg
@@ -5002,14 +4866,14 @@ private:
         emit_.mov(x64::Reg::R12, x64::Reg::RCX);
 
         // load function ptr and args from context
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0x00);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::R12, 0x08);
-        emit_.mov_load(x64::Reg::RDX, x64::Reg::R12, 0x10);
-        emit_.mov_load(x64::Reg::R8, x64::Reg::R12, 0x18);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, CTX_FN_PTR);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::R12, CTX_ARG0);
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::R12, CTX_ARG1);
+        emit_.mov_load(x64::Reg::R8, x64::Reg::R12, CTX_ARG2);
         emit_.call(x64::Reg::RAX);
 
-        // store result at context+0x20
-        emit_.mov_store(x64::Reg::R12, 0x20, x64::Reg::RAX);
+        // store result
+        emit_.mov_store(x64::Reg::R12, CTX_RESULT, x64::Reg::RAX);
 
         // return 0
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
@@ -5024,7 +4888,7 @@ private:
     // spawn expression codegen
     // allocates Thread_Context in current stack frame, calls CreateThread
     // returns handle in rax, stores context ptr at [rbp + spawn_ctx_offset_]
-    bool generate_spawn(const ast::SpawnExpr& spawn) {
+    [[nodiscard]] bool generate_spawn(const ast::SpawnExpr& spawn) {
         if (!spawn.callee->is<ast::IdentExpr>()) {
             error("spawn requires a function name");
             return false;
@@ -5043,14 +4907,13 @@ private:
         std::size_t jmp_over_stub = emit_.jmp_rel32_placeholder();
         std::size_t stub_offset = emit_thread_entry_stub(fn_name);
         if (emit_.buffer().pos() == pre_stub_pos + 5) {
-            // stub was cached, no new code emitted - undo the jump
-            // actually we cant undo, but the jump target is right here so its a nop jump
+            // stub was cached, no new code emitted - the jump lands right here
         }
         emit_.patch_jump(jmp_over_stub);
 
         // allocate context in current scope (48 bytes = 6 slots)
-        // we grab 6 stack slots from the current scope
-        auto& ctx_sym = current_scope_->define("__spawn_ctx_" + std::to_string(emit_.buffer().pos()),
+        std::size_t sid = spawn_counter_++;
+        auto& ctx_sym = current_scope_->define("__spawn_ctx_" + std::to_string(sid),
             Type::make_primitive(PrimitiveType::I64), true);
         std::int32_t ctx_base = ctx_sym.stack_offset;
         // reserve 5 more slots (total 48 bytes)
@@ -5058,12 +4921,18 @@ private:
             current_scope_->next_offset -= 8;
         }
 
+        // allocate a 2-slot spawn result: [handle, ctx_ptr]
+        // await reads both from this struct instead of a LIFO side-stack
+        auto& result_sym = current_scope_->define("__spawn_result_" + std::to_string(sid),
+            Type::make_primitive(PrimitiveType::I64), true);
+        std::int32_t result_base = result_sym.stack_offset;
+        current_scope_->next_offset -= 8; // second slot for ctx_ptr
+
         // evaluate args first (before we fill the context, since eval can trash regs)
         std::vector<std::int32_t> arg_temps;
         for (std::size_t i = 0; i < spawn.args.size() && i < 3; ++i) {
             if (!generate_expr(*spawn.args[i])) return false;
-            // stash in a temp slot
-            auto& tmp = current_scope_->define("__spawn_arg_" + std::to_string(i) + "_" + std::to_string(emit_.buffer().pos()),
+            auto& tmp = current_scope_->define("__spawn_arg_" + std::to_string(i) + "_" + std::to_string(sid),
                 Type::make_primitive(PrimitiveType::I64), true);
             emit_.mov_store(x64::Reg::RBP, tmp.stack_offset, x64::Reg::RAX);
             arg_temps.push_back(tmp.stack_offset);
@@ -5071,15 +4940,11 @@ private:
 
         // fill context: the 48-byte block goes from ctx_base-40 (low) to ctx_base (high)
         // context pointer = rbp + ctx_base - 40 (lowest address)
-        // [ctx+0x00] = function_ptr, [ctx+0x08] = arg0, [ctx+0x10] = arg1,
-        // [ctx+0x18] = arg2, [ctx+0x20] = result_slot, [ctx+0x28] = padding
+        // layout: [fn_ptr, arg0, arg1, arg2, result, padding]
         std::int32_t ctx_ptr_off = ctx_base - 40;
 
         // store function ptr at [rbp + ctx_ptr_off]
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D);
-        emit_.buffer().emit8(0x05); // lea rax, [rip+disp32]
-        std::size_t fn_addr_fixup = emit_.buffer().size();
-        emit_.buffer().emit32(0);
+        std::size_t fn_addr_fixup = emit_lea_rip_disp32(x64::Reg::RAX);
         call_fixups_.push_back({fn_addr_fixup, fn_name});
         emit_.mov_store(x64::Reg::RBP, ctx_ptr_off, x64::Reg::RAX);
 
@@ -5091,10 +4956,10 @@ private:
 
         // zero result slot
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-        emit_.mov_store(x64::Reg::RBP, ctx_ptr_off + 0x20, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, ctx_ptr_off + CTX_RESULT, x64::Reg::RAX);
 
-        // save context base address for await
-        auto& ctx_ptr_sym = current_scope_->define("__spawn_ctxptr_" + std::to_string(emit_.buffer().pos()),
+        // compute context base address into a temp
+        auto& ctx_ptr_sym = current_scope_->define("__spawn_ctxptr_" + std::to_string(sid),
             Type::make_primitive(PrimitiveType::I64), true);
         emit_.lea(x64::Reg::RAX, x64::Reg::RBP, ctx_ptr_off);
         emit_.mov_store(x64::Reg::RBP, ctx_ptr_sym.stack_offset, x64::Reg::RAX);
@@ -5105,7 +4970,7 @@ private:
         // r8 = stub address
         emit_.buffer().emit8(0x4C); emit_.buffer().emit8(0x8D);
         emit_.buffer().emit8(0x05); // lea r8, [rip+disp32]
-        std::size_t stub_fixup = emit_.buffer().size();
+        std::size_t stub_fixup = emit_.buffer().pos();
         emit_.buffer().emit32(0);
         std::int32_t stub_rel = static_cast<std::int32_t>(stub_offset)
             - static_cast<std::int32_t>(stub_fixup + 4);
@@ -5123,31 +4988,29 @@ private:
         emit_.add_imm(x64::Reg::RSP, 48);
 
         // rax = thread HANDLE
-        // also save context ptr offset so await can find it
-        // we stash the ctx_ptr_sym offset in a map keyed by... hmm
-        // actually the user does: let h = spawn foo(x)
-        // then: let result = await h
-        // await gets h (the handle) from the variable
-        // but it also needs the context ptr
-        // we store ctx_ptr right after the handle in the callers frame
-        // the let statement will store rax (handle) at some offset
-        // we need ctx_ptr at offset-8
-        // BUT we dont control where let puts it...
+        // pack [handle, ctx_ptr] into the spawn result struct
+        // await will read both from this pointer, no LIFO ordering needed
+        emit_.mov_store(x64::Reg::RBP, result_base, x64::Reg::RAX);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ctx_ptr_sym.stack_offset);
+        emit_.mov_store(x64::Reg::RBP, result_base - 8, x64::Reg::RCX);
 
-        // simplest v1: store ctx_ptr in rax's upper bits? no thats insane
-        // ok: we push ctx_ptr onto a side-stack (vector in codegen)
-        // await pops from it. this works if spawns and awaits are balanced
-        // and in the same order (LIFO). good enough for v1.
-        spawn_context_stack_.push_back(ctx_ptr_sym.stack_offset);
+        // return pointer to the spawn result struct
+        emit_.lea(x64::Reg::RAX, x64::Reg::RBP, result_base);
 
         return true;
     }
 
     // await expression codegen
     // waits for thread handle, reads result from context, cleans up
-    bool generate_await(const ast::AwaitExpr& await_expr) {
-        // evaluate handle expression -> rax
+    [[nodiscard]] bool generate_await(const ast::AwaitExpr& await_expr) {
+        // evaluate handle expression -> rax (pointer to spawn result: [handle, ctx_ptr])
         if (!generate_expr(*await_expr.handle)) return false;
+
+        // rax points to spawn result struct
+        // load handle from [rax+0], ctx_ptr from [rax-8]
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RAX, -8); // ctx_ptr
+        emit_.push(x64::Reg::RCX); // save ctx_ptr
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);  // handle
 
         // save handle
         emit_.push(x64::Reg::RAX);
@@ -5161,81 +5024,36 @@ private:
 
         // CloseHandle(handle)
         emit_.pop(x64::Reg::RCX); // restore handle
-        emit_.push(x64::Reg::RCX); // save again for after close
         emit_.sub_imm(x64::Reg::RSP, 32);
         emit_iat_call_raw(pe::iat::CloseHandle);
         emit_.add_imm(x64::Reg::RSP, 32);
-        emit_.pop(x64::Reg::RCX); // clean up saved handle
 
         // load result from context
-        if (!spawn_context_stack_.empty()) {
-            std::int32_t ctx_offset = spawn_context_stack_.back();
-            spawn_context_stack_.pop_back();
-            // ctx_offset points to the __spawn_ctxptr variable
-            emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, ctx_offset);
-            // rax = context base ptr, result is at +0x20
-            emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0x20);
-        } else {
-            // no context available, return 0
-            emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-        }
+        emit_.pop(x64::Reg::RAX); // restore ctx_ptr
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, CTX_RESULT);
 
         return true;
     }
 
-    // parallel for codegen
-    // parallel for codegen
-    // extracts body into internal function, spawns N threads, waits for all
-    bool generate_parallel_for(const ast::ParallelForStmt& pfor) {
-        push_scope();
+    // captured variable info for pfor body emission
+    struct CapturedVar {
+        std::string name;
+        std::int32_t parent_offset;
+    };
 
-        // evaluate start and end into temp vars
-        if (!generate_expr(*pfor.start)) { pop_scope(); return false; }
-        auto& start_sym = current_scope_->define("__pfor_start",
-            Type::make_primitive(PrimitiveType::I64), true);
-        emit_.mov_store(x64::Reg::RBP, start_sym.stack_offset, x64::Reg::RAX);
-
-        if (!generate_expr(*pfor.end)) { pop_scope(); return false; }
-        auto& end_sym = current_scope_->define("__pfor_end",
-            Type::make_primitive(PrimitiveType::I64), true);
-        emit_.mov_store(x64::Reg::RBP, end_sym.stack_offset, x64::Reg::RAX);
-
-        // check empty range: if start >= end, skip
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, start_sym.stack_offset);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, end_sym.stack_offset);
-        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
-        std::size_t skip_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
-
-        // collect captured variables from parent scopes
-        // the body runs in a separate thread so it cant access the callers stack
-        // we pass the callers rbp through context+0x18 and copy vars into the body frame
-        struct CapturedVar {
-            std::string name;
-            std::int32_t parent_offset;
-        };
-        std::vector<CapturedVar> captures;
-        for (Scope* s = current_scope_; s != nullptr; s = s->parent) {
-            for (const auto& [name, sym] : s->symbols) {
-                // skip internal vars and the loop variable
-                if (name.starts_with("__pfor_")) continue;
-                if (name == pfor.var_name) continue;
-                captures.push_back({name, sym.stack_offset});
-            }
-        }
-
-        // emit the loop body as an internal function
-        // takes (start_idx in rcx, end_idx in rdx, parent_rbp in r8)
-        std::string body_fn = "__pfor_body_" + std::to_string(emit_.buffer().pos());
-
-        // jump over the body function
-        std::size_t jmp_over = emit_.jmp_rel32_placeholder();
-
-        // emit body function
-        functions_[body_fn] = FunctionInfo{
-            .name = body_fn,
+    // emits the inner loop function that each worker thread runs
+    // registers body_fn in functions_, emits stub, patches jmp_over
+    bool emit_pfor_body_function(
+        const ast::ParallelForStmt& pfor,
+        const std::vector<CapturedVar>& captures,
+        PforLayout& layout,
+        std::size_t jmp_over
+    ) {
+        functions_[layout.body_fn] = FunctionInfo{
+            .name = layout.body_fn,
             .return_type = Type::make_primitive(PrimitiveType::I64)
         };
-        auto& body_info = functions_[body_fn];
+        auto& body_info = functions_[layout.body_fn];
         body_info.code_offset = emit_.buffer().pos();
 
         push_scope();
@@ -5262,7 +5080,7 @@ private:
         }
 
         // loop variable
-        auto& loop_var = current_scope_->define(pfor.var_name,
+        auto& loop_var = current_scope_->define(pfor.name,
             Type::make_primitive(PrimitiveType::I64), true);
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, iter_start.stack_offset);
         emit_.mov_store(x64::Reg::RBP, loop_var.stack_offset, x64::Reg::RAX);
@@ -5274,20 +5092,17 @@ private:
         emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
         std::size_t loop_exit = emit_.jcc_rel32(x64::Emitter::CC_GE);
 
-        // generate body statements
         for (const auto& stmt : pfor.body) {
             if (!generate_stmt(*stmt)) { pop_scope(); return false; }
         }
 
-        // increment loop var
+        // increment and loop back
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, loop_var.stack_offset);
         emit_.add_imm(x64::Reg::RAX, 1);
         emit_.mov_store(x64::Reg::RBP, loop_var.stack_offset, x64::Reg::RAX);
 
-        // jump back
         std::int32_t loop_rel = static_cast<std::int32_t>(loop_top - emit_.buffer().pos() - 5);
         emit_.jmp_rel32(loop_rel);
-
         emit_.patch_jump(loop_exit);
 
         // return 0
@@ -5296,174 +5111,138 @@ private:
         pop_scope();
         body_info.code_size = emit_.buffer().pos() - body_info.code_offset;
 
-        // emit thread entry stub right after body (before we patch jmp_over)
-        std::size_t stub_offset = emit_thread_entry_stub(body_fn);
-
-        // patch the jump-over (skips both body func and stub)
+        layout.stub_offset = emit_thread_entry_stub(layout.body_fn);
         emit_.patch_jump(jmp_over);
+        return true;
+    }
 
-        // back in the caller scope - now do the parallel dispatch
-        // get cpu count via GetSystemInfo
-        // SYSTEM_INFO is 48 bytes, dwNumberOfProcessors at offset 32
-        emit_.sub_imm(x64::Reg::RSP, 48); // SYSTEM_INFO on stack
+    // emits the CreateThread loop that spawns one worker per core
+    void emit_pfor_spawn_loop(const PforLayout& layout) {
+        // get cpu count via GetSystemInfo (48 byte struct, dwNumberOfProcessors at offset 32)
+        emit_.sub_imm(x64::Reg::RSP, 48);
         emit_.mov(x64::Reg::RCX, x64::Reg::RSP);
-        emit_.sub_imm(x64::Reg::RSP, 32); // shadow
+        emit_.sub_imm(x64::Reg::RSP, 32);
         emit_iat_call_raw(pe::iat::GetSystemInfo);
         emit_.add_imm(x64::Reg::RSP, 32);
-        // read dwNumberOfProcessors (offset 32 in SYSTEM_INFO, its a DWORD)
+        // mov eax, [rsp+0x20] ? read dwNumberOfProcessors
         emit_.buffer().emit8(0x8B); emit_.buffer().emit8(0x44);
-        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x20); // mov eax, [rsp+0x20]
-        emit_.add_imm(x64::Reg::RSP, 48); // pop SYSTEM_INFO
+        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x20);
+        emit_.add_imm(x64::Reg::RSP, 48);
 
-        // rax = num_cores, save it
-        auto& ncores_sym = current_scope_->define("__pfor_ncores",
-            Type::make_primitive(PrimitiveType::I64), true);
-        emit_.mov_store(x64::Reg::RBP, ncores_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.ncores_off, x64::Reg::RAX);
 
-        // cap at 64 cores max (sanity)
-        emit_.cmp_imm(x64::Reg::RAX, 64);
+        // cap at PFOR_MAX_THREADS
+        emit_.cmp_imm(x64::Reg::RAX, PFOR_MAX_THREADS);
         std::size_t cap_skip = emit_.jcc_rel32(x64::Emitter::CC_LE);
-        emit_.mov_imm32(x64::Reg::RAX, 64);
-        emit_.mov_store(x64::Reg::RBP, ncores_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov_imm32(x64::Reg::RAX, PFOR_MAX_THREADS);
+        emit_.mov_store(x64::Reg::RBP, layout.ncores_off, x64::Reg::RAX);
         emit_.patch_jump(cap_skip);
 
-        // compute range = end - start
-        auto& range_sym = current_scope_->define("__pfor_range",
-            Type::make_primitive(PrimitiveType::I64), true);
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, end_sym.stack_offset);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, start_sym.stack_offset);
+        // range = end - start
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.end_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.start_off);
         emit_.sub(x64::Reg::RAX, x64::Reg::RCX);
-        emit_.mov_store(x64::Reg::RBP, range_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.range_off, x64::Reg::RAX);
 
         // cap ncores to range so we dont spawn useless threads
-        // if range < ncores, set ncores = range
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ncores_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.ncores_off);
         emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
         std::size_t range_ok = emit_.jcc_rel32(x64::Emitter::CC_GE);
-        emit_.mov_store(x64::Reg::RBP, ncores_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.ncores_off, x64::Reg::RAX);
         emit_.patch_jump(range_ok);
 
-        // chunk_size = range / ncores
-        auto& chunk_sym = current_scope_->define("__pfor_chunk",
-            Type::make_primitive(PrimitiveType::I64), true);
+        // chunk_size = range / ncores (rax still has range from above)
         emit_.cqo();
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ncores_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.ncores_off);
         emit_.idiv(x64::Reg::RCX);
-        emit_.mov_store(x64::Reg::RBP, chunk_sym.stack_offset, x64::Reg::RAX);
-        // rdx = remainder, save it
-        auto& rem_sym = current_scope_->define("__pfor_rem",
-            Type::make_primitive(PrimitiveType::I64), true);
-        emit_.mov_store(x64::Reg::RBP, rem_sym.stack_offset, x64::Reg::RDX);
-
-        // allocate arrays for contexts and handles on stack
-        // max 64 cores * 48 = 3072 for contexts, 64 * 8 = 512 for handles
-        // stack grows down so we reserve slots then use the bottom as base for upward indexing
-        auto& ctx_arr_sym = current_scope_->define("__pfor_ctxarr",
-            Type::make_primitive(PrimitiveType::I64), true);
-        for (int i = 0; i < 447; ++i) current_scope_->next_offset -= 8;
-        std::int32_t ctx_arr_base = current_scope_->next_offset + 8; // bottom of reserved block
-
-        auto& hdl_arr_sym = current_scope_->define("__pfor_hdlarr",
-            Type::make_primitive(PrimitiveType::I64), true);
-        for (int i = 0; i < 63; ++i) current_scope_->next_offset -= 8;
-        std::int32_t hdl_arr_base = current_scope_->next_offset + 8; // bottom of reserved block
-
-        // spawn loop: for each core, fill context and create thread
-        auto& idx_sym = current_scope_->define("__pfor_i",
-            Type::make_primitive(PrimitiveType::I64), true);
+        emit_.mov_store(x64::Reg::RBP, layout.chunk_off, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.rem_off, x64::Reg::RDX);
 
         // grow rsp to cover all our locals so function calls dont clobber them
-        // next_offset is negative, tells us how deep the frame goes
         std::int32_t frame_needed = (-current_scope_->next_offset + 15) & ~15;
         emit_.sub_imm(x64::Reg::RSP, frame_needed);
 
+        // i = 0
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-        emit_.mov_store(x64::Reg::RBP, idx_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.idx_off, x64::Reg::RAX);
 
         std::size_t spawn_loop_top = emit_.buffer().pos();
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ncores_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.ncores_off);
         emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
         std::size_t spawn_loop_exit = emit_.jcc_rel32(x64::Emitter::CC_GE);
 
-        // compute context address: ctx_arr_base + i * 48
-        emit_.imul_imm(x64::Reg::RCX, x64::Reg::RAX, 48);
-        emit_.lea(x64::Reg::RDX, x64::Reg::RBP, ctx_arr_base);
+        // context address: ctx_arr_base + i * PFOR_CTX_SIZE
+        emit_.imul_imm(x64::Reg::RCX, x64::Reg::RAX, PFOR_CTX_SIZE);
+        emit_.lea(x64::Reg::RDX, x64::Reg::RBP, layout.ctx_arr_base);
         emit_.add(x64::Reg::RDX, x64::Reg::RCX);
-        // rdx = context ptr for this thread
 
-        emit_.push(x64::Reg::RDX); // save ctx ptr
+        emit_.push(x64::Reg::RDX);
 
-        // [rdx+0x00] = body function ptr
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D);
-        emit_.buffer().emit8(0x05); // lea rax, [rip+disp32]
-        std::size_t body_fixup = emit_.buffer().size();
-        emit_.buffer().emit32(0);
-        call_fixups_.push_back({body_fixup, body_fn});
+        // [rdx+CTX_FN_PTR] = body function ptr
+        std::size_t body_fixup = emit_lea_rip_disp32(x64::Reg::RAX);
+        call_fixups_.push_back({body_fixup, layout.body_fn});
         emit_.pop(x64::Reg::RDX);
         emit_.push(x64::Reg::RDX);
-        emit_.mov_store(x64::Reg::RDX, 0x00, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RDX, CTX_FN_PTR, x64::Reg::RAX);
 
-        // [rdx+0x08] = chunk_start = start + i * chunk_size
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, chunk_sym.stack_offset);
+        // [rdx+CTX_ARG0] = chunk_start = start + i * chunk_size
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.chunk_off);
         emit_.imul(x64::Reg::RAX, x64::Reg::RCX);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, start_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.start_off);
         emit_.add(x64::Reg::RAX, x64::Reg::RCX);
         emit_.pop(x64::Reg::RDX);
         emit_.push(x64::Reg::RDX);
-        emit_.mov_store(x64::Reg::RDX, 0x08, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RDX, CTX_ARG0, x64::Reg::RAX);
 
-        // [rdx+0x10] = chunk_end
+        // [rdx+CTX_ARG1] = chunk_end
         // last thread absorbs remainder, others get chunk_start + chunk_size
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
         emit_.add_imm(x64::Reg::RAX, 1);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ncores_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.ncores_off);
         emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
         std::size_t not_last = emit_.jcc_rel32(x64::Emitter::CC_NE);
-        // last thread: end = pfor.end
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, end_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.end_off);
         std::size_t chunk_end_done = emit_.jmp_rel32_placeholder();
         emit_.patch_jump(not_last);
-        // not last: end = chunk_start + chunk_size
         emit_.pop(x64::Reg::RDX);
         emit_.push(x64::Reg::RDX);
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RDX, 0x08); // chunk_start
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, chunk_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RDX, CTX_ARG0);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.chunk_off);
         emit_.add(x64::Reg::RAX, x64::Reg::RCX);
         emit_.patch_jump(chunk_end_done);
         emit_.pop(x64::Reg::RDX);
         emit_.push(x64::Reg::RDX);
-        emit_.mov_store(x64::Reg::RDX, 0x10, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RDX, CTX_ARG1, x64::Reg::RAX);
 
-        // [rdx+0x18] = parent rbp (so body can access captured vars)
+        // [rdx+CTX_ARG2] = parent rbp
         emit_.pop(x64::Reg::RDX);
         emit_.push(x64::Reg::RDX);
-        emit_.mov_store(x64::Reg::RDX, 0x18, x64::Reg::RBP);
+        emit_.mov_store(x64::Reg::RDX, CTX_ARG2, x64::Reg::RBP);
 
-        // [rdx+0x20] = result (zero)
+        // [rdx+CTX_RESULT] = result (zero)
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
         emit_.pop(x64::Reg::RDX);
         emit_.push(x64::Reg::RDX);
-        emit_.mov_store(x64::Reg::RDX, 0x20, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RDX, CTX_RESULT, x64::Reg::RAX);
 
-        // call CreateThread
-        emit_.pop(x64::Reg::RDX); // context ptr -> goes in r9
-        emit_.push(x64::Reg::RDX); // save for handle storage
+        // CreateThread(NULL, 0, stub, context, 0, NULL)
+        emit_.pop(x64::Reg::RDX);
+        emit_.push(x64::Reg::RDX);
 
         emit_.xor_(x64::Reg::RCX, x64::Reg::RCX); // lpThreadAttributes = NULL
         emit_.mov(x64::Reg::R9, x64::Reg::RDX);    // lpParameter = context
         emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);  // dwStackSize = 0
-        // r8 = stub address
+        // lea r8, [rip+stub_offset]
         emit_.buffer().emit8(0x4C); emit_.buffer().emit8(0x8D);
-        emit_.buffer().emit8(0x05); // lea r8, [rip+disp32]
-        std::size_t stub_fix2 = emit_.buffer().size();
+        emit_.buffer().emit8(0x05);
+        std::size_t stub_fix2 = emit_.buffer().pos();
         emit_.buffer().emit32(0);
-        std::int32_t srel = static_cast<std::int32_t>(stub_offset)
+        std::int32_t srel = static_cast<std::int32_t>(layout.stub_offset)
             - static_cast<std::int32_t>(stub_fix2 + 4);
         emit_.buffer().patch32(stub_fix2, static_cast<std::uint32_t>(srel));
 
-        // 5th + 6th args on stack
         emit_.sub_imm(x64::Reg::RSP, 48);
         emit_.mov_imm32(x64::Reg::RAX, 0);
         emit_.mov_store(x64::Reg::RSP, 32, x64::Reg::RAX);
@@ -5472,26 +5251,28 @@ private:
         emit_.add_imm(x64::Reg::RSP, 48);
 
         // store handle: hdl_arr[i] = rax
-        emit_.pop(x64::Reg::RDX); // pop saved context ptr
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, idx_sym.stack_offset);
+        emit_.pop(x64::Reg::RDX);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.idx_off);
         emit_.imul_imm(x64::Reg::RCX, x64::Reg::RCX, 8);
-        emit_.lea(x64::Reg::RDX, x64::Reg::RBP, hdl_arr_base);
+        emit_.lea(x64::Reg::RDX, x64::Reg::RBP, layout.hdl_arr_base);
         emit_.add(x64::Reg::RDX, x64::Reg::RCX);
         emit_.mov_store(x64::Reg::RDX, 0, x64::Reg::RAX);
 
         // i++
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
         emit_.add_imm(x64::Reg::RAX, 1);
-        emit_.mov_store(x64::Reg::RBP, idx_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.idx_off, x64::Reg::RAX);
 
         std::int32_t spawn_loop_rel = static_cast<std::int32_t>(
             spawn_loop_top - emit_.buffer().pos() - 5);
         emit_.jmp_rel32(spawn_loop_rel);
         emit_.patch_jump(spawn_loop_exit);
+    }
 
-        // WaitForMultipleObjects(ncores, handle_array, TRUE, INFINITE)
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ncores_sym.stack_offset);
-        emit_.lea(x64::Reg::RDX, x64::Reg::RBP, hdl_arr_base);
+    // emits WaitForMultipleObjects + CloseHandle cleanup loop
+    void emit_pfor_wait_and_close(const PforLayout& layout) {
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.ncores_off);
+        emit_.lea(x64::Reg::RDX, x64::Reg::RBP, layout.hdl_arr_base);
         emit_.mov_imm32(x64::Reg::R8, 1);  // bWaitAll = TRUE
         emit_.mov_imm32(x64::Reg::R9, -1); // INFINITE
         emit_.sub_imm(x64::Reg::RSP, 32);
@@ -5500,40 +5281,123 @@ private:
 
         // CloseHandle loop
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-        emit_.mov_store(x64::Reg::RBP, idx_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.idx_off, x64::Reg::RAX);
 
         std::size_t close_loop_top = emit_.buffer().pos();
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ncores_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.ncores_off);
         emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
         std::size_t close_loop_exit = emit_.jcc_rel32(x64::Emitter::CC_GE);
 
-        // load handle[i]
         emit_.imul_imm(x64::Reg::RCX, x64::Reg::RAX, 8);
-        emit_.lea(x64::Reg::RDX, x64::Reg::RBP, hdl_arr_base);
+        emit_.lea(x64::Reg::RDX, x64::Reg::RBP, layout.hdl_arr_base);
         emit_.add(x64::Reg::RDX, x64::Reg::RCX);
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RDX, 0);
         emit_.sub_imm(x64::Reg::RSP, 32);
         emit_iat_call_raw(pe::iat::CloseHandle);
         emit_.add_imm(x64::Reg::RSP, 32);
 
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
         emit_.add_imm(x64::Reg::RAX, 1);
-        emit_.mov_store(x64::Reg::RBP, idx_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.idx_off, x64::Reg::RAX);
 
         std::int32_t close_rel = static_cast<std::int32_t>(
             close_loop_top - emit_.buffer().pos() - 5);
         emit_.jmp_rel32(close_rel);
         emit_.patch_jump(close_loop_exit);
+    }
 
-        // patch the empty-range skip
+    // parallel for codegen ? extracts body into internal function, spawns N threads, waits for all
+    [[nodiscard]] bool generate_parallel_for(const ast::ParallelForStmt& pfor) {
+        push_scope();
+
+        // evaluate start and end into temp vars
+        if (!generate_expr(*pfor.start)) { pop_scope(); return false; }
+        auto& start_sym = current_scope_->define("__pfor_start",
+            Type::make_primitive(PrimitiveType::I64), true);
+        emit_.mov_store(x64::Reg::RBP, start_sym.stack_offset, x64::Reg::RAX);
+
+        if (!generate_expr(*pfor.end)) { pop_scope(); return false; }
+        auto& end_sym = current_scope_->define("__pfor_end",
+            Type::make_primitive(PrimitiveType::I64), true);
+        emit_.mov_store(x64::Reg::RBP, end_sym.stack_offset, x64::Reg::RAX);
+
+        // skip everything if range is empty
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, start_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, end_sym.stack_offset);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
+        std::size_t skip_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        // collect captured variables from parent scopes
+        // threads cant access the callers stack directly, so we snapshot vars into the body frame
+        std::vector<CapturedVar> captures;
+        for (Scope* s = current_scope_; s != nullptr; s = s->parent) {
+            for (const auto& [name, sym] : s->symbols) {
+                if (name.starts_with("__pfor_")) continue;
+                if (name == pfor.name) continue;
+                captures.push_back({name, sym.stack_offset});
+            }
+        }
+
+        PforLayout layout{};
+        layout.body_fn = "__pfor_body_" + std::to_string(emit_.buffer().pos());
+        layout.start_off = start_sym.stack_offset;
+        layout.end_off = end_sym.stack_offset;
+
+        // jump over the body function code
+        std::size_t jmp_over = emit_.jmp_rel32_placeholder();
+
+        // phase 1: emit the worker thread body function + entry stub
+        if (!emit_pfor_body_function(pfor, captures, layout, jmp_over)) {
+            pop_scope();
+            return false;
+        }
+
+        // phase 2 setup: define all the scope vars the spawn loop needs
+        auto& ncores_sym = current_scope_->define("__pfor_ncores",
+            Type::make_primitive(PrimitiveType::I64), true);
+        layout.ncores_off = ncores_sym.stack_offset;
+
+        auto& range_sym = current_scope_->define("__pfor_range",
+            Type::make_primitive(PrimitiveType::I64), true);
+        layout.range_off = range_sym.stack_offset;
+
+        auto& chunk_sym = current_scope_->define("__pfor_chunk",
+            Type::make_primitive(PrimitiveType::I64), true);
+        layout.chunk_off = chunk_sym.stack_offset;
+
+        auto& rem_sym = current_scope_->define("__pfor_rem",
+            Type::make_primitive(PrimitiveType::I64), true);
+        layout.rem_off = rem_sym.stack_offset;
+
+        // reserve stack space for context and handle arrays
+        current_scope_->define("__pfor_ctxarr",
+            Type::make_primitive(PrimitiveType::I64), true);
+        for (int i = 0; i < PFOR_CTX_EXTRA_SLOTS; ++i) current_scope_->next_offset -= 8;
+        layout.ctx_arr_base = current_scope_->next_offset + 8;
+
+        current_scope_->define("__pfor_hdlarr",
+            Type::make_primitive(PrimitiveType::I64), true);
+        for (int i = 0; i < PFOR_HDL_EXTRA_SLOTS; ++i) current_scope_->next_offset -= 8;
+        layout.hdl_arr_base = current_scope_->next_offset + 8;
+
+        auto& idx_sym = current_scope_->define("__pfor_i",
+            Type::make_primitive(PrimitiveType::I64), true);
+        layout.idx_off = idx_sym.stack_offset;
+
+        // phase 2: spawn worker threads
+        emit_pfor_spawn_loop(layout);
+
+        // phase 3: wait for all threads and close handles
+        emit_pfor_wait_and_close(layout);
+
         emit_.patch_jump(skip_patch);
 
         pop_scope();
         return true;
     }
     // atomic operations codegen
-    bool generate_atomic_op(const ast::AtomicOpExpr& atomic) {
+    [[nodiscard]] bool generate_atomic_op(const ast::AtomicOpExpr& atomic) {
         // evaluate pointer arg -> save to stack
         if (!generate_expr(*atomic.ptr)) return false;
         emit_.push(x64::Reg::RAX); // save ptr

@@ -18,6 +18,7 @@ export import opus.parser;
 export import opus.ast;
 export import opus.codegen;
 export import opus.x64;
+export import opus.pe;
 export import opus.errors;
 
 import std;
@@ -307,10 +308,10 @@ extern "C" std::int64_t opus_get_last_error() {
 // need a console for dll debugging since dlls dont have one
 extern "C" std::int64_t opus_alloc_console() {
     if (AllocConsole()) {
-        FILE* fp;
-        freopen_s(&fp, "CONOUT$", "w", stdout);
-        freopen_s(&fp, "CONOUT$", "w", stderr);
-        freopen_s(&fp, "CONIN$", "r", stdin);
+        FILE* fp = nullptr;
+        if (freopen_s(&fp, "CONOUT$", "w", stdout) != 0) return 0;
+        if (freopen_s(&fp, "CONOUT$", "w", stderr) != 0) return 0;
+        if (freopen_s(&fp, "CONIN$", "r", stdin) != 0) return 0;
         SetConsoleTitleA("Opus Console");
         
         return 1;
@@ -399,6 +400,7 @@ extern "C" std::int64_t opus_get_current_process_id() { return 0; }
 
 // layout: arr[0] = length, arr[1..n] = elements
 extern "C" std::int64_t opus_array_new(std::int64_t size) {
+    if (size < 0) return 0;
     std::int64_t* arr = static_cast<std::int64_t*>(std::malloc((size + 1) * sizeof(std::int64_t)));
     if (!arr) return 0;
     arr[0] = size;
@@ -436,7 +438,9 @@ extern "C" std::int64_t opus_string_append(std::int64_t handle1, std::int64_t ha
     if (handle2 < 0 || handle2 >= static_cast<std::int64_t>(table.size())) return -1;
     
     std::int64_t new_handle = static_cast<std::int64_t>(table.size());
-    table.push_back(table[handle1] + table[handle2]);
+    // build the string before push_back to avoid iterator invalidation
+    auto new_str = table[handle1] + table[handle2];
+    table.push_back(std::move(new_str));
     return new_handle;
 }
 
@@ -467,8 +471,10 @@ extern "C" std::int64_t opus_string_substring(std::int64_t handle, std::int64_t 
     if (start < 0 || start >= static_cast<std::int64_t>(str.size())) return -1;
     
     std::int64_t actual_len = std::min(len, static_cast<std::int64_t>(str.size()) - start);
+    // build substring before push_back to avoid any iterator invalidation risk
+    auto new_str = str.substr(start, actual_len);
     std::int64_t new_handle = static_cast<std::int64_t>(table.size());
-    table.push_back(str.substr(start, actual_len));
+    table.push_back(std::move(new_str));
     return new_handle;
 }
 
@@ -517,15 +523,31 @@ extern "C" std::int64_t opus_write_bytes(std::int64_t filename_handle, std::int6
 }
 
 // byte buffer ops for x64 codegen
+// layout: arr[-1] = capacity, arr[0] = length, arr[1..n] = data
+// this is compatible with the regular array layout from arr[0] onward,
+// so array_get/array_set/array_len/write_bytes all still work
 extern "C" std::int64_t opus_buffer_new(std::int64_t capacity) {
-    return opus_array_new(capacity);
+    if (capacity < 0) return 0;
+    // allocate capacity + 2 slots: one for capacity, one for length, rest for data
+    std::int64_t* raw = static_cast<std::int64_t*>(
+        std::malloc(static_cast<std::size_t>(capacity + 2) * sizeof(std::int64_t)));
+    if (!raw) return 0;
+    raw[0] = capacity;  // hidden capacity slot
+    // return pointer to arr[1] so arr[0] = length from callers perspective
+    std::int64_t* arr = raw + 1;
+    arr[0] = 0;  // length starts at 0
+    for (std::int64_t i = 1; i <= capacity; ++i) {
+        arr[i] = 0;
+    }
+    return reinterpret_cast<std::int64_t>(arr);
 }
 
 extern "C" void opus_buffer_push(std::int64_t arr_ptr, std::int64_t byte) {
     std::int64_t* arr = reinterpret_cast<std::int64_t*>(arr_ptr);
     if (!arr) return;
     std::int64_t len = arr[0];
-    // no bounds check, caller must ensure capacity
+    std::int64_t cap = arr[-1];
+    if (len >= cap) return;  // bounds check
     arr[len + 1] = byte;
     arr[0] = len + 1;
 }
@@ -546,72 +568,82 @@ extern "C" std::int64_t opus_parse_int(std::int64_t handle) {
 
 // pointers to runtime functions, passed into jit code
 struct RuntimeFunctions {
-    void* print_int = reinterpret_cast<void*>(&opus_print_int);
-    void* print_str = reinterpret_cast<void*>(&opus_print_str);
-    void* print_newline = reinterpret_cast<void*>(&opus_print_newline);
-    void* read_file = reinterpret_cast<void*>(&opus_read_file);
-    void* string_length = reinterpret_cast<void*>(&opus_string_length);
-    void* string_get_char = reinterpret_cast<void*>(&opus_string_get_char);
-    void* print_string = reinterpret_cast<void*>(&opus_print_string);
-    void* make_string = reinterpret_cast<void*>(&opus_make_string);
-    void* write_file = reinterpret_cast<void*>(&opus_write_file);
-    void* malloc_fn = reinterpret_cast<void*>(&opus_malloc);
-    void* free_fn = reinterpret_cast<void*>(&opus_free);
-    void* array_new = reinterpret_cast<void*>(&opus_array_new);
-    void* array_get = reinterpret_cast<void*>(&opus_array_get);
-    void* array_set = reinterpret_cast<void*>(&opus_array_set);
-    void* array_len = reinterpret_cast<void*>(&opus_array_len);
-    void* array_free = reinterpret_cast<void*>(&opus_array_free);
-    void* string_append = reinterpret_cast<void*>(&opus_string_append);
-    void* int_to_string = reinterpret_cast<void*>(&opus_int_to_string);
-    void* print_char = reinterpret_cast<void*>(&opus_print_char);
+    // core i/o
+    RtVoidI64   print_int = &opus_print_int;
+    RtVoidStr   print_str = &opus_print_str;
+    RtVoid      print_newline = &opus_print_newline;
+    RtI64I64    read_file = &opus_read_file;
+    RtI64I64    string_length = &opus_string_length;
+    RtI64I64I64 string_get_char = &opus_string_get_char;
+    RtVoidI64   print_string = &opus_print_string;
+    RtI64Str    make_string = &opus_make_string;
+    RtI64I64I64 write_file = &opus_write_file;
+
+    // memory
+    RtI64I64    malloc_fn = &opus_malloc;
+    RtVoidI64   free_fn = &opus_free;
+
+    // arrays
+    RtI64I64    array_new = &opus_array_new;
+    RtI64I64I64 array_get = &opus_array_get;
+    RtVoidI64I64I64 array_set = &opus_array_set;
+    RtI64I64    array_len = &opus_array_len;
+    RtVoidI64   array_free = &opus_array_free;
+
+    // strings
+    RtI64I64I64 string_append = &opus_string_append;
+    RtI64I64    int_to_string = &opus_int_to_string;
+    RtVoidI64   print_char = &opus_print_char;
+
     // self-hosting helpers
-    void* string_equals = reinterpret_cast<void*>(&opus_string_equals);
-    void* string_substring = reinterpret_cast<void*>(&opus_string_substring);
-    void* is_alpha = reinterpret_cast<void*>(&opus_is_alpha);
-    void* is_digit = reinterpret_cast<void*>(&opus_is_digit);
-    void* is_alnum = reinterpret_cast<void*>(&opus_is_alnum);
-    void* is_whitespace = reinterpret_cast<void*>(&opus_is_whitespace);
-    void* string_starts_with = reinterpret_cast<void*>(&opus_string_starts_with);
-    void* exit_fn = reinterpret_cast<void*>(&opus_exit);
-    void* write_bytes = reinterpret_cast<void*>(&opus_write_bytes);
-    void* buffer_new = reinterpret_cast<void*>(&opus_buffer_new);
-    void* buffer_push = reinterpret_cast<void*>(&opus_buffer_push);
-    void* buffer_len = reinterpret_cast<void*>(&opus_buffer_len);
-    void* parse_int = reinterpret_cast<void*>(&opus_parse_int);
-    // memory ops
-    void* mem_read_i8 = reinterpret_cast<void*>(&opus_mem_read_i8);
-    void* mem_read_i16 = reinterpret_cast<void*>(&opus_mem_read_i16);
-    void* mem_read_i32 = reinterpret_cast<void*>(&opus_mem_read_i32);
-    void* mem_read_i64 = reinterpret_cast<void*>(&opus_mem_read_i64);
-    void* mem_read_f32 = reinterpret_cast<void*>(&opus_mem_read_f32);
-    void* mem_read_f64 = reinterpret_cast<void*>(&opus_mem_read_f64);
-    void* mem_read_ptr = reinterpret_cast<void*>(&opus_mem_read_ptr);
-    void* mem_write_i8 = reinterpret_cast<void*>(&opus_mem_write_i8);
-    void* mem_write_i16 = reinterpret_cast<void*>(&opus_mem_write_i16);
-    void* mem_write_i32 = reinterpret_cast<void*>(&opus_mem_write_i32);
-    void* mem_write_i64 = reinterpret_cast<void*>(&opus_mem_write_i64);
-    void* mem_write_f32 = reinterpret_cast<void*>(&opus_mem_write_f32);
-    void* mem_write_f64 = reinterpret_cast<void*>(&opus_mem_write_f64);
-    void* mem_write_ptr = reinterpret_cast<void*>(&opus_mem_write_ptr);
-    void* mem_copy = reinterpret_cast<void*>(&opus_mem_copy);
-    void* mem_set = reinterpret_cast<void*>(&opus_mem_set);
+    RtI64I64I64 string_equals = &opus_string_equals;
+    RtI64I64I64I64 string_substring = &opus_string_substring;
+    RtI64I64    is_alpha = &opus_is_alpha;
+    RtI64I64    is_digit = &opus_is_digit;
+    RtI64I64    is_alnum = &opus_is_alnum;
+    RtI64I64    is_whitespace = &opus_is_whitespace;
+    RtI64I64I64 string_starts_with = &opus_string_starts_with;
+    RtVoidI64   exit_fn = &opus_exit;
+    RtI64I64I64I64 write_bytes = &opus_write_bytes;
+    RtI64I64    buffer_new = &opus_buffer_new;
+    RtVoidI64I64 buffer_push = &opus_buffer_push;
+    RtI64I64    buffer_len = &opus_buffer_len;
+    RtI64I64    parse_int = &opus_parse_int;
+
+    // raw memory access
+    RtI64I64    mem_read_i8 = &opus_mem_read_i8;
+    RtI64I64    mem_read_i16 = &opus_mem_read_i16;
+    RtI64I64    mem_read_i32 = &opus_mem_read_i32;
+    RtI64I64    mem_read_i64 = &opus_mem_read_i64;
+    RtDblI64    mem_read_f32 = &opus_mem_read_f32;
+    RtDblI64    mem_read_f64 = &opus_mem_read_f64;
+    RtI64I64    mem_read_ptr = &opus_mem_read_ptr;
+    RtVoidI64I64 mem_write_i8 = &opus_mem_write_i8;
+    RtVoidI64I64 mem_write_i16 = &opus_mem_write_i16;
+    RtVoidI64I64 mem_write_i32 = &opus_mem_write_i32;
+    RtVoidI64I64 mem_write_i64 = &opus_mem_write_i64;
+    RtVoidI64Dbl mem_write_f32 = &opus_mem_write_f32;
+    RtVoidI64Dbl mem_write_f64 = &opus_mem_write_f64;
+    RtVoidI64I64 mem_write_ptr = &opus_mem_write_ptr;
+    RtVoidI64I64I64 mem_copy = &opus_mem_copy;
+    RtVoidI64I64I64 mem_set = &opus_mem_set;
+
     // ffi
-    void* get_module = reinterpret_cast<void*>(&opus_get_module);
-    void* load_library = reinterpret_cast<void*>(&opus_load_library);
-    void* get_proc = reinterpret_cast<void*>(&opus_get_proc);
-    void* ffi_call0 = reinterpret_cast<void*>(&opus_ffi_call0);
-    void* ffi_call1 = reinterpret_cast<void*>(&opus_ffi_call1);
-    void* ffi_call2 = reinterpret_cast<void*>(&opus_ffi_call2);
-    void* ffi_call3 = reinterpret_cast<void*>(&opus_ffi_call3);
-    void* ffi_call4 = reinterpret_cast<void*>(&opus_ffi_call4);
-    void* ffi_call5 = reinterpret_cast<void*>(&opus_ffi_call5);
-    void* ffi_call6 = reinterpret_cast<void*>(&opus_ffi_call6);
-    void* msgbox = reinterpret_cast<void*>(&opus_msgbox);
-    void* get_last_error = reinterpret_cast<void*>(&opus_get_last_error);
-    void* virtual_protect = reinterpret_cast<void*>(&opus_virtual_protect);
-    void* get_current_process = reinterpret_cast<void*>(&opus_get_current_process);
-    void* get_current_process_id = reinterpret_cast<void*>(&opus_get_current_process_id);
+    RtI64I64    get_module = &opus_get_module;
+    RtI64I64    load_library = &opus_load_library;
+    RtI64I64I64 get_proc = &opus_get_proc;
+    RtI64I64    ffi_call0 = &opus_ffi_call0;
+    RtI64I64I64 ffi_call1 = &opus_ffi_call1;
+    RtI64I64I64I64 ffi_call2 = &opus_ffi_call2;
+    RtI64I64I64I64I64 ffi_call3 = &opus_ffi_call3;
+    RtI64I64I64I64I64I64 ffi_call4 = &opus_ffi_call4;
+    RtI64I64I64I64I64I64I64 ffi_call5 = &opus_ffi_call5;
+    std::int64_t(*ffi_call6)(std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t) = &opus_ffi_call6;
+    RtI64I64I64I64 msgbox = &opus_msgbox;
+    std::int64_t(*get_last_error)() = &opus_get_last_error;
+    RtI64I64I64I64 virtual_protect = &opus_virtual_protect;
+    std::int64_t(*get_current_process)() = &opus_get_current_process;
+    std::int64_t(*get_current_process_id)() = &opus_get_current_process_id;
 };
 
 // meyers singleton so this works across module boundaries
@@ -622,20 +654,27 @@ inline RuntimeFunctions& get_runtime() {
 
 // compiler
 
+struct CompileOptions {
+    std::string_view source;
+    std::string_view filename = "<input>";
+    bool dll_mode = false;
+    ast::HealingMode healing_mode = ast::HealingMode::Off;
+    bool exe_mode = false;
+};
+
 class Compiler {
 public:
     struct Result {
         bool success = false;
         std::vector<std::string> errors;
-        std::vector<std::string> warnings;
         std::vector<std::uint8_t> code;
         std::unordered_map<std::string, std::size_t> function_offsets;
         
-        // (patch_site, iat_offset)
-        std::vector<std::pair<std::size_t, std::size_t>> iat_fixups;
+        // iat fixups for pe generation
+        std::vector<pe::IatFixup> iat_fixups;
         
-        // (instruction_offset, source_line)
-        std::vector<std::pair<std::uint32_t, std::uint32_t>> line_map;
+        // instruction offset -> source line mapping
+        std::vector<pe::LineMapEntry> line_map;
         
         // set when code has a writable slot in .text for globals base ptr
         bool needs_writable_text = false;
@@ -645,7 +684,12 @@ public:
 
     static RuntimeFunctions& runtime() { return get_runtime(); }
 
-    Result compile(std::string_view source, std::string_view filename = "<input>", bool dll_mode = false, const std::string& healing_mode = "off", bool exe_mode = false) {
+    Result compile(const CompileOptions& opts) {
+        auto source = opts.source;
+        auto filename = opts.filename;
+        auto dll_mode = opts.dll_mode;
+        auto healing_mode = opts.healing_mode;
+        auto exe_mode = opts.exe_mode;
         Result result;
 
         Lexer lexer(source, filename);
@@ -676,16 +720,71 @@ public:
 
         CodeGenerator codegen;
         auto& rt = get_runtime();
-        codegen.set_runtime_pointers(
-            rt.print_int, rt.print_str, rt.read_file,
-            rt.string_length, rt.string_get_char, rt.print_string,
-            rt.make_string, rt.write_file, rt.malloc_fn, rt.free_fn,
-            rt.array_new, rt.array_get, rt.array_set, rt.array_len,
-            rt.array_free, rt.string_append, rt.int_to_string, rt.print_char,
-            // self-hosting helpers
-            rt.string_equals, rt.string_substring, rt.is_alpha, rt.is_digit,
-            rt.is_alnum, rt.is_whitespace, rt.string_starts_with, rt.exit_fn,
-            rt.write_bytes, rt.buffer_new, rt.buffer_push, rt.buffer_len, rt.parse_int);
+        codegen.set_runtime_pointers(RuntimePointers{
+            .print_int = rt.print_int,
+            .print_str = rt.print_str,
+            .print_newline = rt.print_newline,
+            .read_file = rt.read_file,
+            .string_length = rt.string_length,
+            .string_get_char = rt.string_get_char,
+            .print_string = rt.print_string,
+            .make_string = rt.make_string,
+            .write_file = rt.write_file,
+            .malloc_fn = rt.malloc_fn,
+            .free_fn = rt.free_fn,
+            .array_new = rt.array_new,
+            .array_get = rt.array_get,
+            .array_set = rt.array_set,
+            .array_len = rt.array_len,
+            .array_free = rt.array_free,
+            .string_append = rt.string_append,
+            .int_to_string = rt.int_to_string,
+            .print_char = rt.print_char,
+            .string_equals = rt.string_equals,
+            .string_substring = rt.string_substring,
+            .is_alpha = rt.is_alpha,
+            .is_digit = rt.is_digit,
+            .is_alnum = rt.is_alnum,
+            .is_whitespace = rt.is_whitespace,
+            .string_starts_with = rt.string_starts_with,
+            .exit_fn = rt.exit_fn,
+            .write_bytes = rt.write_bytes,
+            .buffer_new = rt.buffer_new,
+            .buffer_push = rt.buffer_push,
+            .buffer_len = rt.buffer_len,
+            .parse_int = rt.parse_int,
+            .mem_read_i8 = rt.mem_read_i8,
+            .mem_read_i16 = rt.mem_read_i16,
+            .mem_read_i32 = rt.mem_read_i32,
+            .mem_read_i64 = rt.mem_read_i64,
+            .mem_read_f32 = rt.mem_read_f32,
+            .mem_read_f64 = rt.mem_read_f64,
+            .mem_read_ptr = rt.mem_read_ptr,
+            .mem_write_i8 = rt.mem_write_i8,
+            .mem_write_i16 = rt.mem_write_i16,
+            .mem_write_i32 = rt.mem_write_i32,
+            .mem_write_i64 = rt.mem_write_i64,
+            .mem_write_f32 = rt.mem_write_f32,
+            .mem_write_f64 = rt.mem_write_f64,
+            .mem_write_ptr = rt.mem_write_ptr,
+            .mem_copy = rt.mem_copy,
+            .mem_set = rt.mem_set,
+            .get_module = rt.get_module,
+            .load_library = rt.load_library,
+            .get_proc = rt.get_proc,
+            .ffi_call0 = rt.ffi_call0,
+            .ffi_call1 = rt.ffi_call1,
+            .ffi_call2 = rt.ffi_call2,
+            .ffi_call3 = rt.ffi_call3,
+            .ffi_call4 = rt.ffi_call4,
+            .ffi_call5 = rt.ffi_call5,
+            .ffi_call6 = rt.ffi_call6,
+            .msgbox = rt.msgbox,
+            .get_last_error = rt.get_last_error,
+            .virtual_protect = rt.virtual_protect,
+            .get_current_process = rt.get_current_process,
+            .get_current_process_id = rt.get_current_process_id,
+        });
         
         codegen.set_dll_mode(dll_mode || exe_mode);
         
@@ -693,7 +792,7 @@ public:
         
         // pe layout needs to know startup code size so codegen offsets are correct
         if (dll_mode || exe_mode) {
-            bool debug_mode = healing_mode != "off";
+            bool debug_mode = healing_mode != ast::HealingMode::Off;
             auto layout = pe::DllGenerator::compute_layout(debug_mode, exe_mode);
             codegen.set_user_code_offset(layout.startup_code_size);
             if (exe_mode) codegen.set_exe_mode();
@@ -707,7 +806,7 @@ public:
         }
 
         const auto& buf = codegen.emitter().buffer();
-        result.code.assign(buf.data(), buf.data() + buf.size());
+        result.code.assign(buf.data(), buf.data() + buf.pos());
 
         for (const auto& [name, info] : codegen.functions()) {
             result.function_offsets[name] = info.code_offset;
@@ -724,7 +823,7 @@ public:
     }
 
     std::expected<std::int64_t, std::string> compile_and_run(std::string_view source) {
-        auto result = compile(source);
+        auto result = compile({.source = source});
         
         if (!result.success) {
             std::string errors;
@@ -741,7 +840,10 @@ public:
 
         #ifdef _WIN32
         x64::ExecutableMemory exec(result.code.size());
+        // copy_from expects a CodeBuffer but we have raw bytes here,
+        // so we memcpy directly then finalize for W^X
         std::memcpy(exec.ptr(), result.code.data(), result.code.size());
+        exec.finalize();
 
         using MainFn = std::int64_t(*)();
         auto main_fn = reinterpret_cast<MainFn>(
@@ -757,7 +859,7 @@ public:
 
 // repl
 
-class REPL {
+class Repl {
 public:
     void run() {
         std::println("Opus REPL v0.1");

@@ -80,10 +80,6 @@ private:
         return true;
     }
     
-    void reset_loop_counter() {
-        loop_counter_ = 0;
-    }
-
     // ========================================================================
     // TOKEN MANIPULATION
     // ========================================================================
@@ -239,8 +235,6 @@ private:
             if (match(TokenKind::Function)) {
                 return parse_fn_decl_english();
             }
-            if (match(TokenKind::Variable)) {
-            }
         }
         if (match(TokenKind::Create)) {
             if (match(TokenKind::Struct)) {
@@ -348,6 +342,7 @@ private:
         SourceSpan span{.start = previous().loc};
         
         bool is_thread = match(TokenKind::Thread);
+        (void)is_thread; // todo: wire up to FnDecl when threading lands
         
         auto ret_type_opt = parse_type();
         Type ret_type = ret_type_opt ? std::move(*ret_type_opt) : Type::make_primitive(PrimitiveType::Void);
@@ -439,42 +434,43 @@ private:
         return params;
     }
 
-    // v2.0 block statements with mixed syntax support
-    std::vector<ast::StmtPtr> parse_block_stmts_v2() {
+    // shared block parser - takes a statement parser callable and loops with error recovery
+    std::vector<ast::StmtPtr> parse_block_stmts_impl(auto parse_stmt_fn, const char* label, bool also_stop_at_end = false) {
         std::vector<ast::StmtPtr> stmts;
-        while (!check(TokenKind::RBrace) && !at_end()) {
-            if (!check_loop_safeguard("parse_block_stmts_v2")) break;
+        while (!check(TokenKind::RBrace) && !at_end() && !(also_stop_at_end && check(TokenKind::End))) {
+            if (!check_loop_safeguard(label)) break;
             
             std::size_t before = pos_;
-            auto stmt = parse_stmt_v2();
+            auto stmt = parse_stmt_fn();
             if (stmt) {
                 stmts.push_back(std::move(*stmt));
-            } else {
-                // position didnt move, force advance to prevent loop
-                if (pos_ == before && !at_end()) {
-                    advance();
-                }
+            } else if (pos_ == before && !at_end()) {
+                advance();
             }
         }
         return stmts;
+    }
+
+    std::vector<ast::StmtPtr> parse_block_stmts_v2() {
+        return parse_block_stmts_impl([this]() { return parse_stmt_v2(); }, "parse_block_stmts_v2");
     }
 
     std::optional<ast::StmtPtr> parse_stmt_v2() {
         SourceLoc stmt_start = current().loc;
         
         if (match(TokenKind::Let)) {
-            auto s = parse_let_stmt_v2();
+            auto s = parse_let_or_var_v2(false);
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
         if (match(TokenKind::Var)) {
-            auto s = parse_var_stmt_v2();
+            auto s = parse_let_or_var_v2(true);
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
         // auto is just var with type inference
         if (match(TokenKind::Auto)) {
-            auto s = parse_var_stmt_v2();
+            auto s = parse_let_or_var_v2(true);
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
@@ -554,7 +550,7 @@ private:
         return stmt;
     }
 
-    std::optional<ast::StmtPtr> parse_let_stmt_v2() {
+    std::optional<ast::StmtPtr> parse_let_or_var_v2(bool is_mut) {
         // type keywords can be used as variable names (contextual)
         Token name;
         if (check(TokenKind::Ident)) {
@@ -582,40 +578,7 @@ private:
             .name = std::string(name.text),
             .type = std::move(type),
             .init = std::move(init),
-            .is_mut = false
-        };
-        return stmt;
-    }
-
-    std::optional<ast::StmtPtr> parse_var_stmt_v2() {
-        // type keywords can be used as variable names (contextual)
-        Token name;
-        if (check(TokenKind::Ident)) {
-            name = advance();
-        } else if (current().is_type()) {
-            name = advance();
-        } else {
-            name = consume(TokenKind::Ident, "expected variable name");
-        }
-        
-        std::optional<Type> type;
-        if (match(TokenKind::Colon)) {
-            type = parse_type();
-        }
-
-        std::optional<ast::ExprPtr> init;
-        if (match(TokenKind::Assign)) {
-            init = parse_expr();
-        }
-
-        match(TokenKind::Semicolon);
-
-        auto stmt = std::make_unique<ast::Stmt>();
-        stmt->kind = ast::LetStmt{
-            .name = std::string(name.text),
-            .type = std::move(type),
-            .init = std::move(init),
-            .is_mut = true
+            .is_mut = is_mut
         };
         return stmt;
     }
@@ -669,19 +632,19 @@ private:
     // no parens on if/while - go-style
     std::optional<ast::StmtPtr> parse_if_stmt_v2() {
         auto cond = parse_expr();
+        if (!cond) return std::nullopt;
         
         consume(TokenKind::LBrace, "expected '{' after if condition");
         auto then_block = parse_block_stmts_v2();
         consume(TokenKind::RBrace, "expected '}'");
 
-        std::optional<std::vector<ast::StmtPtr>> else_block;
+        std::vector<ast::StmtPtr> else_block;
         if (match(TokenKind::Else)) {
             if (check(TokenKind::If)) {
                 advance();
                 auto else_if = parse_if_stmt_v2();
                 if (else_if) {
-                    else_block = std::vector<ast::StmtPtr>{};
-                    else_block->push_back(std::move(*else_if));
+                    else_block.push_back(std::move(*else_if));
                 }
             } else {
                 consume(TokenKind::LBrace, "expected '{'");
@@ -689,8 +652,6 @@ private:
                 consume(TokenKind::RBrace, "expected '}'");
             }
         }
-
-        if (!cond) return std::nullopt;
 
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::IfStmt{
@@ -703,11 +664,10 @@ private:
 
     std::optional<ast::StmtPtr> parse_while_stmt_v2() {
         auto cond = parse_expr();
+        if (!cond) return std::nullopt;
         consume(TokenKind::LBrace, "expected '{' after while condition");
         auto body = parse_block_stmts_v2();
         consume(TokenKind::RBrace, "expected '}'");
-
-        if (!cond) return std::nullopt;
 
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::WhileStmt{
@@ -721,15 +681,14 @@ private:
         Token var = consume(TokenKind::Ident, "expected variable");
         consume(TokenKind::In, "expected 'in'");
         auto iter = parse_expr();
+        if (!iter) return std::nullopt;
         consume(TokenKind::LBrace, "expected '{'");
         auto body = parse_block_stmts_v2();
         consume(TokenKind::RBrace, "expected '}'");
 
-        if (!iter) return std::nullopt;
-
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::ForStmt{
-            .var_name = std::string(var.text),
+            .name = std::string(var.text),
             .iterable = std::move(*iter),
             .body = std::move(body)
         };
@@ -800,8 +759,7 @@ private:
         decl->kind = ast::ClassDecl{
             .name = std::string(name_tok.text),
             .fields = std::move(fields),
-            .methods = std::move(methods),
-            .parent = std::nullopt
+            .methods = std::move(methods)
         };
         return decl;
     }
@@ -879,14 +837,17 @@ private:
         std::vector<std::pair<std::string, std::optional<std::int64_t>>> variants;
         std::int64_t next_value = 0;
         
-        while (!check(TokenKind::RBrace)) {
+        while (!check(TokenKind::RBrace) && !at_end()) {
+            if (!check_loop_safeguard("parse_enum_decl")) break;
             Token variant_name = consume(TokenKind::Ident, "expected variant name");
             
             std::optional<std::int64_t> explicit_value;
             if (match(TokenKind::Assign)) {
                 Token val_tok = consume(TokenKind::IntLit, "expected integer value");
-                explicit_value = std::get<std::int64_t>(val_tok.value);
-                next_value = *explicit_value + 1;
+                auto* val_ptr = std::get_if<std::int64_t>(&val_tok.value);
+                if (!val_ptr) { error("expected integer value for enum variant"); return std::nullopt; }
+                explicit_value = *val_ptr;
+                next_value = *val_ptr + 1;
             } else {
                 explicit_value = next_value++;
             }
@@ -953,7 +914,11 @@ private:
         auto decl = std::make_unique<ast::Decl>();
         ast::StaticDecl sd;
         sd.name = std::string(name_tok.text);
-        sd.type = type ? std::move(*type) : Type::make_primitive(PrimitiveType::I64);
+        if (!type) {
+            error("static declaration requires a type annotation");
+            return std::nullopt;
+        }
+        sd.type = std::move(*type);
         sd.init = std::move(init);
         sd.is_mut = is_mut;
         decl->kind = std::move(sd);
@@ -1014,10 +979,14 @@ private:
             
             if (key_str == "entry") {
                 Token val = consume(TokenKind::StringLit, "expected string for entry");
-                proj.entry = std::get<std::string>(val.value);
+                auto* sp = std::get_if<std::string>(&val.value);
+                if (!sp) { error("expected string value for entry"); return std::nullopt; }
+                proj.entry = *sp;
             } else if (key_str == "output") {
                 Token val = consume(TokenKind::StringLit, "expected string for output");
-                proj.output = std::get<std::string>(val.value);
+                auto* sp = std::get_if<std::string>(&val.value);
+                if (!sp) { error("expected string value for output"); return std::nullopt; }
+                proj.output = *sp;
             } else if (key_str == "mode") {
                 if (check(TokenKind::Ident)) {
                     proj.mode = std::string(advance().text);
@@ -1029,7 +998,9 @@ private:
                 while (!check(TokenKind::RBracket) && !at_end()) {
                     if (!check_loop_safeguard("parse_project_include")) break;
                     Token path = consume(TokenKind::StringLit, "expected include path string");
-                    proj.includes.push_back(std::get<std::string>(path.value));
+                    auto* inc_ptr = std::get_if<std::string>(&path.value);
+                    if (!inc_ptr) { error("expected string value for include path"); return std::nullopt; }
+                    proj.includes.push_back(*inc_ptr);
                     if (!check(TokenKind::RBracket)) {
                         match(TokenKind::Comma);
                     }
@@ -1049,13 +1020,22 @@ private:
                     error("expected 'true' or 'false' for debug");
                 }
             } else if (key_str == "healing") {
+                std::string heal_str;
                 if (check(TokenKind::Ident)) {
-                    proj.healing = std::string(advance().text);
+                    heal_str = std::string(advance().text);
                 } else if (check(TokenKind::StringLit)) {
-                    proj.healing = std::get<std::string>(advance().value);
+                    auto heal_tok = advance();
+                    auto* hp = std::get_if<std::string>(&heal_tok.value);
+                    if (!hp) { error("expected string value for healing"); return std::nullopt; }
+                    heal_str = *hp;
                 } else {
                     error("expected 'auto', 'freeze', or 'off' for healing");
+                    continue;
                 }
+                if (heal_str == "auto") proj.healing = ast::HealingMode::Auto;
+                else if (heal_str == "freeze") proj.healing = ast::HealingMode::Freeze;
+                else if (heal_str == "off") proj.healing = ast::HealingMode::Off;
+                else error(std::format("invalid healing mode: '{}', expected 'auto', 'freeze', or 'off'", heal_str));
             } else {
                 error(std::format("unknown project property: '{}'", key_str));
                 advance();
@@ -1113,36 +1093,11 @@ private:
     }
 
     std::vector<ast::StmtPtr> parse_block_stmts() {
-        std::vector<ast::StmtPtr> stmts;
-        while (!check(TokenKind::RBrace) && !at_end()) {
-            if (!check_loop_safeguard("parse_block_stmts")) break;
-            
-            std::size_t before = pos_;
-            auto stmt = parse_stmt_c();
-            if (stmt) {
-                stmts.push_back(std::move(*stmt));
-            } else if (pos_ == before && !at_end()) {
-                advance();
-            }
-        }
-        return stmts;
+        return parse_block_stmts_impl([this]() { return parse_stmt_c(); }, "parse_block_stmts");
     }
 
-    
     std::vector<ast::StmtPtr> parse_block_stmts_mixed() {
-        std::vector<ast::StmtPtr> stmts;
-        while (!check(TokenKind::RBrace) && !check(TokenKind::End) && !at_end()) {
-            if (!check_loop_safeguard("parse_block_stmts_mixed")) break;
-            
-            std::size_t before = pos_;
-            auto stmt = parse_stmt_mixed();
-            if (stmt) {
-                stmts.push_back(std::move(*stmt));
-            } else if (pos_ == before && !at_end()) {
-                advance();
-            }
-        }
-        return stmts;
+        return parse_block_stmts_impl([this]() { return parse_stmt_mixed(); }, "parse_block_stmts_mixed", true);
     }
     
     // figures out which syntax style this statement uses
@@ -1224,7 +1179,9 @@ private:
     }
 
     std::optional<ast::StmtPtr> parse_stmt_english() {
-        if (match(TokenKind::Create) && match(TokenKind::Variable)) {
+        if (check(TokenKind::Create) && peek(1).kind == TokenKind::Variable) {
+            advance(); // consume Create
+            advance(); // consume Variable
             Token name = consume(TokenKind::Ident, "expected variable name");
             consume(TokenKind::As, "expected 'as'");
             auto type = parse_type();
@@ -1332,7 +1289,7 @@ private:
         auto then_block = parse_block_stmts();
         consume(TokenKind::RBrace, "expected '}'");
 
-        std::optional<std::vector<ast::StmtPtr>> else_block;
+        std::vector<ast::StmtPtr> else_block;
         if (match(TokenKind::Else)) {
             consume(TokenKind::LBrace, "expected '{'");
             else_block = parse_block_stmts();
@@ -1360,12 +1317,11 @@ private:
             if (s) then_block.push_back(std::move(*s));
         }
 
-        std::optional<std::vector<ast::StmtPtr>> else_block;
+        std::vector<ast::StmtPtr> else_block;
         if (match(TokenKind::Else)) {
-            else_block = std::vector<ast::StmtPtr>{};
             while (!check(TokenKind::End) && !at_end()) {
                 auto s = parse_stmt();
-                if (s) else_block->push_back(std::move(*s));
+                if (s) else_block.push_back(std::move(*s));
             }
         }
 
@@ -1386,12 +1342,11 @@ private:
     std::optional<ast::StmtPtr> parse_while_stmt_c() {
         consume(TokenKind::LParen, "expected '('");
         auto cond = parse_expr();
+        if (!cond) return std::nullopt;
         consume(TokenKind::RParen, "expected ')'");
         consume(TokenKind::LBrace, "expected '{'");
         auto body = parse_block_stmts();
         consume(TokenKind::RBrace, "expected '}'");
-
-        if (!cond) return std::nullopt;
 
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::WhileStmt{
@@ -1428,16 +1383,15 @@ private:
         Token var = consume(TokenKind::Ident, "expected variable");
         consume(TokenKind::In, "expected 'in'");
         auto iter = parse_expr();
+        if (!iter) return std::nullopt;
         consume(TokenKind::RParen, "expected ')'");
         consume(TokenKind::LBrace, "expected '{'");
         auto body = parse_block_stmts();
         consume(TokenKind::RBrace, "expected '}'");
 
-        if (!iter) return std::nullopt;
-
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::ForStmt{
-            .var_name = std::string(var.text),
+            .name = std::string(var.text),
             .iterable = std::move(*iter),
             .body = std::move(body)
         };
@@ -1446,7 +1400,7 @@ private:
 
     std::optional<ast::StmtPtr> parse_loop_stmt() {
         consume(TokenKind::LBrace, "expected '{'");
-        auto body = parse_block_stmts();
+        auto body = (mode_ == SyntaxMode::CStyle) ? parse_block_stmts() : parse_block_stmts_v2();
         consume(TokenKind::RBrace, "expected '}'");
 
         auto stmt = std::make_unique<ast::Stmt>();
@@ -1551,7 +1505,9 @@ private:
         if (!lhs) return std::nullopt;
 
         while (true) {
-            auto [op, prec] = get_binary_op(current().kind);
+            auto result = get_binary_op(current().kind);
+            if (!result) break;
+            auto [op, prec] = *result;
             if (prec < min_prec) break;
             
             advance();
@@ -1570,35 +1526,36 @@ private:
         return lhs;
     }
 
-    std::pair<ast::BinaryExpr::Op, int> get_binary_op(TokenKind kind) {
+    std::optional<std::pair<ast::BinaryExpr::Op, int>> get_binary_op(TokenKind kind) {
         using Op = ast::BinaryExpr::Op;
         switch (kind) {
-            case TokenKind::OrOr:    return {Op::Or, 1};
-            case TokenKind::AndAnd:  return {Op::And, 2};
-            case TokenKind::Or:      return {Op::Or, 1};
-            case TokenKind::And:     return {Op::And, 2};
-            case TokenKind::Pipe:    return {Op::BitOr, 3};
-            case TokenKind::Caret:   return {Op::BitXor, 4};
-            case TokenKind::Ampersand: return {Op::BitAnd, 5};
-            case TokenKind::Eq:      return {Op::Eq, 6};
-            case TokenKind::Ne:      return {Op::Ne, 6};
-            case TokenKind::Lt:      return {Op::Lt, 7};
-            case TokenKind::Gt:      return {Op::Gt, 7};
-            case TokenKind::Le:      return {Op::Le, 7};
-            case TokenKind::Ge:      return {Op::Ge, 7};
-            case TokenKind::Shl:     return {Op::Shl, 8};
-            case TokenKind::Shr:     return {Op::Shr, 8};
-            case TokenKind::Plus:    return {Op::Add, 9};
-            case TokenKind::Minus:   return {Op::Sub, 9};
-            case TokenKind::Star:    return {Op::Mul, 10};
-            case TokenKind::Slash:   return {Op::Div, 10};
-            case TokenKind::Percent: return {Op::Mod, 10};
-            case TokenKind::Assign:  return {Op::Assign, 0};
-            case TokenKind::PlusEq:  return {Op::AddAssign, 0};
-            case TokenKind::MinusEq: return {Op::SubAssign, 0};
-            case TokenKind::StarEq:  return {Op::MulAssign, 0};
-            case TokenKind::SlashEq: return {Op::DivAssign, 0};
-            default: return {Op::Add, -1};  // Not a binary op
+            case TokenKind::OrOr:    return std::pair{Op::Or, 1};
+            case TokenKind::AndAnd:  return std::pair{Op::And, 2};
+            case TokenKind::Or:      return std::pair{Op::Or, 1};
+            case TokenKind::And:     return std::pair{Op::And, 2};
+            case TokenKind::Pipe:    return std::pair{Op::BitOr, 3};
+            case TokenKind::Caret:   return std::pair{Op::BitXor, 4};
+            case TokenKind::Ampersand: return std::pair{Op::BitAnd, 5};
+            case TokenKind::Eq:      return std::pair{Op::Eq, 6};
+            case TokenKind::Ne:      return std::pair{Op::Ne, 6};
+            case TokenKind::Lt:      return std::pair{Op::Lt, 7};
+            case TokenKind::Gt:      return std::pair{Op::Gt, 7};
+            case TokenKind::Le:      return std::pair{Op::Le, 7};
+            case TokenKind::Ge:      return std::pair{Op::Ge, 7};
+            case TokenKind::Shl:     return std::pair{Op::Shl, 8};
+            case TokenKind::Shr:     return std::pair{Op::Shr, 8};
+            case TokenKind::Plus:    return std::pair{Op::Add, 9};
+            case TokenKind::Minus:   return std::pair{Op::Sub, 9};
+            case TokenKind::Star:    return std::pair{Op::Mul, 10};
+            case TokenKind::Slash:   return std::pair{Op::Div, 10};
+            case TokenKind::Percent: return std::pair{Op::Mod, 10};
+            case TokenKind::Assign:  return std::pair{Op::Assign, 0};
+            case TokenKind::PlusEq:  return std::pair{Op::AddAssign, 0};
+            case TokenKind::MinusEq: return std::pair{Op::SubAssign, 0};
+            case TokenKind::StarEq:  return std::pair{Op::MulAssign, 0};
+            case TokenKind::SlashEq: return std::pair{Op::DivAssign, 0};
+            case TokenKind::PercentEq: return std::pair{Op::ModAssign, 0};
+            default: return std::nullopt;
         }
     }
 
@@ -1841,7 +1798,7 @@ private:
         
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::ParallelForStmt{
-            .var_name = std::string(var.text),
+            .name = std::string(var.text),
             .start = std::move(*start),
             .end = std::move(*end),
             .body = std::move(body)
@@ -1956,27 +1913,6 @@ private:
             if (name == "atomic_add" || name == "atomic_cas" || 
                 name == "atomic_load" || name == "atomic_store") {
                 return parse_atomic_op(name);
-            }
-            
-            // uppercase ident followed by dot is namespace syntax (Mem.Read())
-            // lowercase is field access, handled by parse_postfix
-            if (check(TokenKind::Dot) && !name.empty() && name[0] >= 'A' && name[0] <= 'Z') {
-                std::size_t saved_pos = pos_;
-                advance();  // consume .
-                
-                if (check(TokenKind::Ident)) {
-                    std::size_t after_ident = pos_;
-                    Token func_name = advance();
-                    
-                    if (check(TokenKind::LParen)) {
-                        name += ".";
-                        name += func_name.text;
-                    } else {
-                        pos_ = saved_pos;
-                    }
-                } else {
-                    pos_ = saved_pos;
-                }
             }
             
             // struct literal if uppercase ident followed by {
