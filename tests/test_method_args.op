@@ -1,0 +1,49 @@
+class Vec3 {
+    int x
+    int y
+    int z
+
+    function int sum2(int a, int b) {
+        return self.x + a + b
+    }
+
+    function int sum3(int a, int b, int c) {
+        return self.x + self.y + a + b + c
+    }
+}
+
+function int main() {
+    print("=== method args test ===\n")
+
+    auto v = Vec3 { x: 10, y: 20, z: 30 }
+
+    // test 1: method with 2 explicit args (self + 2 = 3 total regs)
+    let r1 = v.sum2(100, 200)
+    if r1 == 310 {
+        print("PASS: sum2(100,200) == 310\n")
+    }
+    if r1 != 310 {
+        print("FAIL: sum2(100,200) wrong\n")
+    }
+
+    // test 2: method with 3 explicit args (self + 3 = 4 total, fills all regs)
+    let r2 = v.sum3(1, 2, 3)
+    if r2 == 36 {
+        print("PASS: sum3(1,2,3) == 36\n")
+    }
+    if r2 != 36 {
+        print("FAIL: sum3(1,2,3) wrong\n")
+    }
+
+    // test 3: method accesses self fields AND explicit args
+    let r3 = v.sum2(0, 0)
+    if r3 == 10 {
+        print("PASS: sum2(0,0) == 10 (self.x only)\n")
+    }
+    if r3 != 10 {
+        print("FAIL: sum2(0,0) wrong\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

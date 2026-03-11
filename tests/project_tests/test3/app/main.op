@@ -1,0 +1,11 @@
+import shared.math;
+import shared.types;
+import shared.helper;
+import shared.helper as helper_alias;
+import shared.helper;
+
+fn main() -> i64 {
+    let pair = shared.types.Pair { left: 9, right: 12 };
+    let total = shared.math.sum(pair.left, pair.right);
+    return total + shared.helper.value_helper() + helper_alias.value_helper();
+}

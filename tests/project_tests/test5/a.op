@@ -1,0 +1,5 @@
+import b;
+
+fn a_value() -> i64 {
+    return b_value();
+}

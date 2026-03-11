@@ -1,0 +1,6 @@
+fn main() -> i64 {
+    print("before\n");
+    crash();
+    print("after\n");
+    return 7;
+}

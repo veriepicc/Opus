@@ -1,0 +1,13 @@
+let magic: i64 = 42
+
+function int main() {
+    print("=== simple globals test ===\n")
+    if magic == 42 {
+        print("PASS: magic == 42\n")
+    }
+    if magic != 42 {
+        print("FAIL: magic != 42\n")
+    }
+    print("=== done ===\n")
+    return 0
+}

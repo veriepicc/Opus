@@ -1,0 +1,56 @@
+function int fold(int x, int bias) {
+    var y = x * 17 + bias
+    if y < bias {
+        y = y + 31
+    } else {
+        y = y - 17
+    }
+    if y < 1000 {
+        y = y + 7
+    } else {
+        y = y - 5
+    }
+    return y
+}
+
+function int blend(int left, int right) {
+    var v = left + right * 3
+    if left < right {
+        v = v + left
+    } else {
+        v = v - right
+    }
+    return v
+}
+
+function int main() {
+    var total = 0
+    var state = 7
+    var noise = 11
+    var i = 0
+
+    while i < 6000000 {
+        let a = fold(state, noise)
+        let b = blend(a, noise)
+
+        if b < state {
+            total = total + a
+            noise = noise + 5
+        } else {
+            total = total + b
+            noise = noise - 3
+        }
+
+        if i < noise {
+            total = total + state
+            state = state + 2
+        } else {
+            total = total - noise
+            state = state + 1
+        }
+
+        i = i + 1
+    }
+
+    return total
+}

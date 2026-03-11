@@ -1,0 +1,71 @@
+function int get_val() {
+    return 42
+}
+
+function int is_zero(int x) {
+    if x == 0 {
+        return 1
+    }
+    return 0
+}
+
+function int main() {
+    print("=== unary complex test ===\n")
+
+    // test 1: negate a function result
+    let r1 = -get_val()
+    if r1 == -42 {
+        print("PASS: -get_val() == -42\n")
+    }
+    if r1 != -42 {
+        print("FAIL: -get_val() wrong\n")
+    }
+
+    // test 2: logical not on function result
+    let r2 = !is_zero(0)
+    if r2 == 0 {
+        print("PASS: !is_zero(0) == 0\n")
+    }
+    if r2 != 0 {
+        print("FAIL: !is_zero(0) wrong\n")
+    }
+
+    let r3 = !is_zero(5)
+    if r3 == 1 {
+        print("PASS: !is_zero(5) == 1\n")
+    }
+    if r3 != 1 {
+        print("FAIL: !is_zero(5) wrong\n")
+    }
+
+    // test 3: pre-increment
+    var counter = 10
+    let inc_result = ++counter
+    if counter == 11 {
+        print("PASS: ++counter makes counter 11\n")
+    }
+    if counter != 11 {
+        print("FAIL: ++counter wrong\n")
+    }
+
+    // test 4: pre-decrement
+    let dec_result = --counter
+    if counter == 10 {
+        print("PASS: --counter makes counter 10\n")
+    }
+    if counter != 10 {
+        print("FAIL: --counter wrong\n")
+    }
+
+    // test 5: negate a literal
+    let r5 = -100
+    if r5 == -100 {
+        print("PASS: -100 == -100\n")
+    }
+    if r5 != -100 {
+        print("FAIL: -100 wrong\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

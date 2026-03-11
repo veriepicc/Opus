@@ -1,0 +1,11 @@
+function int text_len(str s) {
+    return string_length(s)
+}
+
+function int main() {
+    let n = text_len("abc")
+    if n != 3 {
+        return 1
+    }
+    return 0
+}

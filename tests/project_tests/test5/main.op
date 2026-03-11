@@ -1,0 +1,5 @@
+import a;
+
+fn main() -> i64 {
+    return a_value();
+}

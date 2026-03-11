@@ -1,0 +1,27 @@
+function str pick_route(int slot) {
+    if slot == 0 {
+        return "ping"
+    }
+    if slot == 1 {
+        return "stats"
+    }
+    return "move"
+}
+
+function int matches_route(int slot, str input) {
+    let route = pick_route(slot)
+    return string_equals(route, input)
+}
+
+function int main() {
+    if matches_route(0, "ping") != 1 {
+        return 1
+    }
+    if matches_route(1, "stats") != 1 {
+        return 2
+    }
+    if matches_route(2, "move") != 1 {
+        return 3
+    }
+    return 0
+}

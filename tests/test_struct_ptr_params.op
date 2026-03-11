@@ -1,0 +1,43 @@
+struct Pair {
+    int left
+    int right
+}
+
+function int sum(*Pair p) {
+    return p.left + p.right
+}
+
+function int bump(*Pair p, int delta) {
+    p.left = p.left + delta
+    p.right = p.right - 1
+    return p.left + p.right
+}
+
+function int main() {
+    var p = Pair { left: 10, right: 20 }
+
+    let s1 = sum(p)
+    if s1 != 30 {
+        free(p)
+        return 1
+    }
+
+    let s2 = bump(p, 5)
+    if s2 != 34 {
+        free(p)
+        return 2
+    }
+
+    if p.left != 15 {
+        free(p)
+        return 3
+    }
+
+    if p.right != 19 {
+        free(p)
+        return 4
+    }
+
+    free(p)
+    return 0
+}

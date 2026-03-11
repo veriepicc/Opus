@@ -1,0 +1,19 @@
+fn main() -> i64 {
+    let mut result: i64 = 0;
+    let mut i: i64 = 0;
+    let mut even: i64 = 1;
+    let mut odd: i64 = 3;
+
+    while (i < 40000000) {
+        if ((i & 1) == 0) {
+            result = result + even;
+            even = even + 3;
+        } else {
+            result = result + odd;
+            odd = odd + 5;
+        }
+        i = i + 1;
+    }
+
+    return result;
+}

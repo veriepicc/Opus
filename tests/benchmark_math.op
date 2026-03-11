@@ -1,0 +1,26 @@
+// benchmark for math operations to compare against llvm
+// tests multiply, add, and other operations we optimized
+
+fn main() -> i64 {
+    let mut result: i64 = 0;
+    let mut i: i64 = 0;
+    
+    // run 80 million iterations
+    while (i < 80000000) {
+        // power-of-2 multiply (should use shl)
+        let x: i64 = i * 8;
+        
+        // add operations (should use inc for +1)
+        let y: i64 = x + 1;
+        
+        // zero initialization (should use xor)
+        let z: i64 = 0;
+        
+        // accumulate result
+        result = result + y;
+        
+        i = i + 1;
+    }
+    
+    return result;
+}

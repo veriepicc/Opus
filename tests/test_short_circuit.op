@@ -1,0 +1,77 @@
+// returns 1 but also proves it was called by printing
+function int side_effect_true() {
+    print("  [side effect ran]\n")
+    return 1
+}
+
+function int side_effect_false() {
+    print("  [side effect ran]\n")
+    return 0
+}
+
+function int main() {
+    print("=== short-circuit test ===\n")
+
+    // test 1: false && x - should NOT print side effect
+    print("test 1: 0 && side_effect_true()\n")
+    let r1 = 0 && side_effect_true()
+    if r1 == 0 {
+        print("PASS: result == 0\n")
+    }
+    if r1 != 0 {
+        print("FAIL: result != 0\n")
+    }
+
+    // test 2: true && x - SHOULD print side effect
+    print("test 2: 1 && side_effect_true()\n")
+    let r2 = 1 && side_effect_true()
+    if r2 == 1 {
+        print("PASS: result == 1\n")
+    }
+    if r2 != 1 {
+        print("FAIL: result != 1\n")
+    }
+
+    // test 3: true || x - should NOT print side effect
+    print("test 3: 1 || side_effect_true()\n")
+    let r3 = 1 || side_effect_true()
+    if r3 == 1 {
+        print("PASS: result == 1\n")
+    }
+    if r3 != 1 {
+        print("FAIL: result != 1\n")
+    }
+
+    // test 4: false || x - SHOULD print side effect
+    print("test 4: 0 || side_effect_true()\n")
+    let r4 = 0 || side_effect_true()
+    if r4 == 1 {
+        print("PASS: result == 1\n")
+    }
+    if r4 != 1 {
+        print("FAIL: result != 1\n")
+    }
+
+    // test 5: false || false == 0
+    print("test 5: 0 || 0\n")
+    let r5 = 0 || 0
+    if r5 == 0 {
+        print("PASS: result == 0\n")
+    }
+    if r5 != 0 {
+        print("FAIL: result != 0\n")
+    }
+
+    // test 6: true && false == 0
+    print("test 6: 1 && 0\n")
+    let r6 = 1 && 0
+    if r6 == 0 {
+        print("PASS: result == 0\n")
+    }
+    if r6 != 0 {
+        print("FAIL: result != 0\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

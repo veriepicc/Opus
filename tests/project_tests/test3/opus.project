@@ -1,0 +1,6 @@
+project Test3 {
+    entry: "app/main.op"
+    output: "Test3.exe"
+    mode: "exe"
+    include: ["modules"]
+}

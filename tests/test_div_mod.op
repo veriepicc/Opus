@@ -1,0 +1,54 @@
+function int main() {
+    print("=== div/mod test ===\n")
+
+    // test 1: basic modulo
+    let r1 = 7 % 3
+    if r1 == 1 {
+        print("PASS: 7 mod 3 == 1\n")
+    }
+    if r1 != 1 {
+        print("FAIL: 7 mod 3 wrong\n")
+    }
+
+    // test 2: basic division truncation
+    let r2 = 10 / 3
+    if r2 == 3 {
+        print("PASS: 10 / 3 == 3\n")
+    }
+    if r2 != 3 {
+        print("FAIL: 10 / 3 wrong\n")
+    }
+
+    // test 3: division in compound expression
+    let a = 10
+    let b = 3
+    let c = 2
+    let r3 = a + b / c
+    if r3 == 11 {
+        print("PASS: 10 + 3/2 == 11\n")
+    }
+    if r3 != 11 {
+        print("FAIL: 10 + 3/2 wrong\n")
+    }
+
+    // test 4: exact division
+    let r4 = 100 / 10
+    if r4 == 10 {
+        print("PASS: 100 / 10 == 10\n")
+    }
+    if r4 != 10 {
+        print("FAIL: 100 / 10 wrong\n")
+    }
+
+    // test 5: mod with larger divisor
+    let r5 = 3 % 7
+    if r5 == 3 {
+        print("PASS: 3 mod 7 == 3\n")
+    }
+    if r5 != 3 {
+        print("FAIL: 3 mod 7 wrong\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

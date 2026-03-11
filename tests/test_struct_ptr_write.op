@@ -1,0 +1,24 @@
+struct Pair {
+    int left
+    int right
+}
+
+function int bump(*Pair p, int delta) {
+    p.left = p.left + delta
+    return p.left
+}
+
+function int main() {
+    var p = Pair { left: 10, right: 20 }
+    let v = bump(p, 5)
+    if v != 15 {
+        free(p)
+        return 1
+    }
+    if p.left != 15 {
+        free(p)
+        return 2
+    }
+    free(p)
+    return 0
+}

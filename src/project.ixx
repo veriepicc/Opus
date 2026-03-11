@@ -103,56 +103,6 @@ std::vector<std::filesystem::path> discover_files(const std::filesystem::path& d
     return files;
 }
 
-std::expected<ProjectConfig, std::string> discover_project_files(ProjectConfig config) {
-    if (!config.entry.empty()) {
-        std::filesystem::path entry_path = config.project_dir / config.entry;
-        if (std::filesystem::exists(entry_path)) {
-            config.source_files.push_back(entry_path);
-        } else {
-            return std::unexpected(std::format("entry file not found: {}", entry_path.string()));
-        }
-    }
-    
-    // set-based dedup instead of linear scan
-    std::set<std::filesystem::path> seen(config.source_files.begin(), config.source_files.end());
-    
-    for (const auto& include : config.includes) {
-        std::filesystem::path include_path = config.project_dir / include;
-        auto files = discover_files(include_path);
-        for (auto& file : files) {
-            if (seen.insert(file).second) {
-                config.source_files.push_back(std::move(file));
-            }
-        }
-    }
-    
-    if (config.source_files.empty()) {
-        return std::unexpected("no source files found for project");
-    }
-    
-    return config;
-}
-
-std::expected<std::string, std::string> merge_sources(const std::vector<std::filesystem::path>& files) {
-    std::string merged;
-    
-    for (const auto& file : files) {
-        std::ifstream in(file);
-        if (!in) {
-            return std::unexpected(std::format("cannot read file: {}", file.string()));
-        }
-        
-        merged += std::format("\n// === {} ===\n", file.filename().string());
-        
-        std::stringstream buffer;
-        buffer << in.rdbuf();
-        merged += buffer.str();
-        merged += "\n";
-    }
-    
-    return merged;
-}
-
 std::optional<std::filesystem::path> find_project_file(const std::filesystem::path& start_dir) {
     std::filesystem::path current = start_dir;
     

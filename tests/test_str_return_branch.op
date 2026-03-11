@@ -1,0 +1,25 @@
+function str pick_text(int slot) {
+    if slot == 0 {
+        return "abc"
+    }
+    if slot == 1 {
+        return "def"
+    }
+    return "xyz"
+}
+
+function int main() {
+    let a = pick_text(0)
+    let b = pick_text(1)
+    let c = pick_text(2)
+    if string_equals(a, "abc") != 1 {
+        return 1
+    }
+    if string_equals(b, "def") != 1 {
+        return 2
+    }
+    if string_equals(c, "xyz") != 1 {
+        return 3
+    }
+    return 0
+}

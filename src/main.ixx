@@ -150,7 +150,7 @@ A Simple Programming Language
                 auto exe_bytes = exe_gen.generate({
                     .code = result.code,
                     .main_offset = main_offset,
-                    .alloc_console = true,
+                    .alloc_console = false,
                     .iat_fixups = result.iat_fixups,
                     .healing_mode = opus::ast::HealingMode::Off,
                     .exe_mode = true,
@@ -238,34 +238,35 @@ A Simple Programming Language
     
     auto config = std::move(*config_result);
     
-    auto files_result = opus::discover_project_files(std::move(config));
-    if (!files_result) {
-        std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", files_result.error());
+    if (config.entry.empty()) {
+        std::print(std::cerr, "\033[1;91merror\033[0m: project must specify an 'entry' file\n");
         return 1;
     }
-    
-    config = std::move(*files_result);
     
     std::println("Project: {} ({})", config.name, config.mode);
-    std::println("Sources: {} files", config.source_files.size());
-    for (const auto& file : config.source_files) {
-        std::println("  - {}", file.filename().string());
-    }
+    std::println("Entry: {}", config.entry);
     
-    auto merged_result = opus::merge_sources(config.source_files);
-    if (!merged_result) {
-        std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", merged_result.error());
+    std::filesystem::path entry_path = config.project_dir / config.entry;
+    std::ifstream in(entry_path);
+    if (!in) {
+        std::print(std::cerr, "\033[1;91merror\033[0m: cannot read entry file: {}\n", entry_path.string());
         return 1;
     }
     
-    std::string source = std::move(*merged_result);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    std::string source = buffer.str();
+    std::vector<std::string> import_search_paths = config.includes;
+    std::string project_root = std::filesystem::weakly_canonical(config.project_dir).string();
     
     opus::Compiler compiler;
     bool as_dll = (config.mode == "dll");
     bool as_exe = (config.mode == "exe");
     auto result = compiler.compile({
         .source = source,
-        .filename = project_file.string(),
+        .filename = entry_path.string(),
+        .project_root = project_root,
+        .import_search_paths = import_search_paths,
         .dll_mode = as_dll,
         .healing_mode = config.healing.value_or(opus::ast::HealingMode::Off),
         .exe_mode = as_exe,
@@ -294,7 +295,7 @@ A Simple Programming Language
             auto pe_bytes = pe_gen.generate({
                 .code = result.code,
                 .main_offset = main_offset,
-                .alloc_console = true,
+                .alloc_console = as_dll,
                 .iat_fixups = result.iat_fixups,
                 .debug_source = debug_source,
                 .line_map = result.line_map,

@@ -27,7 +27,15 @@ public:
         , pos_(0)
         , loop_counter_(0)
         , max_iterations_(100000)  // Safeguard: max iterations before abort
-    {}
+    {
+        if (tokens_.empty()) {
+            Token eof{};
+            eof.kind = TokenKind::Eof;
+            eof.text = "";
+            eof.value = std::monostate{};
+            tokens_.push_back(std::move(eof));
+        }
+    }
 
     std::expected<ast::Module, std::vector<ParseError>> parse_module(std::string_view name) {
         ast::Module mod;
@@ -87,6 +95,9 @@ private:
     bool at_end() const { return pos_ >= tokens_.size(); }
     
     const Token& peek(std::size_t offset = 0) const {
+        if (tokens_.empty()) {
+            std::abort();
+        }
         if (pos_ + offset >= tokens_.size()) {
             return tokens_.back(); // EOF token
         }
@@ -94,7 +105,15 @@ private:
     }
 
     const Token& current() const { return peek(0); }
-    const Token& previous() const { return tokens_[pos_ - 1]; }
+    const Token& previous() const {
+        if (tokens_.empty()) {
+            std::abort();
+        }
+        if (pos_ == 0) {
+            return tokens_.front();
+        }
+        return tokens_[pos_ - 1];
+    }
 
     Token advance() {
         if (!at_end()) pos_++;
@@ -313,8 +332,15 @@ private:
 
         std::vector<ast::StmtPtr> body;
         while (!at_end() && !check(TokenKind::End)) {
-            auto stmt = parse_stmt();
+            if (!check_loop_safeguard("parse_fn_decl_english")) {
+                break;
+            }
+            std::size_t before = pos_;
+            auto stmt = parse_stmt_mixed();
             if (stmt) body.push_back(std::move(*stmt));
+            if (pos_ == before && !at_end()) {
+                advance();
+            }
         }
         
         consume(TokenKind::End, "expected 'end'");
@@ -978,20 +1004,37 @@ private:
             consume(TokenKind::Colon, "expected ':' after property name");
             
             if (key_str == "entry") {
-                Token val = consume(TokenKind::StringLit, "expected string for entry");
-                auto* sp = std::get_if<std::string>(&val.value);
-                if (!sp) { error("expected string value for entry"); return std::nullopt; }
-                proj.entry = *sp;
+                if (check(TokenKind::StringLit)) {
+                    Token val = advance();
+                    auto* sp = std::get_if<std::string>(&val.value);
+                    if (!sp) { error("expected string value for entry"); return std::nullopt; }
+                    proj.entry = *sp;
+                } else if (check(TokenKind::Ident)) {
+                    proj.entry = std::string(advance().text);
+                } else {
+                    error("expected string or identifier for entry");
+                }
             } else if (key_str == "output") {
-                Token val = consume(TokenKind::StringLit, "expected string for output");
-                auto* sp = std::get_if<std::string>(&val.value);
-                if (!sp) { error("expected string value for output"); return std::nullopt; }
-                proj.output = *sp;
+                if (check(TokenKind::StringLit)) {
+                    Token val = advance();
+                    auto* sp = std::get_if<std::string>(&val.value);
+                    if (!sp) { error("expected string value for output"); return std::nullopt; }
+                    proj.output = *sp;
+                } else if (check(TokenKind::Ident)) {
+                    proj.output = std::string(advance().text);
+                } else {
+                    error("expected string or identifier for output");
+                }
             } else if (key_str == "mode") {
-                if (check(TokenKind::Ident)) {
+                if (check(TokenKind::StringLit)) {
+                    Token val = advance();
+                    auto* sp = std::get_if<std::string>(&val.value);
+                    if (!sp) { error("expected string value for mode"); return std::nullopt; }
+                    proj.mode = *sp;
+                } else if (check(TokenKind::Ident)) {
                     proj.mode = std::string(advance().text);
                 } else {
-                    error("expected 'dll' or 'exe' for mode");
+                    error("expected string or identifier for mode");
                 }
             } else if (key_str == "include") {
                 consume(TokenKind::LBracket, "expected '[' for include list");
@@ -1104,6 +1147,20 @@ private:
     std::optional<ast::StmtPtr> parse_stmt_mixed() {
         if (check(TokenKind::Create)) return parse_stmt_english();
         if (check(TokenKind::Set)) return parse_stmt_english();
+        if (check(TokenKind::Return)) return parse_stmt_english();
+        if (check(TokenKind::If)) {
+            if (peek(1).kind == TokenKind::LParen) {
+                return parse_stmt_c();
+            }
+            return parse_stmt_english();
+        }
+        if (check(TokenKind::While)) {
+            if (peek(1).kind == TokenKind::LParen) {
+                return parse_stmt_c();
+            }
+            return parse_stmt_english();
+        }
+        if (check(TokenKind::Call)) return parse_stmt_english();
         return parse_stmt_c();
     }
 
@@ -1313,15 +1370,29 @@ private:
         
         std::vector<ast::StmtPtr> then_block;
         while (!check(TokenKind::Else) && !check(TokenKind::End) && !at_end()) {
-            auto s = parse_stmt();
+            if (!check_loop_safeguard("parse_if_stmt_english_then")) {
+                break;
+            }
+            std::size_t before = pos_;
+            auto s = parse_stmt_mixed();
             if (s) then_block.push_back(std::move(*s));
+            if (pos_ == before && !at_end()) {
+                advance();
+            }
         }
 
         std::vector<ast::StmtPtr> else_block;
         if (match(TokenKind::Else)) {
             while (!check(TokenKind::End) && !at_end()) {
-                auto s = parse_stmt();
+                if (!check_loop_safeguard("parse_if_stmt_english_else")) {
+                    break;
+                }
+                std::size_t before = pos_;
+                auto s = parse_stmt_mixed();
                 if (s) else_block.push_back(std::move(*s));
+                if (pos_ == before && !at_end()) {
+                    advance();
+                }
             }
         }
 
@@ -1362,8 +1433,15 @@ private:
         
         std::vector<ast::StmtPtr> body;
         while (!check(TokenKind::End) && !at_end()) {
-            auto s = parse_stmt();
+            if (!check_loop_safeguard("parse_while_stmt_english")) {
+                break;
+            }
+            std::size_t before = pos_;
+            auto s = parse_stmt_mixed();
             if (s) body.push_back(std::move(*s));
+            if (pos_ == before && !at_end()) {
+                advance();
+            }
         }
         consume(TokenKind::End, "expected 'end'");
         match(TokenKind::While);
@@ -1664,6 +1742,12 @@ private:
                     .field = std::string(field.text)
                 };
                 expr = std::move(access);
+                if (check(TokenKind::LBrace) && !field.text.empty() && field.text[0] >= 'A' && field.text[0] <= 'Z') {
+                    auto qualified_name = expr_to_qualified_name(**expr);
+                    if (qualified_name) {
+                        return parse_struct_literal(*qualified_name);
+                    }
+                }
             }
             else if (match(TokenKind::As)) {
                 auto target = parse_type();
@@ -1705,7 +1789,10 @@ private:
         
         std::vector<std::pair<std::string, ast::ExprPtr>> fields;
         
-        while (!check(TokenKind::RBrace)) {
+        while (!check(TokenKind::RBrace) && !at_end()) {
+            if (!check_loop_safeguard("parse_struct_literal")) {
+                break;
+            }
             Token field_name = consume(TokenKind::Ident, "expected field name");
             consume(TokenKind::Colon, "expected ':' after field name");
             
@@ -1726,6 +1813,11 @@ private:
                 }
             }
         }
+
+        if (at_end()) {
+            error("expected '}' after struct literal");
+            return std::nullopt;
+        }
         
         consume(TokenKind::RBrace, "expected '}' after struct literal");
         
@@ -1735,6 +1827,20 @@ private:
             .fields = std::move(fields)
         };
         return expr;
+    }
+
+    std::optional<std::string> expr_to_qualified_name(const ast::Expr& expr) {
+        if (auto* ident = std::get_if<ast::IdentExpr>(&expr.kind)) {
+            return ident->name;
+        }
+        if (auto* field = std::get_if<ast::FieldExpr>(&expr.kind)) {
+            auto base = expr_to_qualified_name(*field->base);
+            if (!base) {
+                return std::nullopt;
+            }
+            return *base + "." + field->field;
+        }
+        return std::nullopt;
     }
 
     // spawn func(args) -> SpawnExpr

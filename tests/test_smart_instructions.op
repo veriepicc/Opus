@@ -1,0 +1,28 @@
+// test program to verify smart instruction optimizations
+
+function int main() {
+    // test multiply by power of two (should use shl)
+    let a: i64 = 10
+    let b: i64 = a * 8  // should emit shl rax, 3
+    
+    // test multiply by 3 (should use lea)
+    let c: i64 = a * 3  // should emit lea rax, [rax + rax*2]
+    
+    // test multiply by 5 (should use lea)
+    let d: i64 = a * 5  // should emit lea rax, [rax + rax*4]
+    
+    // test multiply by 9 (should use lea)
+    let e: i64 = a * 9  // should emit lea rax, [rax + rax*8]
+    
+    // test add 0 (should emit nothing)
+    let f: i64 = a + 0
+    
+    // test add 1 (should use inc)
+    let g: i64 = a + 1  // should emit inc rax
+    
+    // test add -1 (should use dec)
+    let h: i64 = a - 1  // should emit dec rax
+    
+    print("all smart instruction tests completed\n")
+    return 0
+}

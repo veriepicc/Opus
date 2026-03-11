@@ -1,0 +1,43 @@
+// test importing functions from another module
+
+import test_import_lib
+
+function int main() {
+    alloc_console()
+    print("=== import tests ===\n")
+
+    // test 1: call imported function
+    let r1 = add_nums(10, 20)
+    if r1 != 30 {
+        print("FAIL test 1: add_nums(10,20) expected 30\n")
+        return 1
+    }
+    print("PASS test 1: add_nums\n")
+
+    // test 2: another imported function
+    let r2 = square(7)
+    if r2 != 49 {
+        print("FAIL test 2: square(7) expected 49\n")
+        return 2
+    }
+    print("PASS test 2: square\n")
+
+    // test 3: no-arg imported function
+    let r3 = get_magic()
+    if r3 != 42 {
+        print("FAIL test 3: get_magic expected 42\n")
+        return 3
+    }
+    print("PASS test 3: get_magic\n")
+
+    // test 4: use imported in expression
+    let r4 = add_nums(square(3), get_magic())
+    if r4 != 51 {
+        print("FAIL test 4: add_nums(square(3), get_magic()) expected 51\n")
+        return 4
+    }
+    print("PASS test 4: composed calls\n")
+
+    print("=== all import tests passed ===\n")
+    return 0
+}

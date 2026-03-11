@@ -1,0 +1,63 @@
+class Player {
+    int health
+    int x
+    int y
+    int score
+
+    function int get_health() {
+        return self.health
+    }
+}
+
+function int main() {
+    print("=== compound field assignment test ===\n")
+
+    auto p = Player { health: 100, x: 10, y: 20, score: 0 }
+
+    // test 1: +=
+    p.health += 50
+    if p.health == 150 {
+        print("PASS: health += 50 -> 150\n")
+    }
+    if p.health != 150 {
+        print("FAIL: health += 50 wrong\n")
+    }
+
+    // test 2: -=
+    p.health -= 25
+    if p.health == 125 {
+        print("PASS: health -= 25 -> 125\n")
+    }
+    if p.health != 125 {
+        print("FAIL: health -= 25 wrong\n")
+    }
+
+    // test 3: *=
+    p.x *= 3
+    if p.x == 30 {
+        print("PASS: x *= 3 -> 30\n")
+    }
+    if p.x != 30 {
+        print("FAIL: x *= 3 wrong\n")
+    }
+
+    // test 4: /=
+    p.y /= 4
+    if p.y == 5 {
+        print("PASS: y /= 4 -> 5\n")
+    }
+    if p.y != 5 {
+        print("FAIL: y /= 4 wrong\n")
+    }
+
+    // test 5: verify other fields untouched
+    if p.score == 0 {
+        print("PASS: score still 0\n")
+    }
+    if p.score != 0 {
+        print("FAIL: score corrupted\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

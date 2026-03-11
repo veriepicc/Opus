@@ -1,0 +1,92 @@
+// Feature: feature-completion, Property 1: Array set/get round-trip
+
+function int main() {
+    alloc_console()
+    print("=== dll array builtins test ===\n")
+
+    // test 1: array_new creates array, array_len returns 0 initially
+    print("test 1: array_new + initial array_len\n")
+    let arr = array_new(10)
+    let len0 = array_len(arr)
+    if len0 == 0 {
+        print("PASS: initial length is 0\n")
+    }
+    if len0 != 0 {
+        print("FAIL: initial length is not 0, got ")
+        print_dec(len0)
+        print("\n")
+        return 1
+    }
+
+    // test 2: array_set then array_get round-trip
+    print("test 2: set index 0 to 42, get it back\n")
+    array_set(arr, 0, 42)
+    let got = array_get(arr, 0)
+    if got == 42 {
+        print("PASS: round-trip index 0 = 42\n")
+    }
+    if got != 42 {
+        print("FAIL: expected 42, got ")
+        print_dec(got)
+        print("\n")
+        return 1
+    }
+
+    // test 3: set multiple indices, verify all values
+    print("test 3: set multiple indices\n")
+    array_set(arr, 1, 100)
+    array_set(arr, 2, 200)
+    array_set(arr, 3, 999)
+
+    let v0 = array_get(arr, 0)
+    let v1 = array_get(arr, 1)
+    let v2 = array_get(arr, 2)
+    let v3 = array_get(arr, 3)
+
+    if v0 == 42 {
+        if v1 == 100 {
+            if v2 == 200 {
+                if v3 == 999 {
+                    print("PASS: all multi-index values correct\n")
+                }
+            }
+        }
+    }
+    if v0 != 42 {
+        print("FAIL: index 0 expected 42\n")
+        return 1
+    }
+    if v1 != 100 {
+        print("FAIL: index 1 expected 100\n")
+        return 1
+    }
+    if v2 != 200 {
+        print("FAIL: index 2 expected 200\n")
+        return 1
+    }
+    if v3 != 999 {
+        print("FAIL: index 3 expected 999\n")
+        return 1
+    }
+
+    // test 4: array_len tracks correctly after sets (set at index 3, len should be 4)
+    print("test 4: length tracking after sets\n")
+    let len4 = array_len(arr)
+    if len4 == 4 {
+        print("PASS: length is 4 after setting indices 0-3\n")
+    }
+    if len4 != 4 {
+        print("FAIL: expected length 4, got ")
+        print_dec(len4)
+        print("\n")
+        return 1
+    }
+
+    // test 5: array_free doesnt crash
+    print("test 5: array_free\n")
+    array_free(arr)
+    print("PASS: array_free completed without crash\n")
+
+    print("=== all array tests passed ===\n")
+    return 0
+}

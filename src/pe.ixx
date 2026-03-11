@@ -731,6 +731,9 @@ private:
             emit8(code, 0x55);                                     // push rbp
             emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);    // mov rbp, rsp
             emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x20);  // sub rsp, 0x20
+            if (healing_mode != ast::HealingMode::Off) {
+                emit_install_veh(code, text_rva, imports, crash_handler_off);
+            }
             
             // call main
             std::size_t call_pos = code.size();
@@ -797,6 +800,9 @@ private:
             emit8(code, 0x55);  // push rbp
             emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);  // mov rbp, rsp
             emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x20);  // sub rsp, 0x20
+            if (healing_mode != ast::HealingMode::Off) {
+                emit_install_veh(code, text_rva, imports, crash_handler_off);
+            }
             
             // call user main
             std::size_t call_pos = code.size();
@@ -1004,6 +1010,16 @@ private:
         std::int32_t rel32 = static_cast<std::int32_t>(target_rva - rip_after);
         emit8(code, 0x48); emit8(code, 0x8D); emit8(code, 0x15);
         emit32(code, static_cast<std::uint32_t>(rel32));
+    }
+
+    void emit_install_veh(std::vector<std::uint8_t>& code,
+                          std::size_t text_rva,
+                          const ImportResult& imports,
+                          std::size_t crash_handler_off) {
+        emit8(code, 0xB9);
+        emit32(code, 1);
+        emit_lea_rdx(code, text_rva, text_rva + crash_handler_off);
+        emit_call_iat(code, text_rva, imports.iat_add_veh);
     }
     
     // Print 64-bit value as "0x" + hex digits
@@ -1819,7 +1835,7 @@ private:
                 target = code.size(); emit32(code, 0);
             };
 
-            std::size_t je_modrm[12];
+            std::size_t je_modrm[14];
             emit_opcode_check(0x8B, je_modrm[0]);
             emit_opcode_check(0x8A, je_modrm[1]);
             emit_opcode_check(0x89, je_modrm[2]);
@@ -1832,13 +1848,15 @@ private:
             emit_opcode_check(0x3B, je_modrm[9]);
             emit_opcode_check(0xF7, je_modrm[10]);
             emit_opcode_check(0xFF, je_modrm[11]);
+            emit_opcode_check(0xC7, je_modrm[12]);
+            emit_opcode_check(0xC6, je_modrm[13]);
 
             // unknown opcode fallback
             emit8(code, 0xB8); emit32(code, 1);                       // mov eax, 1
             emit8(code, 0xC3);                                      // ret
 
             // .has_modrm: all opcode checks land here
-            for (int i = 0; i < 12; i++) patch32(code, je_modrm[i]);
+            for (int i = 0; i < 14; i++) patch32(code, je_modrm[i]);
             emit8(code, 0x48); emit8(code, 0xFF); emit8(code, 0xC1);    // inc rcx
 
             patch32(code, jmp_modrm);
@@ -1874,6 +1892,19 @@ private:
             std::size_t jmp_done1 = code.size(); emit8(code, 0x00);
 
             code[je_mod00] = static_cast<std::uint8_t>(code.size() - (je_mod00 + 1));
+            emit8(code, 0x41); emit8(code, 0x83); emit8(code, 0xF9); emit8(code, 0x04); // cmp r9d, 4
+            emit8(code, 0x75);
+            std::size_t jne_mod00_no_sib = code.size(); emit8(code, 0x00);
+            emit8(code, 0x0F); emit8(code, 0xB6); emit8(code, 0x51); emit8(code, 0x01); // movzx edx, byte [rcx+1] (SIB)
+            emit8(code, 0x83); emit8(code, 0xE2); emit8(code, 0x07);                     // and edx, 7
+            emit8(code, 0x83); emit8(code, 0xFA); emit8(code, 0x05);                     // cmp edx, 5
+            emit8(code, 0x75);
+            std::size_t jne_mod00_done = code.size(); emit8(code, 0x00);
+            emit8(code, 0x83); emit8(code, 0xC0); emit8(code, 0x04);                     // add eax, 4 (SIB base=5 disp32)
+            emit8(code, 0xEB);
+            std::size_t jmp_done2_from_sib = code.size(); emit8(code, 0x00);
+
+            code[jne_mod00_no_sib] = static_cast<std::uint8_t>(code.size() - (jne_mod00_no_sib + 1));
             emit8(code, 0x41); emit8(code, 0x83); emit8(code, 0xF9); emit8(code, 0x05); // cmp r9d, 5
             emit8(code, 0x75);
             std::size_t jne_done2 = code.size(); emit8(code, 0x00);
@@ -1886,8 +1917,28 @@ private:
 
             code[je_done1] = static_cast<std::uint8_t>(code.size() - (je_done1 + 1));
             code[jmp_done1] = static_cast<std::uint8_t>(code.size() - (jmp_done1 + 1));
+            code[jne_mod00_done] = static_cast<std::uint8_t>(code.size() - (jne_mod00_done + 1));
+            code[jmp_done2_from_sib] = static_cast<std::uint8_t>(code.size() - (jmp_done2_from_sib + 1));
             code[jne_done2] = static_cast<std::uint8_t>(code.size() - (jne_done2 + 1));
             code[jmp_done2] = static_cast<std::uint8_t>(code.size() - (jmp_done2 + 1));
+
+            // immediate payload for mov r/m, imm forms (opcode is at [rcx-1])
+            emit8(code, 0x0F); emit8(code, 0xB6); emit8(code, 0x51); emit8(code, 0xFF);  // movzx edx, byte [rcx-1]
+            emit8(code, 0x80); emit8(code, 0xFA); emit8(code, 0xC7);                      // cmp dl, 0xC7
+            emit8(code, 0x75);
+            std::size_t jne_imm8 = code.size(); emit8(code, 0x00);
+            emit8(code, 0x83); emit8(code, 0xC0); emit8(code, 0x04);                      // add eax, 4
+            emit8(code, 0xEB);
+            std::size_t jmp_decoder_done = code.size(); emit8(code, 0x00);
+
+            code[jne_imm8] = static_cast<std::uint8_t>(code.size() - (jne_imm8 + 1));
+            emit8(code, 0x80); emit8(code, 0xFA); emit8(code, 0xC6);                      // cmp dl, 0xC6
+            emit8(code, 0x75);
+            std::size_t jne_decoder_done = code.size(); emit8(code, 0x00);
+            emit8(code, 0xFF); emit8(code, 0xC0);                                          // inc eax
+
+            code[jne_decoder_done] = static_cast<std::uint8_t>(code.size() - (jne_decoder_done + 1));
+            code[jmp_decoder_done] = static_cast<std::uint8_t>(code.size() - (jmp_decoder_done + 1));
             emit8(code, 0xC3);                                      // ret
 
             // ---- destination register decoder subroutine ----

@@ -1,0 +1,16 @@
+fn main() -> i64 {
+    let mut result: i64 = 0;
+    let mut i: i64 = 0;
+    let mut a: i64 = 1;
+    let mut b: i64 = 3;
+
+    while (i < 50000000) {
+        result = result + a;
+        result = result + b;
+        a = a + 3;
+        b = b + 5;
+        i = i + 1;
+    }
+
+    return result;
+}

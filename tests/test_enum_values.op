@@ -1,0 +1,82 @@
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+enum Status {
+    Idle,
+    Running,
+    Paused = 10,
+    Stopped,
+    Dead
+}
+
+function int main() {
+    print("=== enum auto-increment test ===\n")
+
+    // test 1: sequential from 0
+    let red = Color.Red
+    let green = Color.Green
+    let blue = Color.Blue
+
+    if red == 0 {
+        print("PASS: Red == 0\n")
+    }
+    if red != 0 {
+        print("FAIL: Red != 0\n")
+    }
+    if green == 1 {
+        print("PASS: Green == 1\n")
+    }
+    if green != 1 {
+        print("FAIL: Green != 1\n")
+    }
+    if blue == 2 {
+        print("PASS: Blue == 2\n")
+    }
+    if blue != 2 {
+        print("FAIL: Blue != 2\n")
+    }
+
+    // test 2: gap with explicit value
+    let idle = Status.Idle
+    let running = Status.Running
+    let paused = Status.Paused
+    let stopped = Status.Stopped
+    let dead = Status.Dead
+
+    if idle == 0 {
+        print("PASS: Idle == 0\n")
+    }
+    if idle != 0 {
+        print("FAIL: Idle != 0\n")
+    }
+    if running == 1 {
+        print("PASS: Running == 1\n")
+    }
+    if running != 1 {
+        print("FAIL: Running != 1\n")
+    }
+    if paused == 10 {
+        print("PASS: Paused == 10\n")
+    }
+    if paused != 10 {
+        print("FAIL: Paused != 10\n")
+    }
+    if stopped == 11 {
+        print("PASS: Stopped == 11\n")
+    }
+    if stopped != 11 {
+        print("FAIL: Stopped != 11\n")
+    }
+    if dead == 12 {
+        print("PASS: Dead == 12\n")
+    }
+    if dead != 12 {
+        print("FAIL: Dead != 12\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

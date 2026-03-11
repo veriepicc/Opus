@@ -1,0 +1,115 @@
+// Feature: feature-completion, Unit test for DLL-mode string builtins
+
+function int main() {
+    alloc_console()
+    print("=== dll string builtins test ===\n")
+
+    // test 1: string_length of "hello" should be 5
+    print("test 1: string_length(hello)\n")
+    let len1 = string_length("hello")
+    if len1 == 5 {
+        print("PASS: string_length(hello) == 5\n")
+    }
+    if len1 != 5 {
+        print("FAIL: expected 5, got ")
+        print_dec(len1)
+        print("\n")
+        return 1
+    }
+
+    // test 2: string_length of "" should be 0
+    print("test 2: string_length(empty)\n")
+    let len2 = string_length("")
+    if len2 == 0 {
+        print("PASS: string_length(empty) == 0\n")
+    }
+    if len2 != 0 {
+        print("FAIL: expected 0, got ")
+        print_dec(len2)
+        print("\n")
+        return 1
+    }
+
+    // test 3: string_append("hello", " world") should equal "hello world"
+    print("test 3: string_append\n")
+    let joined = string_append("hello", " world")
+    let eq3 = string_equals(joined, "hello world")
+    if eq3 == 1 {
+        print("PASS: string_append produced hello world\n")
+    }
+    if eq3 != 1 {
+        print("FAIL: string_append result mismatch\n")
+        return 1
+    }
+
+    // test 4: string_equals("abc", "abc") should return 1
+    print("test 4: string_equals same\n")
+    let eq4 = string_equals("abc", "abc")
+    if eq4 == 1 {
+        print("PASS: string_equals(abc, abc) == 1\n")
+    }
+    if eq4 != 1 {
+        print("FAIL: expected 1, got ")
+        print_dec(eq4)
+        print("\n")
+        return 1
+    }
+
+    // test 5: string_equals("abc", "xyz") should return 0
+    print("test 5: string_equals different\n")
+    let eq5 = string_equals("abc", "xyz")
+    if eq5 == 0 {
+        print("PASS: string_equals(abc, xyz) == 0\n")
+    }
+    if eq5 != 0 {
+        print("FAIL: expected 0, got ")
+        print_dec(eq5)
+        print("\n")
+        return 1
+    }
+
+    // test 6: string_substring("hello world", 6, 5) should equal "world"
+    print("test 6: string_substring\n")
+    let sub = string_substring("hello world", 6, 5)
+    let eq6 = string_equals(sub, "world")
+    if eq6 == 1 {
+        print("PASS: substring(hello world, 6, 5) == world\n")
+    }
+    if eq6 != 1 {
+        print("FAIL: substring result mismatch\n")
+        return 1
+    }
+
+    // test 7: int_to_string(42) should equal "42"
+    print("test 7: int_to_string(42)\n")
+    let s42 = int_to_string(42)
+    let eq7 = string_equals(s42, "42")
+    if eq7 == 1 {
+        print("PASS: int_to_string(42) == 42\n")
+    }
+    if eq7 != 1 {
+        print("FAIL: int_to_string(42) mismatch\n")
+        return 1
+    }
+
+    // test 8: int_to_string(0) should equal "0"
+    print("test 8: int_to_string(0)\n")
+    let s0 = int_to_string(0)
+    let eq8 = string_equals(s0, "0")
+    if eq8 == 1 {
+        print("PASS: int_to_string(0) == 0\n")
+    }
+    if eq8 != 1 {
+        print("FAIL: int_to_string(0) mismatch\n")
+        return 1
+    }
+
+    // test 9: print_char(65) should print 'A' (visual check)
+    print("test 9: print_char(65) -> ")
+    print_char(65)
+    print("\n")
+    print("PASS: print_char executed (visual: should see A above)\n")
+
+    print("=== all string tests passed ===\n")
+    return 0
+}

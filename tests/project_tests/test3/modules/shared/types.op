@@ -1,0 +1,4 @@
+struct Pair {
+    left: i64,
+    right: i64,
+}
