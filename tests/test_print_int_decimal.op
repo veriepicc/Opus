@@ -1,0 +1,28 @@
+// test print_int outputs decimal and print_hex outputs hex
+
+function int main() {
+    alloc_console()
+
+    print("=== print_int decimal tests ===\n")
+    print_int(0)
+    print("\n")
+    print_int(42)
+    print("\n")
+    print_int(1000000)
+    print("\n")
+    print_int(-1)
+    print("\n")
+    print_int(-9999)
+    print("\n")
+
+    print("=== print_hex tests ===\n")
+    print_hex(0)
+    print("\n")
+    print_hex(255)
+    print("\n")
+    print_hex(65535)
+    print("\n")
+
+    print("=== done ===\n")
+    return 0
+}

@@ -158,7 +158,7 @@ public:
 
         char c = peek();
 
-        if (std::isdigit(c) || (c == '.' && std::isdigit(peek(1)))) {
+        if (is_digit_char(c) || (c == '.' && is_digit_char(peek(1)))) {
             return lex_number();
         }
 
@@ -170,7 +170,7 @@ public:
             return lex_char();
         }
 
-        if (std::isalpha(c) || c == '_') {
+        if (is_alpha_char(c) || c == '_') {
             return lex_ident();
         }
 
@@ -194,7 +194,7 @@ public:
     
     static SyntaxMode detect_syntax(std::string_view source) {
         std::size_t i = 0;
-        while (i < source.size() && std::isspace(source[i])) i++;
+        while (i < source.size() && std::isspace(static_cast<unsigned char>(source[i]))) i++;
         
         if (i >= source.size()) return SyntaxMode::CStyle;
 
@@ -216,6 +216,26 @@ private:
     bool mixed_mode_;
     std::size_t pos_;
     SourceLoc loc_;
+
+    [[nodiscard]] static unsigned char uchar(char c) {
+        return static_cast<unsigned char>(c);
+    }
+
+    [[nodiscard]] static bool is_digit_char(char c) {
+        return std::isdigit(uchar(c)) != 0;
+    }
+
+    [[nodiscard]] static bool is_alpha_char(char c) {
+        return std::isalpha(uchar(c)) != 0;
+    }
+
+    [[nodiscard]] static bool is_alnum_char(char c) {
+        return std::isalnum(uchar(c)) != 0;
+    }
+
+    [[nodiscard]] static bool is_xdigit_char(char c) {
+        return std::isxdigit(uchar(c)) != 0;
+    }
 
     bool at_end() const { return pos_ >= source_.size(); }
     
@@ -283,28 +303,28 @@ private:
         }
 
         if (is_hex) {
-            while (std::isxdigit(peek())) advance();
+            while (is_xdigit_char(peek())) advance();
         } else if (is_bin) {
             while (peek() == '0' || peek() == '1') advance();
         } else {
-            while (std::isdigit(peek())) advance();
+            while (is_digit_char(peek())) advance();
             
-            if (peek() == '.' && std::isdigit(peek(1))) {
+            if (peek() == '.' && is_digit_char(peek(1))) {
                 is_float = true;
                 advance();
-                while (std::isdigit(peek())) advance();
+                while (is_digit_char(peek())) advance();
             }
 
             if (peek() == 'e' || peek() == 'E') {
                 is_float = true;
                 advance();
                 if (peek() == '+' || peek() == '-') advance();
-                while (std::isdigit(peek())) advance();
+                while (is_digit_char(peek())) advance();
             }
         }
 
         // TODO: properly parse type suffixes like i32, u64, f32
-        while (std::isalnum(peek())) advance();
+        while (is_alnum_char(peek())) advance();
 
         std::string_view text = source_.substr(start_pos, pos_ - start_pos);
         Token tok = make_token(is_float ? TokenKind::FloatLit : TokenKind::IntLit, text, start);
@@ -360,6 +380,9 @@ private:
         while (!at_end() && peek() != '"') {
             if (peek() == '\\') {
                 advance();
+                if (at_end()) {
+                    return make_token(TokenKind::Error, "unterminated string", start);
+                }
                 switch (peek()) {
                     case 'n':  value += '\n'; break;
                     case 't':  value += '\t'; break;
@@ -390,9 +413,16 @@ private:
         std::size_t start_pos = pos_;
         advance();
 
+        if (at_end()) {
+            return make_token(TokenKind::Error, "unterminated char", start);
+        }
+
         char value = 0;
         if (peek() == '\\') {
             advance();
+            if (at_end()) {
+                return make_token(TokenKind::Error, "unterminated char", start);
+            }
             switch (peek()) {
                 case 'n':  value = '\n'; break;
                 case 't':  value = '\t'; break;
@@ -430,11 +460,11 @@ private:
                 continue;
             }
             
-            if (std::isxdigit(c)) {
+            if (is_xdigit_char(c)) {
                 char hex[3] = {c, 0, 0};
                 advance();
                 
-                if (!at_end() && std::isxdigit(peek())) {
+                if (!at_end() && is_xdigit_char(peek())) {
                     hex[1] = peek();
                     advance();
                 }
@@ -470,7 +500,7 @@ private:
         SourceLoc start = loc_;
         std::size_t start_pos = pos_;
         
-        while (std::isalnum(peek()) || peek() == '_') {
+        while (is_alnum_char(peek()) || peek() == '_') {
             advance();
         }
 

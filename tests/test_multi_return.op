@@ -1,0 +1,86 @@
+function int early_return(int x) {
+    if x > 10 {
+        return 99
+    }
+    return 0
+}
+
+function int loop_return(int limit) {
+    for i in range(0, 100) {
+        if i == limit {
+            return i
+        }
+    }
+    return -1
+}
+
+function int nested_return(int a, int b) {
+    if a > 0 {
+        if b > 0 {
+            return a + b
+        }
+        return a
+    }
+    return b
+}
+
+function int main() {
+    print("=== multi return test ===\n")
+
+    // test 1: early return from if
+    let r1 = early_return(20)
+    if r1 == 99 {
+        print("PASS: early_return(20) == 99\n")
+    }
+    if r1 != 99 {
+        print("FAIL: early_return(20) wrong\n")
+    }
+
+    // test 2: fall through to default return
+    let r2 = early_return(5)
+    if r2 == 0 {
+        print("PASS: early_return(5) == 0\n")
+    }
+    if r2 != 0 {
+        print("FAIL: early_return(5) wrong\n")
+    }
+
+    // test 3: return from inside loop
+    let r3 = loop_return(7)
+    if r3 == 7 {
+        print("PASS: loop_return(7) == 7\n")
+    }
+    if r3 != 7 {
+        print("FAIL: loop_return(7) wrong\n")
+    }
+
+    // test 4: nested if return - both positive
+    let r4 = nested_return(3, 4)
+    if r4 == 7 {
+        print("PASS: nested_return(3,4) == 7\n")
+    }
+    if r4 != 7 {
+        print("FAIL: nested_return(3,4) wrong\n")
+    }
+
+    // test 5: nested if return - a positive b zero
+    let r5 = nested_return(5, 0)
+    if r5 == 5 {
+        print("PASS: nested_return(5,0) == 5\n")
+    }
+    if r5 != 5 {
+        print("FAIL: nested_return(5,0) wrong\n")
+    }
+
+    // test 6: nested if return - a zero
+    let r6 = nested_return(0, 8)
+    if r6 == 8 {
+        print("PASS: nested_return(0,8) == 8\n")
+    }
+    if r6 != 8 {
+        print("FAIL: nested_return(0,8) wrong\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

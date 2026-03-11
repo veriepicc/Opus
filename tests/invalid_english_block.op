@@ -1,0 +1,4 @@
+define function main returning i64
+if 1 then
+)
+end function

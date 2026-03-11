@@ -9,6 +9,10 @@ module;
 #include <windows.h>
 #endif
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 export module opus.x64;
 
 import opus.types;
@@ -129,6 +133,22 @@ public:
         return (mod << 6) | ((static_cast<std::uint8_t>(reg) & 7) << 3) | (static_cast<std::uint8_t>(rm) & 7);
     }
 
+    // power of two detection helpers
+    [[nodiscard]] static constexpr bool is_power_of_two(std::int64_t n) {
+        return n > 1 && (n & (n - 1)) == 0;
+    }
+
+    [[nodiscard]] static inline int log2_pow2(std::uint64_t n) {
+        // count trailing zeros = log2 for power of two
+        #ifdef _MSC_VER
+            unsigned long index;
+            _BitScanForward64(&index, n);
+            return static_cast<int>(index);
+        #else
+            return __builtin_ctzll(n);
+        #endif
+    }
+
 
     void mov_imm64(Reg dst, std::uint64_t imm) {
         buf_.emit8(rex(true, Reg::RAX, dst));
@@ -167,12 +187,37 @@ public:
         emit_mem_operand(dst, base, offset);
     }
 
+    // lea dst, [base + index*scale]
+    void lea_scaled(Reg dst, Reg base, Reg index, std::uint8_t scale) {
+        assert((scale == 1 || scale == 2 || scale == 4 || scale == 8) && 
+               "lea scale must be 1, 2, 4, or 8");
+        
+        std::uint8_t scale_bits = 0;
+        if (scale == 2) scale_bits = 1;
+        else if (scale == 4) scale_bits = 2;
+        else if (scale == 8) scale_bits = 3;
+        
+        buf_.emit8(rex(true, dst, base));
+        buf_.emit8(0x8D);
+        buf_.emit8(modrm(0b00, dst, Reg(4)));  // modrm points to SIB
+        // SIB byte: scale.index.base
+        buf_.emit8((scale_bits << 6) | 
+                   ((static_cast<std::uint8_t>(index) & 7) << 3) | 
+                   (static_cast<std::uint8_t>(base) & 7));
+    }
+
     // ARITHMETIC
 
     void add(Reg dst, Reg src) {
         buf_.emit8(rex(true, src, dst));
         buf_.emit8(0x01);
         buf_.emit8(modrm(0b11, src, dst));
+    }
+
+    void add_mem(Reg dst, Reg base, std::int32_t offset) {
+        buf_.emit8(rex(true, dst, base));
+        buf_.emit8(0x03);
+        emit_mem_operand(dst, base, offset);
     }
 
     void add_imm(Reg dst, std::int32_t imm) {
@@ -188,10 +233,29 @@ public:
         }
     }
 
+    void add_mem_imm(Reg base, std::int32_t offset, std::int32_t imm) {
+        buf_.emit8(rex(true, Reg::RAX, base));
+        if (imm >= -128 && imm <= 127) {
+            buf_.emit8(0x83);
+            emit_mem_operand(Reg(EXT_ADD), base, offset);
+            buf_.emit8(static_cast<std::uint8_t>(imm));
+        } else {
+            buf_.emit8(0x81);
+            emit_mem_operand(Reg(EXT_ADD), base, offset);
+            buf_.emit32(static_cast<std::uint32_t>(imm));
+        }
+    }
+
     void sub(Reg dst, Reg src) {
         buf_.emit8(rex(true, src, dst));
         buf_.emit8(0x29);
         buf_.emit8(modrm(0b11, src, dst));
+    }
+
+    void sub_mem(Reg dst, Reg base, std::int32_t offset) {
+        buf_.emit8(rex(true, dst, base));
+        buf_.emit8(0x2B);
+        emit_mem_operand(dst, base, offset);
     }
 
     void sub_imm(Reg dst, std::int32_t imm) {
@@ -203,6 +267,19 @@ public:
         } else {
             buf_.emit8(0x81);
             buf_.emit8(modrm(0b11, Reg(EXT_SUB), dst));
+            buf_.emit32(static_cast<std::uint32_t>(imm));
+        }
+    }
+
+    void sub_mem_imm(Reg base, std::int32_t offset, std::int32_t imm) {
+        buf_.emit8(rex(true, Reg::RAX, base));
+        if (imm >= -128 && imm <= 127) {
+            buf_.emit8(0x83);
+            emit_mem_operand(Reg(EXT_SUB), base, offset);
+            buf_.emit8(static_cast<std::uint8_t>(imm));
+        } else {
+            buf_.emit8(0x81);
+            emit_mem_operand(Reg(EXT_SUB), base, offset);
             buf_.emit32(static_cast<std::uint32_t>(imm));
         }
     }
@@ -246,6 +323,30 @@ public:
         buf_.emit8(modrm(0b11, Reg(EXT_NEG), dst));
     }
 
+    void inc(Reg dst) {
+        buf_.emit8(rex(true, Reg::RAX, dst));
+        buf_.emit8(0xFF);
+        buf_.emit8(modrm(0b11, Reg(0), dst));  // /0 = inc
+    }
+
+    void inc_mem(Reg base, std::int32_t offset) {
+        buf_.emit8(rex(true, Reg::RAX, base));
+        buf_.emit8(0xFF);
+        emit_mem_operand(Reg(0), base, offset);
+    }
+
+    void dec(Reg dst) {
+        buf_.emit8(rex(true, Reg::RAX, dst));
+        buf_.emit8(0xFF);
+        buf_.emit8(modrm(0b11, Reg(1), dst));  // /1 = dec
+    }
+
+    void dec_mem(Reg base, std::int32_t offset) {
+        buf_.emit8(rex(true, Reg::RAX, base));
+        buf_.emit8(0xFF);
+        emit_mem_operand(Reg(1), base, offset);
+    }
+
     // BITWISE
 
     void and_(Reg dst, Reg src) {
@@ -254,16 +355,55 @@ public:
         buf_.emit8(modrm(0b11, src, dst));
     }
 
+    void and_imm(Reg dst, std::int32_t imm) {
+        buf_.emit8(rex(true, Reg::RAX, dst));
+        if (imm >= -128 && imm <= 127) {
+            buf_.emit8(0x83);
+            buf_.emit8(modrm(0b11, Reg(4), dst));
+            buf_.emit8(static_cast<std::uint8_t>(imm));
+        } else {
+            buf_.emit8(0x81);
+            buf_.emit8(modrm(0b11, Reg(4), dst));
+            buf_.emit32(static_cast<std::uint32_t>(imm));
+        }
+    }
+
     void or_(Reg dst, Reg src) {
         buf_.emit8(rex(true, src, dst));
         buf_.emit8(0x09);
         buf_.emit8(modrm(0b11, src, dst));
     }
 
+    void or_imm(Reg dst, std::int32_t imm) {
+        buf_.emit8(rex(true, Reg::RAX, dst));
+        if (imm >= -128 && imm <= 127) {
+            buf_.emit8(0x83);
+            buf_.emit8(modrm(0b11, Reg(EXT_OR), dst));
+            buf_.emit8(static_cast<std::uint8_t>(imm));
+        } else {
+            buf_.emit8(0x81);
+            buf_.emit8(modrm(0b11, Reg(EXT_OR), dst));
+            buf_.emit32(static_cast<std::uint32_t>(imm));
+        }
+    }
+
     void xor_(Reg dst, Reg src) {
         buf_.emit8(rex(true, src, dst));
         buf_.emit8(0x31);
         buf_.emit8(modrm(0b11, src, dst));
+    }
+
+    void xor_imm(Reg dst, std::int32_t imm) {
+        buf_.emit8(rex(true, Reg::RAX, dst));
+        if (imm >= -128 && imm <= 127) {
+            buf_.emit8(0x83);
+            buf_.emit8(modrm(0b11, Reg(6), dst));
+            buf_.emit8(static_cast<std::uint8_t>(imm));
+        } else {
+            buf_.emit8(0x81);
+            buf_.emit8(modrm(0b11, Reg(6), dst));
+            buf_.emit32(static_cast<std::uint32_t>(imm));
+        }
     }
 
     void not_(Reg dst) {
@@ -291,12 +431,161 @@ public:
         buf_.emit8(modrm(0b11, Reg(7), dst));  // /7 = sar
     }
 
+    // shift immediate variants
+    void shl_imm(Reg dst, std::uint8_t amount) {
+        buf_.emit8(rex(true, Reg::RAX, dst));
+        buf_.emit8(0xC1);
+        buf_.emit8(modrm(0b11, Reg(4), dst));  // /4 = shl
+        buf_.emit8(amount);
+    }
+
+    void shr_imm(Reg dst, std::uint8_t amount) {
+        buf_.emit8(rex(true, Reg::RAX, dst));
+        buf_.emit8(0xC1);
+        buf_.emit8(modrm(0b11, Reg(5), dst));  // /5 = shr
+        buf_.emit8(amount);
+    }
+
+    void sar_imm(Reg dst, std::uint8_t amount) {
+        buf_.emit8(rex(true, Reg::RAX, dst));
+        buf_.emit8(0xC1);
+        buf_.emit8(modrm(0b11, Reg(7), dst));  // /7 = sar
+        buf_.emit8(amount);
+    }
+
+    // SMART INSTRUCTION HELPERS
+
+    // smart multiply - uses shift for power of 2, lea for 3/5/9, imm8 for small values
+    void imul_smart(Reg dst, Reg src, std::int64_t imm) {
+        // power of two → shift
+        if (is_power_of_two(imm)) {
+            if (dst != src) mov(dst, src);
+            shl_imm(dst, static_cast<std::uint8_t>(log2_pow2(static_cast<std::uint64_t>(imm))));
+            return;
+        }
+        
+        // multiply by 3, 5, or 9 → lea trick
+        if (imm == 3) {
+            lea_scaled(dst, src, src, 2);  // [src + src*2]
+            return;
+        }
+        if (imm == 5) {
+            lea_scaled(dst, src, src, 4);  // [src + src*4]
+            return;
+        }
+        if (imm == 9) {
+            lea_scaled(dst, src, src, 8);  // [src + src*8]
+            return;
+        }
+        
+        // small immediate → use imm8 encoding
+        if (imm >= -128 && imm <= 127) {
+            imul_imm(dst, src, static_cast<std::int32_t>(imm));
+            return;
+        }
+        
+        // fallback to standard imul
+        if (dst != src) mov(dst, src);
+        mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
+        imul(dst, Reg::R11);
+    }
+
+    // smart divide - uses shift for power of 2, idiv otherwise
+    void idiv_smart(Reg dst, std::int64_t divisor, bool is_signed) {
+        assert(dst == Reg::RAX && "idiv result must be in RAX");
+        
+        // power of two → shift
+        if (is_power_of_two(divisor)) {
+            int shift = log2_pow2(static_cast<std::uint64_t>(divisor));
+            if (is_signed) {
+                sar_imm(Reg::RAX, static_cast<std::uint8_t>(shift));
+            } else {
+                shr_imm(Reg::RAX, static_cast<std::uint8_t>(shift));
+            }
+            return;
+        }
+        
+        // fallback to standard idiv
+        mov_imm64(Reg::R11, static_cast<std::uint64_t>(divisor));
+        if (is_signed) {
+            cqo();  // sign-extend RAX into RDX:RAX
+        } else {
+            xor_(Reg::RDX, Reg::RDX);  // zero RDX for unsigned
+        }
+        idiv(Reg::R11);
+    }
+
+    // smart add - eliminates add 0, uses inc/dec for ±1
+    void add_smart(Reg dst, std::int64_t imm) {
+        // add 0 → nop (emit nothing)
+        if (imm == 0) {
+            return;
+        }
+        
+        // add 1 → inc
+        if (imm == 1) {
+            inc(dst);
+            return;
+        }
+        
+        // add -1 → dec
+        if (imm == -1) {
+            dec(dst);
+            return;
+        }
+        
+        // fits in imm32 → use existing add_imm
+        if (imm >= (std::numeric_limits<std::int32_t>::min)() && 
+            imm <= (std::numeric_limits<std::int32_t>::max)()) {
+            add_imm(dst, static_cast<std::int32_t>(imm));
+            return;
+        }
+        
+        // large immediate → load to temp reg and add
+        mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
+        add(dst, Reg::R11);
+    }
+
+    // smart move - uses xor for 0, or for -1, shorter encodings when possible
+    void mov_smart(Reg dst, std::int64_t imm) {
+        // move 0 → xor reg, reg (3 bytes vs 10 for mov imm64)
+        if (imm == 0) {
+            xor_32(dst, dst);  // 32-bit xor zero-extends to 64
+            return;
+        }
+        
+        // move -1 → or reg, -1 (4 bytes vs 10)
+        if (imm == -1) {
+            buf_.emit8(rex(true, Reg::RAX, dst));
+            buf_.emit8(0x83);  // or with imm8
+            buf_.emit8(modrm(0b11, Reg(EXT_OR), dst));
+            buf_.emit8(0xFF);  // -1 as imm8
+            return;
+        }
+        
+        // fits in imm32 → use mov_imm32 (7 bytes vs 10)
+        if (imm >= (std::numeric_limits<std::int32_t>::min)() && 
+            imm <= (std::numeric_limits<std::int32_t>::max)()) {
+            mov_imm32(dst, static_cast<std::int32_t>(imm));
+            return;
+        }
+        
+        // full 64-bit immediate
+        mov_imm64(dst, static_cast<std::uint64_t>(imm));
+    }
+
     // COMPARISON
 
     void cmp(Reg left, Reg right) {
         buf_.emit8(rex(true, right, left));
         buf_.emit8(0x39);
         buf_.emit8(modrm(0b11, right, left));
+    }
+
+    void cmp_mem(Reg left, Reg base, std::int32_t offset) {
+        buf_.emit8(rex(true, left, base));
+        buf_.emit8(0x3B);
+        emit_mem_operand(left, base, offset);
     }
 
     void cmp_imm(Reg dst, std::int32_t imm) {
@@ -312,10 +601,55 @@ public:
         }
     }
 
+    void cmp_mem_imm(Reg base, std::int32_t offset, std::int32_t imm) {
+        buf_.emit8(rex(true, Reg::RAX, base));
+        if (imm >= -128 && imm <= 127) {
+            buf_.emit8(0x83);
+            emit_mem_operand(Reg(7), base, offset);
+            buf_.emit8(static_cast<std::uint8_t>(imm));
+        } else {
+            buf_.emit8(0x81);
+            emit_mem_operand(Reg(7), base, offset);
+            buf_.emit32(static_cast<std::uint32_t>(imm));
+        }
+    }
+
     void test(Reg left, Reg right) {
         buf_.emit8(rex(true, right, left));
         buf_.emit8(0x85);
         buf_.emit8(modrm(0b11, right, left));
+    }
+
+    // smart compare - uses test for comparing to zero
+    void cmp_smart(Reg left, Reg right) {
+        // compare reg to itself → always equal, use test
+        if (left == right) {
+            test(left, left);
+            return;
+        }
+        
+        // standard comparison
+        cmp(left, right);
+    }
+
+    // smart compare with immediate - uses test for zero
+    void cmp_smart_imm(Reg left, std::int64_t imm) {
+        // compare to 0 → test reg, reg
+        if (imm == 0) {
+            test(left, left);
+            return;
+        }
+        
+        // fits in imm32 → use existing cmp_imm
+        if (imm >= (std::numeric_limits<std::int32_t>::min)() && 
+            imm <= (std::numeric_limits<std::int32_t>::max)()) {
+            cmp_imm(left, static_cast<std::int32_t>(imm));
+            return;
+        }
+        
+        // large immediate → load to temp and compare
+        mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
+        cmp(left, Reg::R11);
     }
 
     // setcc - set byte based on condition code
@@ -399,6 +733,16 @@ public:
 
     // FUNCTION PROLOGUE/EPILOGUE
 
+    [[nodiscard]] static std::size_t aligned_stack_allocation(std::size_t local_size, std::size_t save_reg_count = 0) {
+        std::size_t total_pushes = 1 + save_reg_count;
+        bool already_aligned = (total_pushes % 2) == 1;
+        std::size_t total = (local_size + 15) & ~static_cast<std::size_t>(15);
+        if (!already_aligned) {
+            total += 8;
+        }
+        return total;
+    }
+
     void prologue(std::size_t local_size, std::span<const Reg> save_regs = {}) {
         push(Reg::RBP);
         mov(Reg::RBP, Reg::RSP);
@@ -421,12 +765,29 @@ public:
         }
     }
 
+    [[nodiscard]] std::size_t prologue_patchable(std::span<const Reg> save_regs = {}) {
+        push(Reg::RBP);
+        mov(Reg::RBP, Reg::RSP);
+        for (Reg r : save_regs) {
+            push(r);
+        }
+        buf_.emit8(rex(true, Reg::RAX, Reg::RSP));
+        buf_.emit8(0x81);
+        buf_.emit8(modrm(0b11, Reg(EXT_SUB), Reg::RSP));
+        std::size_t patch_site = buf_.pos();
+        buf_.emit32(0);
+        return patch_site;
+    }
+
     void epilogue(std::span<const Reg> save_regs = {}) {
+        mov(Reg::RSP, Reg::RBP);
+        if (!save_regs.empty()) {
+            sub_imm(Reg::RSP, static_cast<std::int32_t>(save_regs.size() * 8));
+        }
         for (auto it = save_regs.rbegin(); it != save_regs.rend(); ++it) {
             pop(*it);
         }
-        
-        mov(Reg::RSP, Reg::RBP);
+
         pop(Reg::RBP);
         ret();
     }

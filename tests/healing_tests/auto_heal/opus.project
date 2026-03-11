@@ -1,0 +1,7 @@
+project AutoHeal {
+    entry: "main.op"
+    output: "AutoHeal.exe"
+    mode: "exe"
+    debug: true
+    healing: "auto"
+}

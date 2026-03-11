@@ -1,0 +1,5 @@
+project Test4 {
+    entry: "main.op"
+    output: "Test4.exe"
+    mode: "exe"
+}

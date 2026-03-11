@@ -1,0 +1,6 @@
+import alpha;
+import beta;
+
+fn main() -> i64 {
+    return alpha.same() + beta.same();
+}

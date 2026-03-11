@@ -1,0 +1,81 @@
+var counter: i64 = 0
+var score: i64 = 100
+let max_hp: i64 = 999
+
+function int bump_counter() {
+    counter = counter + 1
+    return counter
+}
+
+function int set_score(int val) {
+    score = val
+    return score
+}
+
+function int main() {
+    print("=== globals test ===\n")
+
+    // test 1: read initial value
+    if counter == 0 {
+        print("PASS: counter initial == 0\n")
+    }
+    if counter != 0 {
+        print("FAIL: counter initial != 0\n")
+    }
+
+    // test 2: read initial value (non-zero)
+    if score == 100 {
+        print("PASS: score initial == 100\n")
+    }
+    if score != 100 {
+        print("FAIL: score initial != 100\n")
+    }
+
+    // test 3: write from main
+    counter = 42
+    if counter == 42 {
+        print("PASS: counter = 42 works\n")
+    }
+    if counter != 42 {
+        print("FAIL: counter = 42 broken\n")
+    }
+
+    // test 4: write from another function
+    bump_counter()
+    if counter == 43 {
+        print("PASS: bump_counter -> 43\n")
+    }
+    if counter != 43 {
+        print("FAIL: bump_counter wrong\n")
+    }
+
+    // test 5: multiple bumps
+    bump_counter()
+    bump_counter()
+    if counter == 45 {
+        print("PASS: 2 more bumps -> 45\n")
+    }
+    if counter != 45 {
+        print("FAIL: bumps wrong\n")
+    }
+
+    // test 6: set from function
+    set_score(9999)
+    if score == 9999 {
+        print("PASS: set_score(9999) works\n")
+    }
+    if score != 9999 {
+        print("FAIL: set_score broken\n")
+    }
+
+    // test 7: immutable global (let) reads correctly
+    if max_hp == 999 {
+        print("PASS: let max_hp == 999\n")
+    }
+    if max_hp != 999 {
+        print("FAIL: let max_hp wrong\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

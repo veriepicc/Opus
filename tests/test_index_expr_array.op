@@ -1,0 +1,58 @@
+// verify arr[i] syntax works with heap arrays
+
+function int main() {
+    alloc_console()
+    print("=== IndexExpr with heap arrays ===\n")
+
+    let arr = array_new(5)
+    array_set(arr, 0, 100)
+    array_set(arr, 1, 200)
+    array_set(arr, 2, 300)
+    array_set(arr, 3, 400)
+    array_set(arr, 4, 500)
+
+    // test 1: arr[0] via IndexExpr
+    let v0 = arr[0]
+    if v0 != 100 {
+        print("FAIL test 1: arr[0] expected 100\n")
+        return 1
+    }
+    print("PASS test 1: arr[0] == 100\n")
+
+    // test 2: arr[2]
+    let v2 = arr[2]
+    if v2 != 300 {
+        print("FAIL test 2: arr[2] expected 300\n")
+        return 2
+    }
+    print("PASS test 2: arr[2] == 300\n")
+
+    // test 3: arr[4]
+    let v4 = arr[4]
+    if v4 != 500 {
+        print("FAIL test 3: arr[4] expected 500\n")
+        return 3
+    }
+    print("PASS test 3: arr[4] == 500\n")
+
+    // test 4: use index in expression
+    let sum = arr[0] + arr[1]
+    if sum != 300 {
+        print("FAIL test 4: arr[0]+arr[1] expected 300\n")
+        return 4
+    }
+    print("PASS test 4: arr[0]+arr[1] == 300\n")
+
+    // test 5: index with variable
+    var idx = 3
+    let v3 = arr[idx]
+    if v3 != 400 {
+        print("FAIL test 5: arr[idx] expected 400\n")
+        return 5
+    }
+    print("PASS test 5: arr[idx] == 400\n")
+
+    array_free(arr)
+    print("=== all IndexExpr tests passed ===\n")
+    return 0
+}

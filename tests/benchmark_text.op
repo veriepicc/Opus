@@ -1,0 +1,147 @@
+struct Agent {
+    i64 health
+    i64 mana
+    i64 x
+    i64 y
+    i64 score
+    i64 cooldown
+}
+
+function i64 main() {
+    var a = Agent { health: 90, mana: 45, x: 4, y: 7, score: 0, cooldown: 0 }
+    var b = Agent { health: 120, mana: 30, x: 9, y: 3, score: 4, cooldown: 1 }
+    var c = Agent { health: 70, mana: 80, x: 2, y: 11, score: 2, cooldown: 2 }
+    var d = Agent { health: 140, mana: 25, x: 6, y: 5, score: 8, cooldown: 0 }
+    var total: i64 = 0
+    var i: i64 = 0
+
+    while i < 3000000 {
+        let slot: i64 = i & 3
+
+        if slot == 0 {
+            let metric: i64 = a.health + a.mana + i
+            var local: i64 = metric + b.cooldown
+            if a.health < b.health {
+                a.score = a.score + metric
+                a.mana = a.mana + 2
+                b.health = b.health - 1
+                local = local + a.x
+            } else {
+                a.score = a.score + a.cooldown
+                a.cooldown = a.cooldown + 1
+                a.x = a.x + 1
+                local = local - b.y
+            }
+            if a.cooldown < 3 {
+                a.y = a.y + 1
+            } else {
+                a.mana = a.mana - 1
+                a.y = a.y - 1
+            }
+            total = total + local
+            if a.health < c.health {
+                total = total + a.x + c.y
+                c.cooldown = c.cooldown + 1
+            } else {
+                total = total - b.mana
+                d.score = d.score + 2
+            }
+        } else {
+            if slot == 1 {
+                let metric: i64 = b.health + b.mana + i
+                var local: i64 = metric + c.cooldown
+                if b.health < c.health {
+                    b.score = b.score + metric
+                    b.mana = b.mana + 2
+                    c.health = c.health - 1
+                    local = local + b.x
+                } else {
+                    b.score = b.score + b.cooldown
+                    b.cooldown = b.cooldown + 1
+                    b.x = b.x + 1
+                    local = local - c.y
+                }
+                if b.cooldown < 3 {
+                    b.y = b.y + 1
+                } else {
+                    b.mana = b.mana - 1
+                    b.y = b.y - 1
+                }
+                total = total + local
+                if b.mana < d.mana {
+                    b.health = b.health + 1
+                    total = total + b.cooldown
+                } else {
+                    c.score = c.score + b.x
+                    total = total - c.y
+                }
+            } else {
+                if slot == 2 {
+                    let metric: i64 = c.health + c.mana + i
+                    var local: i64 = metric + d.cooldown
+                    if c.health < d.health {
+                        c.score = c.score + metric
+                        c.mana = c.mana + 2
+                        d.health = d.health - 1
+                        local = local + c.x
+                    } else {
+                        c.score = c.score + c.cooldown
+                        c.cooldown = c.cooldown + 1
+                        c.x = c.x + 1
+                        local = local - d.y
+                    }
+                    if c.cooldown < 3 {
+                        c.y = c.y + 1
+                    } else {
+                        c.mana = c.mana - 1
+                        c.y = c.y - 1
+                    }
+                    total = total + local
+                    if c.score < a.score {
+                        c.mana = c.mana + 3
+                        total = total + d.x
+                    } else {
+                        a.health = a.health - 1
+                        total = total - a.cooldown
+                    }
+                } else {
+                    let metric: i64 = d.health + d.mana + i
+                    var local: i64 = metric + a.cooldown
+                    if d.health < a.health {
+                        d.score = d.score + metric
+                        d.mana = d.mana + 2
+                        a.health = a.health - 1
+                        local = local + d.x
+                    } else {
+                        d.score = d.score + d.cooldown
+                        d.cooldown = d.cooldown + 1
+                        d.x = d.x + 1
+                        local = local - a.y
+                    }
+                    if d.cooldown < 3 {
+                        d.y = d.y + 1
+                    } else {
+                        d.mana = d.mana - 1
+                        d.y = d.y - 1
+                    }
+                    total = total + local
+                    if d.health < b.health {
+                        d.score = d.score + 5
+                        total = total + a.y
+                    } else {
+                        b.mana = b.mana - 1
+                        total = total - d.x
+                    }
+                }
+            }
+        }
+
+        i = i + 1
+    }
+
+    free(a)
+    free(b)
+    free(c)
+    free(d)
+    return total & 255
+}

@@ -1,0 +1,82 @@
+function int add(int a, int b) {
+    return a + b
+}
+
+function int mul(int a, int b) {
+    return a * b
+}
+
+function int get_count() {
+    return 5
+}
+
+class Pair {
+    int a
+    int b
+}
+
+function int main() {
+    print("=== nested expressions test ===\n")
+
+    // test 1: complex expression as function arg
+    let r1 = add(2 + 3 * 4, 1)
+    if r1 == 15 {
+        print("PASS: add(2+3*4, 1) == 15\n")
+    }
+    if r1 != 15 {
+        print("FAIL: add(2+3*4, 1) wrong\n")
+    }
+
+    // test 2: function call in if condition
+    var passed = 0
+    if get_count() > 3 {
+        passed = 1
+    }
+    if passed == 1 {
+        print("PASS: if get_count() > 3 works\n")
+    }
+    if passed != 1 {
+        print("FAIL: if get_count() > 3 wrong\n")
+    }
+
+    // test 3: function call in while condition
+    var wcount = 0
+    var widx = 0
+    while widx < get_count() {
+        wcount += 1
+        widx += 1
+    }
+    if wcount == 5 {
+        print("PASS: while widx < get_count() ran 5 times\n")
+    }
+    if wcount != 5 {
+        print("FAIL: while with fn call wrong\n")
+    }
+
+    // test 4: nested function calls
+    let r4 = add(mul(2, 3), mul(4, 5))
+    if r4 == 26 {
+        print("PASS: add(mul(2,3), mul(4,5)) == 26\n")
+    }
+    if r4 != 26 {
+        print("FAIL: nested calls wrong\n")
+    }
+
+    // test 5: struct with computed field
+    auto p = Pair { a: 3 + 4, b: mul(2, 5) }
+    if p.a == 7 {
+        print("PASS: struct field 3+4 == 7\n")
+    }
+    if p.a != 7 {
+        print("FAIL: struct computed field wrong\n")
+    }
+    if p.b == 10 {
+        print("PASS: struct field mul(2,5) == 10\n")
+    }
+    if p.b != 10 {
+        print("FAIL: struct fn field wrong\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

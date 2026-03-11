@@ -1,0 +1,56 @@
+function int foo() {
+    return 10
+}
+
+function int bar() {
+    return 20
+}
+
+function int identity(int x) {
+    return x
+}
+
+function int main() {
+    print("=== register preservation test ===\n")
+
+    // test 1: foo() + bar() - both return values must survive
+    let r1 = foo() + bar()
+    if r1 == 30 {
+        print("PASS: foo() + bar() == 30\n")
+    }
+    if r1 != 30 {
+        print("FAIL: foo() + bar() wrong\n")
+    }
+
+    // test 2: nested call as argument
+    let r2 = identity(foo())
+    if r2 == 10 {
+        print("PASS: identity(foo()) == 10\n")
+    }
+    if r2 != 10 {
+        print("FAIL: identity(foo()) wrong\n")
+    }
+
+    // test 3: local + call + local in expression chain
+    let a = 5
+    let b = 7
+    let r3 = a + foo() + b
+    if r3 == 22 {
+        print("PASS: 5 + foo() + 7 == 22\n")
+    }
+    if r3 != 22 {
+        print("FAIL: a + foo() + b wrong\n")
+    }
+
+    // test 4: multiple calls in one expression
+    let r4 = foo() + bar() + foo()
+    if r4 == 40 {
+        print("PASS: foo()+bar()+foo() == 40\n")
+    }
+    if r4 != 40 {
+        print("FAIL: foo()+bar()+foo() wrong\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

@@ -1,0 +1,65 @@
+class Point {
+    int px
+    int py
+}
+
+class Container {
+    int id
+    pos: Point
+}
+
+function int main() {
+    print("=== chained field access test ===\n")
+
+    auto pt = Point { px: 42, py: 99 }
+    auto c = Container { id: 1, pos: pt }
+
+    // test 1: read chained field
+    let v = c.pos.px
+    if v == 42 {
+        print("PASS: c.pos.px == 42\n")
+    }
+    if v != 42 {
+        print("FAIL: c.pos.px wrong\n")
+    }
+
+    // test 2: read second chained field
+    let e = c.pos.py
+    if e == 99 {
+        print("PASS: c.pos.py == 99\n")
+    }
+    if e != 99 {
+        print("FAIL: c.pos.py wrong\n")
+    }
+
+    // test 3: write chained field
+    c.pos.px = 100
+    let v2 = c.pos.px
+    if v2 == 100 {
+        print("PASS: c.pos.px = 100 write works\n")
+    }
+    if v2 != 100 {
+        print("FAIL: c.pos.px write wrong\n")
+    }
+
+    // test 4: write doesnt corrupt other fields
+    let e2 = c.pos.py
+    if e2 == 99 {
+        print("PASS: py still 99 after px write\n")
+    }
+    if e2 != 99 {
+        print("FAIL: py corrupted after px write\n")
+    }
+
+    // test 5: direct field still works
+    let bid = c.id
+    if bid == 1 {
+        print("PASS: c.id still 1\n")
+    }
+    if bid != 1 {
+        print("FAIL: c.id corrupted\n")
+    }
+
+    print("=== done ===\n")
+    return 0
+}

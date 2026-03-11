@@ -657,6 +657,8 @@ inline RuntimeFunctions& get_runtime() {
 struct CompileOptions {
     std::string_view source;
     std::string_view filename = "<input>";
+    std::string project_root;
+    std::vector<std::string> import_search_paths;
     bool dll_mode = false;
     ast::HealingMode healing_mode = ast::HealingMode::Off;
     bool exe_mode = false;
@@ -687,6 +689,8 @@ public:
     Result compile(const CompileOptions& opts) {
         auto source = opts.source;
         auto filename = opts.filename;
+        auto project_root = opts.project_root;
+        auto import_search_paths = opts.import_search_paths;
         auto dll_mode = opts.dll_mode;
         auto healing_mode = opts.healing_mode;
         auto exe_mode = opts.exe_mode;
@@ -789,6 +793,8 @@ public:
         codegen.set_dll_mode(dll_mode || exe_mode);
         
         codegen.set_source_path(std::string(filename));
+        codegen.set_project_root(project_root);
+        codegen.set_import_search_paths(import_search_paths);
         
         // pe layout needs to know startup code size so codegen offsets are correct
         if (dll_mode || exe_mode) {
