@@ -1,0 +1,8 @@
+var global_counter: i64 = 0
+
+function int main() {
+    parallel for i in range(0, 8) {
+        global_counter = global_counter + i
+    }
+    return 0
+}

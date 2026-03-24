@@ -162,7 +162,11 @@ struct Type {
         }
         if (auto* arr = std::get_if<ArrayType>(&kind)) {
             if (arr->size) {
-                return arr->element->size_bytes() * (*arr->size);
+                std::size_t elem_size = arr->element->size_bytes();
+                if (*arr->size != 0 && elem_size > (std::numeric_limits<std::size_t>::max)() / *arr->size) {
+                    throw std::overflow_error("array size overflow in Type::size_bytes");
+                }
+                return elem_size * (*arr->size);
             }
             return 16; // slice = ptr + len
         }
@@ -250,7 +254,7 @@ struct SourceSpan {
     SourceLoc end;
 
     std::string to_string() const {
-        return start.to_string();
+        return std::format("{}-{}:{}", start.to_string(), end.line, end.column);
     }
 };
 
@@ -364,4 +368,3 @@ constexpr std::optional<PrimitiveType> friendly_type_to_primitive(std::string_vi
 }
 
 } // namespace opus
-

@@ -550,10 +550,11 @@ function int main() {
 
 ```c
 // shared counter with atomics
-function void increment_counter(ptr counter) {
+function int increment_counter(ptr counter) {
     for i in range(0, 1000) {
         atomic_add(counter, 1)
     }
+    return 0
 }
 
 function int main() {

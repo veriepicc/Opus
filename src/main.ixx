@@ -68,6 +68,15 @@ A Simple Programming Language
     return {};
 }
 
+[[nodiscard]] static std::optional<std::size_t> require_main_offset(
+    const opus::Compiler::Result& result
+) {
+    if (auto it = result.function_offsets.find("main"); it != result.function_offsets.end()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
     std::ifstream file(filename);
     if (!file) {
@@ -107,16 +116,16 @@ A Simple Programming Language
             
             if (as_dll) {
                 outname += ".dll";
-                
-                std::size_t main_offset = 0;
-                if (auto it = result.function_offsets.find("main"); it != result.function_offsets.end()) {
-                    main_offset = it->second;
+                auto main_offset = require_main_offset(result);
+                if (!main_offset) {
+                    std::print(std::cerr, "\033[1;91merror\033[0m: no 'main' function found; cannot generate a DLL entry point\n");
+                    return 1;
                 }
                 
                 opus::pe::DllGenerator dll_gen;
                 auto dll_bytes = dll_gen.generate({
                     .code = result.code,
-                    .main_offset = main_offset,
+                    .main_offset = *main_offset,
                     .alloc_console = true,
                     .iat_fixups = result.iat_fixups,
                     .healing_mode = opus::ast::HealingMode::Off,
@@ -140,16 +149,16 @@ A Simple Programming Language
                 
             } else {
                 outname += ".exe";
-                
-                std::size_t main_offset = 0;
-                if (auto it = result.function_offsets.find("main"); it != result.function_offsets.end()) {
-                    main_offset = it->second;
+                auto main_offset = require_main_offset(result);
+                if (!main_offset) {
+                    std::print(std::cerr, "\033[1;91merror\033[0m: no 'main' function found; cannot generate an executable entry point\n");
+                    return 1;
                 }
                 
                 opus::pe::DllGenerator exe_gen;
                 auto exe_bytes = exe_gen.generate({
                     .code = result.code,
-                    .main_offset = main_offset,
+                    .main_offset = *main_offset,
                     .alloc_console = false,
                     .iat_fixups = result.iat_fixups,
                     .healing_mode = opus::ast::HealingMode::Off,
@@ -284,9 +293,11 @@ A Simple Programming Language
         std::filesystem::path output_path = config.project_dir / outname;
         
         if (as_dll || as_exe) {
-            std::size_t main_offset = 0;
-            if (auto it = result.function_offsets.find("main"); it != result.function_offsets.end()) {
-                main_offset = it->second;
+            auto main_offset = require_main_offset(result);
+            if (!main_offset) {
+                std::print(std::cerr, "\033[1;91merror\033[0m: no 'main' function found; cannot generate a {} entry point\n",
+                    as_exe ? "program" : "DLL");
+                return 1;
             }
             
             std::string debug_source = config.debug ? source : "";
@@ -294,7 +305,7 @@ A Simple Programming Language
             opus::pe::DllGenerator pe_gen;
             auto pe_bytes = pe_gen.generate({
                 .code = result.code,
-                .main_offset = main_offset,
+                .main_offset = *main_offset,
                 .alloc_console = as_dll,
                 .iat_fixups = result.iat_fixups,
                 .debug_source = debug_source,
@@ -407,4 +418,3 @@ export int main(int argc, char* argv[]) {
 
     return run_file(filename, run, dll);
 }
-

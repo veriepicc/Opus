@@ -43,7 +43,6 @@ std::expected<ProjectConfig, std::string> load_project(const std::filesystem::pa
         for (const auto& err : result.error()) {
             errors += err.to_string() + "\n";
         }
-        std::println("parse errors:\n{}", errors);
         return std::unexpected(errors);
     }
     
@@ -52,18 +51,23 @@ std::expected<ProjectConfig, std::string> load_project(const std::filesystem::pa
     
     bool found = false;
     for (const auto& decl : result->decls) {
-        if (decl->is<ast::ProjectDecl>()) {
-            const auto& proj = decl->as<ast::ProjectDecl>();
-            config.name = proj.name;
-            config.entry = proj.entry;
-            config.output = proj.output;
-            config.mode = proj.mode;
-            config.includes = proj.includes;
-            config.debug = proj.debug;
-            config.healing = proj.healing;
-            found = true;
-            break;
+        if (!decl->is<ast::ProjectDecl>()) {
+            return std::unexpected("unexpected top-level declaration in opus.project");
         }
+
+        if (found) {
+            return std::unexpected("multiple project declarations found in opus.project");
+        }
+
+        const auto& proj = decl->as<ast::ProjectDecl>();
+        config.name = proj.name;
+        config.entry = proj.entry;
+        config.output = proj.output;
+        config.mode = proj.mode;
+        config.includes = proj.includes;
+        config.debug = proj.debug;
+        config.healing = proj.healing;
+        found = true;
     }
     
     if (!found) {

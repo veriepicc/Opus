@@ -1,0 +1,12 @@
+function int main() {
+    let slot = malloc(8)
+    mem_write(slot, 0)
+
+    print_int(atomic_cas(slot, 0, 7))
+    print_int(mem_read(slot))
+    print_int(atomic_cas(slot, 0, 9))
+    print_int(mem_read(slot))
+
+    free(slot)
+    return 0
+}

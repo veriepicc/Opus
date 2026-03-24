@@ -178,10 +178,10 @@ class DiagnosticSink {
     std::vector<RichError> warnings_;
 public:
     void emit(RichError err) {
-        if (err.severity == Severity::Warning)
-            warnings_.push_back(std::move(err));
-        else
+        if (err.severity == Severity::Error)
             errors_.push_back(std::move(err));
+        else
+            warnings_.push_back(std::move(err));
     }
 
     bool has_errors() const { return !errors_.empty(); }

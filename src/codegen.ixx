@@ -67,6 +67,10 @@ struct RuntimePointers {
     // memory
     RtI64I64    malloc_fn = nullptr;
     RtVoidI64   free_fn = nullptr;
+    RtI64I64I64 thread_spawn = nullptr;
+    RtI64I64I64 thread_wait = nullptr;
+    RtI64I64    close_handle = nullptr;
+    std::int64_t* jit_global_base_slot = nullptr;
 
     // arrays
     RtI64I64    array_new = nullptr;
@@ -253,7 +257,13 @@ public:
                     .name = fn.name,
                     .code_offset = 0,
                     .code_size = 0,
-                    .return_type = fn.return_type.clone()
+                    .return_type = fn.return_type.clone(),
+                    .param_types = [&fn] {
+                        std::vector<Type> params;
+                        params.reserve(fn.params.size());
+                        for (const auto& param : fn.params) params.push_back(param.type.clone());
+                        return params;
+                    }()
                 };
             } else if (decl->is<ast::StructDecl>()) {
                 if (!generate_struct_decl(decl->as<ast::StructDecl>())) return false;
@@ -265,7 +275,7 @@ public:
         // if we have globals, reserve 8 bytes at the start of the code buffer
         // for the global base pointer (rip-relative storage)
         // emit a jmp over it so execution doesnt hit the data bytes
-        if (!globals_.empty()) {
+        if (!globals_.empty() && dll_mode_) {
             std::size_t jmp_over = emit_.jmp_rel32_placeholder();
             global_base_slot_ = emit_.buffer().pos();
             has_global_slot_ = true;
@@ -363,8 +373,9 @@ private:
     static constexpr std::int32_t CTX_ARG0    = 0x08;
     static constexpr std::int32_t CTX_ARG1    = 0x10;
     static constexpr std::int32_t CTX_ARG2    = 0x18;
-    static constexpr std::int32_t CTX_RESULT  = 0x20;
-    static constexpr std::int32_t CTX_SIZE    = 0x28;
+    static constexpr std::int32_t CTX_ARG3    = 0x20;
+    static constexpr std::int32_t CTX_RESULT  = 0x28;
+    static constexpr std::int32_t CTX_SIZE    = 0x30;
 
     // shared state between pfor helper functions so we dont pass 15 args around
     struct PforLayout {
@@ -536,6 +547,130 @@ private:
         emit_.sub_imm(x64::Reg::RSP, 32);
         emit_iat_call_raw(iat_offset);
         emit_.add_smart(x64::Reg::RSP, 32);
+    }
+
+    [[nodiscard]] bool emit_runtime_alloc_bytes(std::int32_t size) {
+        if (size <= 0) {
+            error("internal error: attempted to allocate non-positive byte count");
+            return false;
+        }
+
+        if (dll_mode_) {
+            emit_.sub_imm(x64::Reg::RSP, 32);
+            emit_iat_call_raw(pe::iat::GetProcessHeap);
+            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+            emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
+            emit_.mov_imm32(x64::Reg::R8, size);
+            emit_iat_call_raw(pe::iat::HeapAlloc);
+            emit_.add_smart(x64::Reg::RSP, 32);
+            return true;
+        }
+
+        if (!rt_.malloc_fn) {
+            error("spawn requires malloc support in JIT mode");
+            return false;
+        }
+
+        emit_.mov_imm32(x64::Reg::RCX, size);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.malloc_fn));
+        emit_.call(x64::Reg::RAX);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_runtime_free_reg(x64::Reg ptr_reg) {
+        if (dll_mode_) {
+            emit_.sub_imm(x64::Reg::RSP, 32);
+            emit_.mov(x64::Reg::R8, ptr_reg);
+            emit_iat_call_raw(pe::iat::GetProcessHeap);
+            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+            emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
+            emit_iat_call_raw(pe::iat::HeapFree);
+            emit_.add_smart(x64::Reg::RSP, 32);
+            return true;
+        }
+
+        if (!rt_.free_fn) {
+            error("spawn requires free support in JIT mode");
+            return false;
+        }
+
+        emit_.mov(x64::Reg::RCX, ptr_reg);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.free_fn));
+        emit_.call(x64::Reg::RAX);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_thread_spawn_call() {
+        if (dll_mode_) {
+            emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+            emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);
+            emit_.sub_imm(x64::Reg::RSP, 48); // shadow + 2 stack args
+            emit_.mov_imm32(x64::Reg::RAX, 0);
+            emit_.mov_store(x64::Reg::RSP, 32, x64::Reg::RAX);
+            emit_.mov_store(x64::Reg::RSP, 40, x64::Reg::RAX);
+            emit_iat_call_raw(pe::iat::CreateThread);
+            emit_.add_smart(x64::Reg::RSP, 48);
+            return true;
+        }
+
+        if (!rt_.thread_spawn) {
+            error("spawn is not available in JIT mode on this host");
+            return false;
+        }
+
+        emit_.mov(x64::Reg::RCX, x64::Reg::R8);
+        emit_.mov(x64::Reg::RDX, x64::Reg::R9);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.thread_spawn));
+        emit_.call(x64::Reg::RAX);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_thread_wait_call() {
+        if (dll_mode_) {
+            emit_.mov_imm32(x64::Reg::RDX, -1);
+            emit_.sub_imm(x64::Reg::RSP, 32);
+            emit_iat_call_raw(pe::iat::WaitForSingleObject);
+            emit_.add_smart(x64::Reg::RSP, 32);
+            return true;
+        }
+
+        if (!rt_.thread_wait) {
+            error("await is not available in JIT mode on this host");
+            return false;
+        }
+
+        emit_.mov_imm32(x64::Reg::RDX, -1);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.thread_wait));
+        emit_.call(x64::Reg::RAX);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_close_handle_call() {
+        if (dll_mode_) {
+            emit_.sub_imm(x64::Reg::RSP, 32);
+            emit_iat_call_raw(pe::iat::CloseHandle);
+            emit_.add_smart(x64::Reg::RSP, 32);
+            return true;
+        }
+
+        if (!rt_.close_handle) {
+            error("CloseHandle is not available in JIT mode on this host");
+            return false;
+        }
+
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.close_handle));
+        emit_.call(x64::Reg::RAX);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        return true;
     }
     
     // emit E8 rel32 call to a startup routine (print, set_title, alloc_console, etc)
@@ -965,6 +1100,42 @@ private:
         emit_.buffer().patch32(site, static_cast<std::uint32_t>(rel));
     }
 
+    [[nodiscard]] bool emit_load_global_base_ptr(x64::Reg dst) {
+        if (dll_mode_) {
+            if (!has_global_slot_) return false;
+            emit_lea_rip_slot(dst);
+            emit_.mov_load(dst, dst, 0);
+            return true;
+        }
+
+        if (!rt_.jit_global_base_slot) {
+            error("JIT global base slot is unavailable");
+            return false;
+        }
+
+        emit_.mov_imm64(dst, reinterpret_cast<std::uint64_t>(rt_.jit_global_base_slot));
+        emit_.mov_load(dst, dst, 0);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_store_global_base_ptr(x64::Reg value_reg) {
+        if (dll_mode_) {
+            if (!has_global_slot_) return false;
+            emit_lea_rip_slot(x64::Reg::RCX);
+            emit_.mov_store(x64::Reg::RCX, 0, value_reg);
+            return true;
+        }
+
+        if (!rt_.jit_global_base_slot) {
+            error("JIT global base slot is unavailable");
+            return false;
+        }
+
+        emit_.mov_imm64(x64::Reg::RCX, reinterpret_cast<std::uint64_t>(rt_.jit_global_base_slot));
+        emit_.mov_store(x64::Reg::RCX, 0, value_reg);
+        return true;
+    }
+
     // extract struct/class name from a Type, handling both StructType and string variants
     std::optional<std::string> get_struct_name(const Type& type) {
         if (std::holds_alternative<StructType>(type.kind))
@@ -1313,7 +1484,13 @@ private:
                     .name = fn.name,
                     .code_offset = 0,
                     .code_size = 0,
-                    .return_type = fn.return_type.clone()
+                    .return_type = fn.return_type.clone(),
+                    .param_types = [&fn] {
+                        std::vector<Type> params;
+                        params.reserve(fn.params.size());
+                        for (const auto& param : fn.params) params.push_back(param.type.clone());
+                        return params;
+                    }()
                 };
             } else if (decl->is<ast::StructDecl>()) {
                 if (!generate_struct_decl(decl->as<ast::StructDecl>())) {
@@ -1382,23 +1559,11 @@ private:
         push_scope();
         std::size_t frame_patch = emit_.prologue_patchable();
         
-        if (dll_mode_ && next_global_offset_ > 0) {
-            // allocate global storage via HeapAlloc
-            emit_.sub_imm(x64::Reg::RSP, 32);
+        if (next_global_offset_ > 0) {
+            if (!emit_runtime_alloc_bytes(static_cast<std::int32_t>(next_global_offset_))) return;
             
-            emit_iat_call_raw(pe::iat::GetProcessHeap);
-            
-            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
-            emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
-            emit_.mov_imm32(x64::Reg::R8, static_cast<std::int32_t>(next_global_offset_));
-            
-            emit_iat_call_raw(pe::iat::HeapAlloc);
-            
-            emit_.add_smart(x64::Reg::RSP, 32);
-            
-            // store base pointer to rip-relative slot so other functions can find it
-            emit_lea_rip_slot(x64::Reg::RCX);
-            emit_.mov_store(x64::Reg::RCX, 0, x64::Reg::RAX);
+            // store base pointer so other functions can find it
+            if (!emit_store_global_base_ptr(x64::Reg::RAX)) return;
             
             // run initializers
             for (const auto& name : global_order_) {
@@ -1408,9 +1573,8 @@ private:
                     if (!generate_expr(*gv.init)) return;
                     emit_.mov(x64::Reg::RCX, x64::Reg::RAX); // save value
                     
-                    // reload base from slot
-                    emit_lea_rip_slot(x64::Reg::RAX);
-                    emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0); // deref: rax = *slot
+                    // reload base from the active globals slot
+                    if (!emit_load_global_base_ptr(x64::Reg::RAX)) return;
                     
                     // store value at base + offset
                     emit_.mov_store(x64::Reg::RAX, static_cast<std::int32_t>(gv.offset), x64::Reg::RCX);
@@ -1458,7 +1622,14 @@ private:
             // Register function info first
             functions_[mangled_name] = FunctionInfo{
                 .name = mangled_name,
-                .return_type = method.return_type.clone()
+                .return_type = method.return_type.clone(),
+                .param_types = [&method] {
+                    std::vector<Type> params;
+                    params.reserve(method.params.size() + 1);
+                    params.push_back(Type::make_primitive(PrimitiveType::Ptr));
+                    for (const auto& param : method.params) params.push_back(param.type.clone());
+                    return params;
+                }()
             };
             
             // Generate the method code
@@ -1908,6 +2079,9 @@ private:
             if (use_leaf_plan) {
                 if (auto reg_it = leaf_plan.param_regs.find(param.name); reg_it != leaf_plan.param_regs.end()) {
                     register_bindings_[&sym] = reg_it->second;
+                    if (!emit_coerce_reg_to_type(reg_it->second, sym.type)) {
+                        return false;
+                    }
                     continue;
                 }
             }
@@ -1915,12 +2089,19 @@ private:
             // spill param register to stack slot
             if (i < 4) {
                 x64::Reg param_reg = x64::ARG_REGS[i];
-                emit_.mov_store(x64::Reg::RBP, sym.stack_offset, param_reg);
+                emit_.mov(x64::Reg::RAX, param_reg);
+                if (!emit_coerce_rax_to_type(sym.type)) {
+                    return false;
+                }
+                emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
             } else {
                 // stack params: caller puts them at [RSP+32+(i-4)*8] before call
                 // after push rbp + mov rbp,rsp thats [RBP+16+i*8]
                 std::int32_t src_offset = 16 + static_cast<std::int32_t>(i) * 8;
                 emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, src_offset);
+                if (!emit_coerce_rax_to_type(sym.type)) {
+                    return false;
+                }
                 emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
             }
         }
@@ -2259,9 +2440,13 @@ private:
             return true;
         }
         if (let.init) {
-            if (let.init.value()->is<ast::StructExpr>()) {
+            if (auto inferred = infer_expr_type(*let.init.value())) {
+                type = std::move(*inferred);
+            } else if (let.init.value()->is<ast::StructExpr>()) {
                 const auto& struct_lit = let.init.value()->as<ast::StructExpr>();
                 type.kind = struct_lit.name;
+            } else if (let.init.value()->is<ast::ArrayExpr>()) {
+                type = Type::make_primitive(PrimitiveType::Ptr);
             } else {
                 type = Type::make_primitive(PrimitiveType::I64);
             }
@@ -2269,6 +2454,365 @@ private:
         }
         error("cannot infer type for variable without type or initializer");
         return false;
+    }
+
+    [[nodiscard]] bool is_bool_type(const Type& type) const {
+        if (auto* p = std::get_if<PrimitiveType>(&type.kind)) {
+            return *p == PrimitiveType::Bool;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool is_pointer_like_type(const Type& type) const {
+        return std::holds_alternative<PointerType>(type.kind) ||
+               std::holds_alternative<FunctionType>(type.kind) ||
+               std::holds_alternative<StructType>(type.kind) ||
+               std::holds_alternative<std::string>(type.kind);
+    }
+
+    [[nodiscard]] std::optional<Type> lookup_struct_field_type(std::string_view struct_name, std::string_view field_name) const {
+        auto it = structs_.find(std::string(struct_name));
+        if (it == structs_.end()) {
+            return std::nullopt;
+        }
+        for (const auto& [fname, ftype] : it->second.fields) {
+            if (fname == field_name) {
+                return ftype.clone();
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<Type> lookup_field_expr_type(const ast::FieldExpr& field) {
+        std::optional<Type> base_type;
+
+        if (field.base->is<ast::IdentExpr>()) {
+            const auto& name = field.base->as<ast::IdentExpr>().name;
+            if (current_scope_) {
+                if (Symbol* sym = current_scope_->lookup(name)) {
+                    base_type = sym->type.clone();
+                } else if (const ast::Expr* inlined = current_scope_->lookup_inline(name)) {
+                    base_type = infer_expr_type(*inlined);
+                }
+            }
+            if (!base_type) {
+                if (auto it = globals_.find(name); it != globals_.end()) {
+                    base_type = it->second.type.clone();
+                }
+            }
+        } else if (field.base->is<ast::FieldExpr>()) {
+            base_type = lookup_field_expr_type(field.base->as<ast::FieldExpr>());
+        }
+
+        if (!base_type) {
+            return std::nullopt;
+        }
+
+        auto struct_name = get_struct_name(*base_type);
+        if (!struct_name) {
+            return std::nullopt;
+        }
+
+        return lookup_struct_field_type(*struct_name, field.field);
+    }
+
+    [[nodiscard]] std::optional<Type> infer_expr_type(const ast::Expr& expr) {
+        return std::visit(overloaded{
+            [&](const ast::LiteralExpr& e) -> std::optional<Type> {
+                return e.type.clone();
+            },
+            [&](const ast::IdentExpr& e) -> std::optional<Type> {
+                if (current_scope_) {
+                    if (Symbol* sym = current_scope_->lookup(e.name)) {
+                        return sym->type.clone();
+                    }
+                    if (const ast::Expr* inlined = current_scope_->lookup_inline(e.name)) {
+                        return infer_expr_type(*inlined);
+                    }
+                }
+                if (auto it = globals_.find(e.name); it != globals_.end()) {
+                    return it->second.type.clone();
+                }
+                return std::nullopt;
+            },
+            [&](const ast::UnaryExpr& e) -> std::optional<Type> {
+                if (e.op == ast::UnaryExpr::Op::Not) {
+                    return Type::make_primitive(PrimitiveType::Bool);
+                }
+                return infer_expr_type(*e.operand);
+            },
+            [&](const ast::BinaryExpr& e) -> std::optional<Type> {
+                using Op = ast::BinaryExpr::Op;
+                switch (e.op) {
+                    case Op::Eq: case Op::Ne:
+                    case Op::Lt: case Op::Le:
+                    case Op::Gt: case Op::Ge:
+                    case Op::And: case Op::Or:
+                        return Type::make_primitive(PrimitiveType::Bool);
+                    case Op::Assign:
+                    case Op::AddAssign:
+                    case Op::SubAssign:
+                    case Op::MulAssign:
+                    case Op::DivAssign:
+                    case Op::ModAssign:
+                        return infer_expr_type(*e.lhs);
+                    default:
+                        break;
+                }
+
+                auto lhs = infer_expr_type(*e.lhs);
+                auto rhs = infer_expr_type(*e.rhs);
+                if (lhs && lhs->is_float()) return lhs;
+                if (rhs && rhs->is_float()) return rhs;
+                if (lhs) return lhs;
+                if (rhs) return rhs;
+                return std::nullopt;
+            },
+            [&](const ast::CallExpr& e) -> std::optional<Type> {
+                if (e.callee->is<ast::IdentExpr>()) {
+                    std::string name = resolve_function_name(e.callee->as<ast::IdentExpr>().name);
+                    if (auto it = functions_.find(name); it != functions_.end()) {
+                        return it->second.return_type.clone();
+                    }
+                } else if (e.callee->is<ast::FieldExpr>()) {
+                    const auto& field = e.callee->as<ast::FieldExpr>();
+                    bool base_is_local = field.base->is<ast::IdentExpr>() && current_scope_ &&
+                                         current_scope_->lookup(field.base->as<ast::IdentExpr>().name);
+                    if (!base_is_local) {
+                        if (auto qualified = get_qualified_name(*e.callee)) {
+                            std::string resolved = resolve_function_name(*qualified);
+                            if (auto it = functions_.find(resolved); it != functions_.end()) {
+                                return it->second.return_type.clone();
+                            }
+                        }
+                    }
+                    auto owner_type = resolve_field_type(field);
+                    if (owner_type) {
+                        std::string mangled = *owner_type + "_" + field.field;
+                        if (auto it = functions_.find(mangled); it != functions_.end()) {
+                            return it->second.return_type.clone();
+                        }
+                    }
+                }
+                return std::nullopt;
+            },
+            [&](const ast::IndexExpr& e) -> std::optional<Type> {
+                auto base = infer_expr_type(*e.base);
+                if (!base) return std::nullopt;
+                if (auto* arr = std::get_if<ArrayType>(&base->kind)) {
+                    return arr->element->clone();
+                }
+                if (auto* ptr = std::get_if<PointerType>(&base->kind)) {
+                    return ptr->pointee->clone();
+                }
+                if (is_pointer_like_type(*base)) {
+                    return Type::make_primitive(PrimitiveType::I64);
+                }
+                return std::nullopt;
+            },
+            [&](const ast::FieldExpr& e) -> std::optional<Type> {
+                return lookup_field_expr_type(e);
+            },
+            [&](const ast::CastExpr& e) -> std::optional<Type> {
+                return e.target_type.clone();
+            },
+            [&](const ast::ArrayExpr&) -> std::optional<Type> {
+                return Type::make_primitive(PrimitiveType::Ptr);
+            },
+            [&](const ast::StructExpr& e) -> std::optional<Type> {
+                Type type;
+                type.kind = e.name;
+                return type;
+            },
+            [&](const ast::SpawnExpr&) -> std::optional<Type> {
+                return Type::make_primitive(PrimitiveType::I64);
+            },
+            [&](const ast::AwaitExpr&) -> std::optional<Type> {
+                return Type::make_primitive(PrimitiveType::I64);
+            },
+            [&](const ast::AtomicOpExpr& e) -> std::optional<Type> {
+                if (e.op == ast::AtomicOpExpr::Op::CAS) {
+                    return Type::make_primitive(PrimitiveType::Bool);
+                }
+                return Type::make_primitive(PrimitiveType::I64);
+            },
+            [&](const auto&) -> std::optional<Type> {
+                return std::nullopt;
+            }
+        }, expr.kind);
+    }
+
+    void emit_truncate_or_extend_rax(const Type& target) {
+        if (is_bool_type(target)) {
+            emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+            emit_.setcc(x64::Emitter::CC_NE, x64::Reg::RAX);
+            emit_.movzx_byte(x64::Reg::RAX, x64::Reg::RAX);
+            return;
+        }
+
+        auto* p = std::get_if<PrimitiveType>(&target.kind);
+        if (!p) {
+            return;
+        }
+
+        switch (*p) {
+            case PrimitiveType::I8:
+                emit_.shl_imm(x64::Reg::RAX, 56);
+                emit_.sar_imm(x64::Reg::RAX, 56);
+                return;
+            case PrimitiveType::I16:
+                emit_.shl_imm(x64::Reg::RAX, 48);
+                emit_.sar_imm(x64::Reg::RAX, 48);
+                return;
+            case PrimitiveType::I32:
+                emit_.shl_imm(x64::Reg::RAX, 32);
+                emit_.sar_imm(x64::Reg::RAX, 32);
+                return;
+            case PrimitiveType::U8:
+                emit_.and_imm(x64::Reg::RAX, 0xFF);
+                return;
+            case PrimitiveType::U16:
+                emit_.and_imm(x64::Reg::RAX, 0xFFFF);
+                return;
+            case PrimitiveType::U32:
+                emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xC0); // mov eax, eax
+                return;
+            default:
+                return;
+        }
+    }
+
+    [[nodiscard]] bool emit_convert_rax_f64_bits_to_i64() {
+        emit_.sub_imm(x64::Reg::RSP, 8);
+        emit_.mov_store(x64::Reg::RSP, 0, x64::Reg::RAX);
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x10); emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24); // movsd xmm0, [rsp]
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x2C); emit_.buffer().emit8(0xC0); // cvttsd2si rax, xmm0
+        emit_.add_smart(x64::Reg::RSP, 8);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_convert_rax_i64_to_f64_bits() {
+        emit_.sub_imm(x64::Reg::RSP, 8);
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x2A); emit_.buffer().emit8(0xC0); // cvtsi2sd xmm0, rax
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x11); emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24); // movsd [rsp], xmm0
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 0);
+        emit_.add_smart(x64::Reg::RSP, 8);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_coerce_rax_to_type(const Type& target, const ast::Expr* source_expr = nullptr) {
+        auto source_type = source_expr ? infer_expr_type(*source_expr) : std::nullopt;
+
+        if (target.is_float()) {
+            if (!source_type || !source_type->is_float()) {
+                return emit_convert_rax_i64_to_f64_bits();
+            }
+            return true;
+        }
+
+        if (target.is_integer() || is_bool_type(target) || is_pointer_like_type(target)) {
+            if (source_type && source_type->is_float()) {
+                if (!emit_convert_rax_f64_bits_to_i64()) {
+                    return false;
+                }
+            }
+            emit_truncate_or_extend_rax(target);
+            return true;
+        }
+
+        return true;
+    }
+
+    [[nodiscard]] bool emit_array_new_count(std::size_t count) {
+        if (count > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) {
+            error("array literal is too large");
+            return false;
+        }
+
+        if (dll_mode_) {
+            emit_.mov_imm32(x64::Reg::RAX, static_cast<std::int32_t>(count));
+            emit_.push(x64::Reg::RAX);  // [stack: count]
+
+            emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xC1);
+            emit_.buffer().emit8(0xE0); emit_.buffer().emit8(0x03);
+            emit_.add_smart(x64::Reg::RAX, 16);
+            emit_.push(x64::Reg::RAX);  // [stack: count, total_size]
+
+            emit_.sub_imm(x64::Reg::RSP, 32);
+            emit_iat_call_raw(pe::iat::GetProcessHeap);
+            emit_.add_smart(x64::Reg::RSP, 32);
+
+            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+            emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
+            emit_.pop(x64::Reg::R8);
+
+            emit_.sub_imm(x64::Reg::RSP, 32);
+            emit_iat_call_raw(pe::iat::HeapAlloc);
+            emit_.add_smart(x64::Reg::RSP, 32);
+
+            emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+            emit_.mov_store(x64::Reg::RAX, 0, x64::Reg::RCX);
+
+            emit_.pop(x64::Reg::RCX);
+            emit_.mov_store(x64::Reg::RAX, 8, x64::Reg::RCX);
+
+            emit_.add_smart(x64::Reg::RAX, 16);
+            return true;
+        }
+
+        if (!rt_.array_new) {
+            error("array literal requires array_new support");
+            return false;
+        }
+
+        emit_.mov_imm32(x64::Reg::RCX, static_cast<std::int32_t>(count));
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.array_new));
+        emit_.call(x64::Reg::RAX);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_array_store_imm(x64::Reg arr_reg, std::size_t index, x64::Reg value_reg) {
+        if (index > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) {
+            error("array literal index is too large");
+            return false;
+        }
+
+        if (dll_mode_) {
+            emit_.mov(x64::Reg::R11, arr_reg);
+            std::int64_t byte_offset = static_cast<std::int64_t>(index) * 8;
+            emit_.add_smart(x64::Reg::R11, byte_offset);
+            emit_.mov_store(x64::Reg::R11, 0, value_reg);
+            return true;
+        }
+
+        if (!rt_.array_set) {
+            error("array literal requires array_set support");
+            return false;
+        }
+
+        emit_.mov(x64::Reg::RCX, arr_reg);
+        emit_.mov_imm32(x64::Reg::RDX, static_cast<std::int32_t>(index));
+        emit_.mov(x64::Reg::R8, value_reg);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(rt_.array_set));
+        emit_.call(x64::Reg::RAX);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_coerce_reg_to_type(x64::Reg reg, const Type& target, const ast::Expr* source_expr = nullptr) {
+        if (reg != x64::Reg::RAX) {
+            emit_.mov(x64::Reg::RAX, reg);
+        }
+        if (!emit_coerce_rax_to_type(target, source_expr)) {
+            return false;
+        }
+        if (reg != x64::Reg::RAX) {
+            emit_.mov(reg, x64::Reg::RAX);
+        }
+        return true;
     }
 
     [[nodiscard]] Symbol* define_let_symbol(const ast::LetStmt& let) {
@@ -2291,12 +2835,19 @@ private:
             if (!generate_expr(*let.init.value())) {
                 return false;
             }
+            if (!emit_coerce_rax_to_type(sym.type, let.init.value().get())) {
+                return false;
+            }
+            emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
             if (*bound != x64::Reg::RAX) {
                 emit_.mov(*bound, x64::Reg::RAX);
             }
             return true;
         }
         if (!generate_expr(*let.init.value())) {
+            return false;
+        }
+        if (!emit_coerce_rax_to_type(sym.type, let.init.value().get())) {
             return false;
         }
         emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
@@ -4859,9 +5410,8 @@ private:
         if (it != globals_.end()) {
             const auto& gv = it->second;
 
-            if (has_global_slot_ && dll_mode_) {
-                emit_lea_rip_slot(dst);
-                emit_.mov_load(dst, dst, 0);
+            if ((dll_mode_ && has_global_slot_) || (!dll_mode_ && rt_.jit_global_base_slot)) {
+                if (!emit_load_global_base_ptr(dst)) return false;
                 emit_.mov_load(dst, dst, static_cast<std::int32_t>(gv.offset));
                 return true;
             }
@@ -5124,7 +5674,13 @@ private:
             [&](const ast::CallExpr& e)    { return generate_call(e); },
             [&](const ast::IndexExpr& e)   { return generate_index(e); },
             [&](const ast::FieldExpr& e)   { return generate_field(e); },
-            [&](const ast::CastExpr& e)    { return generate_expr(*e.expr); },
+            [&](const ast::CastExpr& e)    {
+                if (!generate_expr(*e.expr)) {
+                    return false;
+                }
+                return emit_coerce_rax_to_type(e.target_type, e.expr.get());
+            },
+            [&](const ast::ArrayExpr& e)   { return generate_array_literal(e); },
             [&](const ast::StructExpr& e)  { return generate_struct_literal(e); },
             [&](const ast::SpawnExpr& e)   { return generate_spawn(e); },
             [&](const ast::AwaitExpr& e)   { return generate_await(e); },
@@ -5139,33 +5695,11 @@ private:
     // resolve the struct type name that a field expression evaluates to
     // e.g. for `outer.inner` where outer is Outer and inner is of type Inner, returns "Inner"
     std::optional<std::string> resolve_field_type(const ast::FieldExpr& field) {
-        std::string base_struct;
-        
-        if (field.base->is<ast::IdentExpr>()) {
-            const auto& name = field.base->as<ast::IdentExpr>().name;
-            Symbol* sym = current_scope_->lookup(name);
-            if (!sym) return std::nullopt;
-            auto sn = get_struct_name(sym->type);
-            if (!sn) return std::nullopt;
-            base_struct = *sn;
-        } else if (field.base->is<ast::FieldExpr>()) {
-            auto inner = resolve_field_type(field.base->as<ast::FieldExpr>());
-            if (!inner) return std::nullopt;
-            base_struct = *inner;
-        } else {
+        auto field_type = lookup_field_expr_type(field);
+        if (!field_type) {
             return std::nullopt;
         }
-        
-        // look up the field type on base_struct
-        auto it = structs_.find(base_struct);
-        if (it == structs_.end()) return std::nullopt;
-        
-        for (const auto& [fname, ftype] : it->second.fields) {
-            if (fname == field.field) {
-                return get_struct_name(ftype);
-            }
-        }
-        return std::nullopt;
+        return get_struct_name(*field_type);
     }
 
     [[nodiscard]] bool generate_field(const ast::FieldExpr& field) {
@@ -5331,6 +5865,37 @@ private:
         return true;
     }
 
+    [[nodiscard]] bool generate_array_literal(const ast::ArrayExpr& arr) {
+        if (!emit_array_new_count(arr.elements.size())) {
+            return false;
+        }
+
+        emit_.push(x64::Reg::RAX); // keep array pointer on stack
+
+        for (std::size_t i = 0; i < arr.elements.size(); ++i) {
+            if (!generate_expr(*arr.elements[i])) {
+                emit_.pop(x64::Reg::RAX);
+                return false;
+            }
+
+            emit_.mov(x64::Reg::R8, x64::Reg::RAX);
+            emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 0);
+            if (!emit_array_store_imm(x64::Reg::RCX, i, x64::Reg::R8)) {
+                emit_.pop(x64::Reg::RAX);
+                return false;
+            }
+        }
+
+        if (dll_mode_) {
+            emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 0);
+            emit_.mov_imm32(x64::Reg::RAX, static_cast<std::int32_t>(arr.elements.size()));
+            emit_.mov_store(x64::Reg::RCX, -16, x64::Reg::RAX);
+        }
+
+        emit_.pop(x64::Reg::RAX);
+        return true;
+    }
+
     [[nodiscard]] bool generate_index(const ast::IndexExpr& idx) {
         // Generate base address -> RAX
         if (!generate_expr(*idx.base)) return false;
@@ -5345,6 +5910,9 @@ private:
         
         // Add: base + (index * 8)
         emit_.lea_scaled(x64::Reg::RAX, x64::Reg::RCX, x64::Reg::RAX, 8);
+        if (!dll_mode_) {
+            emit_.add_smart(x64::Reg::RAX, 8); // JIT arrays store length at arr[0]
+        }
         
         // Dereference: load value at that address
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);
@@ -5651,11 +6219,19 @@ private:
                 return false;
             }
             auto offset_opt = struct_it->second.get_field_offset(field.field);
+            auto field_type = lookup_struct_field_type(struct_name, field.field);
             if (!offset_opt) {
                 error(std::format("struct '{}' has no field '{}'", struct_name, field.field));
                 return false;
             }
+            if (!field_type) {
+                error(std::format("struct '{}' has no typed field '{}'", struct_name, field.field));
+                return false;
+            }
             std::int32_t offset = static_cast<std::int32_t>(*offset_opt);
+            if (!emit_coerce_rax_to_type(*field_type, bin.rhs.get())) {
+                return false;
+            }
             
             // pop value into a scratch reg, store at [rax]
             auto value_reg = pick_scratch_reg({x64::Reg::RAX});
@@ -5695,10 +6271,17 @@ private:
                 return false;
             }
             if (auto bound = lookup_bound_reg(sym)) {
+                if (!emit_coerce_rax_to_type(sym->type, bin.rhs.get())) {
+                    return false;
+                }
+                emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
                 if (*bound != x64::Reg::RAX) {
                     emit_.mov(*bound, x64::Reg::RAX);
                 }
                 return true;
+            }
+            if (!emit_coerce_rax_to_type(sym->type, bin.rhs.get())) {
+                return false;
             }
             emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
             return true;
@@ -5711,14 +6294,16 @@ private:
                 error(std::format("cannot assign to immutable global: {}", ident.name));
                 return false;
             }
+            if (!emit_coerce_rax_to_type(it->second.type, bin.rhs.get())) {
+                return false;
+            }
             
-            if (has_global_slot_ && dll_mode_) {
+            if ((dll_mode_ && has_global_slot_) || (!dll_mode_ && rt_.jit_global_base_slot)) {
                 // value is in RAX, save it
                 emit_.push(x64::Reg::RAX);
                 
-                // load base pointer from rip-relative slot
-                emit_lea_rip_slot(x64::Reg::RAX);
-                emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0); // deref slot -> base ptr
+                // load base pointer
+                if (!emit_load_global_base_ptr(x64::Reg::RAX)) return false;
                 
                 // pop value into RCX, store at base + offset
                 emit_.pop(x64::Reg::RCX);
@@ -5726,7 +6311,7 @@ private:
                 return true;
             }
             
-            error("global variable assignment not supported in JIT mode");
+            error("global variable storage is unavailable");
             return false;
         }
         
@@ -5767,8 +6352,13 @@ private:
             }
             
             auto offset_opt = struct_it->second.get_field_offset(field.field);
+            auto field_type = lookup_struct_field_type(struct_name, field.field);
             if (!offset_opt) {
                 error(std::format("struct '{}' has no field '{}'", struct_name, field.field));
+                return false;
+            }
+            if (!field_type) {
+                error(std::format("struct '{}' has no typed field '{}'", struct_name, field.field));
                 return false;
             }
             std::int32_t foff = static_cast<std::int32_t>(*offset_opt);
@@ -5802,6 +6392,9 @@ private:
                 case Op::ModAssign: emit_.cqo(); emit_.idiv(*rhs_reg); emit_.mov(x64::Reg::RAX, x64::Reg::RDX); break;
                 default: error("unsupported compound op"); return false;
             }
+            if (!emit_coerce_rax_to_type(*field_type)) {
+                return false;
+            }
             
             // store result back
             emit_.mov(*rhs_reg, x64::Reg::RAX); // save result
@@ -5833,14 +6426,14 @@ private:
         }
 
         std::int64_t rhs_imm = 0;
-        if ((bin.op == Op::AddAssign || bin.op == Op::SubAssign) &&
+        if (sym->type.size_bytes() >= 8 &&
+            (bin.op == Op::AddAssign || bin.op == Op::SubAssign) &&
             try_get_i64_immediate(*bin.rhs, rhs_imm)) {
             std::int64_t delta = bin.op == Op::AddAssign ? rhs_imm : -rhs_imm;
             if (auto bound = lookup_bound_reg(sym)) {
                 emit_.add_smart(*bound, delta);
-                if (*bound != x64::Reg::RAX) {
-                    emit_.mov(x64::Reg::RAX, *bound);
-                }
+                emit_.mov(x64::Reg::RAX, *bound);
+                emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
                 return true;
             }
 
@@ -5862,15 +6455,20 @@ private:
         // Generate right side -> RAX
         if (!generate_expr(*bin.rhs)) return false;
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // Save RHS to RCX
-        
-        // Load current value -> RAX
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+
+        // Register-bound locals must be updated in the register, not the stack spill slot.
+        auto bound = lookup_bound_reg(sym);
+        if (bound) {
+            emit_.mov(x64::Reg::RAX, *bound);
+        } else {
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+        }
         
         // Apply operation
-        switch (bin.op) {
-            case Op::AddAssign:
-                emit_.add(x64::Reg::RAX, x64::Reg::RCX);
-                break;
+            switch (bin.op) {
+                case Op::AddAssign:
+                    emit_.add(x64::Reg::RAX, x64::Reg::RCX);
+                    break;
             case Op::SubAssign:
                 emit_.sub(x64::Reg::RAX, x64::Reg::RCX);
                 break;
@@ -5886,13 +6484,23 @@ private:
                 emit_.idiv(x64::Reg::RCX);
                 emit_.mov(x64::Reg::RAX, x64::Reg::RDX);  // remainder lives in rdx
                 break;
-            default:
-                error("unsupported compound assignment operator");
-                return false;
+                default:
+                    error("unsupported compound assignment operator");
+                    return false;
+        }
+        if (!emit_coerce_rax_to_type(sym->type)) {
+            return false;
         }
         
         // Store result
-        emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+        if (bound) {
+            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+            if (*bound != x64::Reg::RAX) {
+                emit_.mov(*bound, x64::Reg::RAX);
+            }
+        } else {
+            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+        }
         return true;
     }
 
@@ -5949,6 +6557,9 @@ private:
                     } else {
                         emit_.add_smart(x64::Reg::RAX, -1);
                     }
+                    if (!emit_coerce_rax_to_type(sym->type)) {
+                        return false;
+                    }
                     emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
                 } else {
                     error("increment/decrement requires a variable");
@@ -5974,6 +6585,9 @@ private:
                         emit_.add_smart(x64::Reg::RCX, 1);
                     } else {
                         emit_.add_smart(x64::Reg::RCX, -1);
+                    }
+                    if (!emit_coerce_reg_to_type(x64::Reg::RCX, sym->type)) {
+                        return false;
                     }
                     // Store incremented value
                     emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RCX);
@@ -7666,6 +8280,10 @@ private:
             error("scan pattern must be a string literal");
             return false;
         }
+        if (bytes.size() > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) {
+            error("scan pattern is too large");
+            return false;
+        }
         
         // Find first non-wildcard byte (anchor)
         std::size_t anchor_idx = 0;
@@ -7696,19 +8314,18 @@ private:
         emit_.mov(x64::Reg::RDI, x64::Reg::RAX);
         emit_.pop(x64::Reg::RSI);
         
-        // R12 = end = base + size - pattern_len
-        emit_.buffer().emit8(0x4C); emit_.buffer().emit8(0x8D);
-        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x37);  // lea r12, [rdi + rsi]
-        emit_.buffer().emit8(0x49); emit_.buffer().emit8(0x83);
-        emit_.buffer().emit8(0xEC);
-        emit_.buffer().emit8(static_cast<std::uint8_t>(bytes.size() + 16));  // sub r12, pattern_len+16
+        std::int32_t pattern_len = static_cast<std::int32_t>(bytes.size());
+        std::int32_t simd_window = static_cast<std::int32_t>((std::max)(bytes.size(), anchor_idx + 16));
+
+        // R12 = last candidate start that is safe for both the full pattern and the 16-byte anchor load
+        emit_.mov(x64::Reg::R12, x64::Reg::RDI);
+        emit_.add(x64::Reg::R12, x64::Reg::RSI);
+        emit_.sub_imm(x64::Reg::R12, simd_window);
         
         // RDX = absolute end for scalar fallback
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D);
-        emit_.buffer().emit8(0x14); emit_.buffer().emit8(0x37);  // lea rdx, [rdi + rsi]
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x83);
-        emit_.buffer().emit8(0xEA);
-        emit_.buffer().emit8(static_cast<std::uint8_t>(bytes.size()));  // sub rdx, pattern_len
+        emit_.mov(x64::Reg::RDX, x64::Reg::RDI);
+        emit_.add(x64::Reg::RDX, x64::Reg::RSI);
+        emit_.sub_imm(x64::Reg::RDX, pattern_len);
         
         // Broadcast anchor byte to XMM0 (16 copies)
         // mov eax, anchor_byte
@@ -7869,9 +8486,12 @@ private:
         // Check anchor
         if (anchor_idx == 0) {
             emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x3F);
-        } else {
+        } else if (anchor_idx < 128) {
             emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x7F);
             emit_.buffer().emit8(static_cast<std::uint8_t>(anchor_idx));
+        } else {
+            emit_.buffer().emit8(0x80); emit_.buffer().emit8(0xBF);
+            emit_.buffer().emit32(static_cast<std::uint32_t>(anchor_idx));
         }
         emit_.buffer().emit8(anchor_byte);
         
@@ -7886,9 +8506,12 @@ private:
             if (mask[j] && j != anchor_idx) {
                 if (j == 0) {
                     emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x3F);
-                } else {
+                } else if (j < 128) {
                     emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x7F);
                     emit_.buffer().emit8(static_cast<std::uint8_t>(j));
+                } else {
+                    emit_.buffer().emit8(0x80); emit_.buffer().emit8(0xBF);
+                    emit_.buffer().emit32(static_cast<std::uint32_t>(j));
                 }
                 emit_.buffer().emit8(bytes[j]);
                 emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0x85);
@@ -8569,6 +9192,7 @@ private:
         emit_.mov_load(x64::Reg::RCX, x64::Reg::R12, CTX_ARG0);
         emit_.mov_load(x64::Reg::RDX, x64::Reg::R12, CTX_ARG1);
         emit_.mov_load(x64::Reg::R8, x64::Reg::R12, CTX_ARG2);
+        emit_.mov_load(x64::Reg::R9, x64::Reg::R12, CTX_ARG3);
         emit_.call(x64::Reg::RAX);
 
         // store result
@@ -8585,8 +9209,7 @@ private:
     }
 
     // spawn expression codegen
-    // allocates Thread_Context in current stack frame, calls CreateThread
-    // returns handle in rax, stores context ptr at [rbp + spawn_ctx_offset_]
+    // allocates Thread_Context and result storage on the heap, then calls CreateThread
     [[nodiscard]] bool generate_spawn(const ast::SpawnExpr& spawn) {
         if (!spawn.callee->is<ast::IdentExpr>()) {
             error("spawn requires a function name");
@@ -8600,6 +9223,22 @@ private:
             return false;
         }
 
+        if (!fn_it->second.return_type.is_integer()) {
+            error(std::format(
+                "spawned function '{}' must return an integer-compatible value",
+                fn_name));
+            return false;
+        }
+
+        if (spawn.args.size() != fn_it->second.param_types.size()) {
+            error(std::format(
+                "spawn of '{}' requires {} arguments, got {}",
+                fn_name,
+                fn_it->second.param_types.size(),
+                spawn.args.size()));
+            return false;
+        }
+
         // emit thread entry stub (reuses if already emitted)
         // jump over it so main doesnt execute stub code inline
         std::size_t pre_stub_pos = emit_.buffer().pos();
@@ -8610,26 +9249,16 @@ private:
         }
         emit_.patch_jump(jmp_over_stub);
 
-        // allocate context in current scope (48 bytes = 6 slots)
-        std::size_t sid = spawn_counter_++;
-        auto& ctx_sym = current_scope_->define("__spawn_ctx_" + std::to_string(sid),
-            Type::make_primitive(PrimitiveType::I64), true);
-        std::int32_t ctx_base = ctx_sym.stack_offset;
-        // reserve 5 more slots (total 48 bytes)
-        for (int i = 0; i < 5; ++i) {
-            current_scope_->next_offset -= 8;
+        if (spawn.args.size() > 4) {
+            error("spawn currently supports at most 4 arguments");
+            return false;
         }
 
-        // allocate a 2-slot spawn result: [handle, ctx_ptr]
-        // await reads both from this struct instead of a LIFO side-stack
-        auto& result_sym = current_scope_->define("__spawn_result_" + std::to_string(sid),
-            Type::make_primitive(PrimitiveType::I64), true);
-        std::int32_t result_base = result_sym.stack_offset;
-        current_scope_->next_offset -= 8; // second slot for ctx_ptr
+        std::size_t sid = spawn_counter_++;
 
         // evaluate args first (before we fill the context, since eval can trash regs)
         std::vector<std::int32_t> arg_temps;
-        for (std::size_t i = 0; i < spawn.args.size() && i < 3; ++i) {
+        for (std::size_t i = 0; i < spawn.args.size(); ++i) {
             if (!generate_expr(*spawn.args[i])) return false;
             auto& tmp = current_scope_->define("__spawn_arg_" + std::to_string(i) + "_" + std::to_string(sid),
                 Type::make_primitive(PrimitiveType::I64), true);
@@ -8637,35 +9266,44 @@ private:
             arg_temps.push_back(tmp.stack_offset);
         }
 
-        // fill context: the 48-byte block goes from ctx_base-40 (low) to ctx_base (high)
-        // context pointer = rbp + ctx_base - 40 (lowest address)
-        // layout: [fn_ptr, arg0, arg1, arg2, result, padding]
-        std::int32_t ctx_ptr_off = ctx_base - 40;
+        if (!emit_runtime_alloc_bytes(CTX_SIZE)) return false;
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t ctx_alloc_ok = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t ctx_alloc_fail_exit = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(ctx_alloc_ok);
+        auto& ctx_ptr_sym = current_scope_->define("__spawn_ctxptr_" + std::to_string(sid),
+            Type::make_primitive(PrimitiveType::I64), true);
+        emit_.mov_store(x64::Reg::RBP, ctx_ptr_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov(x64::Reg::R10, x64::Reg::RAX);
 
-        // store function ptr at [rbp + ctx_ptr_off]
         std::size_t fn_addr_fixup = emit_lea_rip_disp32(x64::Reg::RAX);
         call_fixups_.push_back({fn_addr_fixup, fn_name});
-        emit_.mov_store(x64::Reg::RBP, ctx_ptr_off, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::R10, CTX_FN_PTR, x64::Reg::RAX);
 
         // fill args into context slots
         for (std::size_t i = 0; i < arg_temps.size(); ++i) {
             emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, arg_temps[i]);
-            emit_.mov_store(x64::Reg::RBP, ctx_ptr_off + static_cast<std::int32_t>((i + 1) * 8), x64::Reg::RAX);
+            emit_.mov_store(x64::Reg::R10, static_cast<std::int32_t>((i + 1) * 8), x64::Reg::RAX);
         }
 
         // zero result slot
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-        emit_.mov_store(x64::Reg::RBP, ctx_ptr_off + CTX_RESULT, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::R10, CTX_RESULT, x64::Reg::RAX);
 
-        // compute context base address into a temp
-        auto& ctx_ptr_sym = current_scope_->define("__spawn_ctxptr_" + std::to_string(sid),
+        if (!emit_runtime_alloc_bytes(16)) return false;
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t result_alloc_ok = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ctx_ptr_sym.stack_offset);
+        if (!emit_runtime_free_reg(x64::Reg::RCX)) return false;
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t result_alloc_fail_exit = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(result_alloc_ok);
+        auto& result_ptr_sym = current_scope_->define("__spawn_result_" + std::to_string(sid),
             Type::make_primitive(PrimitiveType::I64), true);
-        emit_.lea(x64::Reg::RAX, x64::Reg::RBP, ctx_ptr_off);
-        emit_.mov_store(x64::Reg::RBP, ctx_ptr_sym.stack_offset, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, result_ptr_sym.stack_offset, x64::Reg::RAX);
 
         // set up CreateThread args
-        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
-        emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);
         // r8 = stub address
         emit_.buffer().emit8(0x4C); emit_.buffer().emit8(0x8D);
         emit_.buffer().emit8(0x05); // lea r8, [rip+disp32]
@@ -8675,26 +9313,32 @@ private:
             - static_cast<std::int32_t>(stub_fixup + 4);
         emit_.buffer().patch32(stub_fixup, static_cast<std::uint32_t>(stub_rel));
         // r9 = context ptr
-        emit_.lea(x64::Reg::R9, x64::Reg::RBP, ctx_ptr_off);
-        // 5th arg: dwCreationFlags = 0 (on stack)
-        // 6th arg: lpThreadId = NULL (on stack)
-        emit_.sub_imm(x64::Reg::RSP, 48); // shadow(32) + 2 args(16)
-        emit_.mov_imm32(x64::Reg::RAX, 0);
-        emit_.mov_store(x64::Reg::RSP, 32, x64::Reg::RAX); // dwCreationFlags = 0
-        emit_.mov_store(x64::Reg::RSP, 40, x64::Reg::RAX); // lpThreadId = NULL
+        emit_.mov_load(x64::Reg::R9, x64::Reg::RBP, ctx_ptr_sym.stack_offset);
+        if (!emit_thread_spawn_call()) return false;
 
-        emit_iat_call_raw(pe::iat::CreateThread);
-        emit_.add_smart(x64::Reg::RSP, 48);
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t thread_spawn_ok = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ctx_ptr_sym.stack_offset);
+        if (!emit_runtime_free_reg(x64::Reg::RCX)) return false;
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, result_ptr_sym.stack_offset);
+        if (!emit_runtime_free_reg(x64::Reg::RCX)) return false;
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t thread_spawn_fail_exit = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(thread_spawn_ok);
 
         // rax = thread HANDLE
-        // pack [handle, ctx_ptr] into the spawn result struct
-        // await will read both from this pointer, no LIFO ordering needed
-        emit_.mov_store(x64::Reg::RBP, result_base, x64::Reg::RAX);
+        // pack [handle, ctx_ptr] into the heap-backed result struct
+        emit_.mov_load(x64::Reg::R11, x64::Reg::RBP, result_ptr_sym.stack_offset);
+        emit_.mov_store(x64::Reg::R11, 0, x64::Reg::RAX);
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, ctx_ptr_sym.stack_offset);
-        emit_.mov_store(x64::Reg::RBP, result_base - 8, x64::Reg::RCX);
+        emit_.mov_store(x64::Reg::R11, 8, x64::Reg::RCX);
 
         // return pointer to the spawn result struct
-        emit_.lea(x64::Reg::RAX, x64::Reg::RBP, result_base);
+        emit_.mov(x64::Reg::RAX, x64::Reg::R11);
+
+        emit_.patch_jump(ctx_alloc_fail_exit);
+        emit_.patch_jump(result_alloc_fail_exit);
+        emit_.patch_jump(thread_spawn_fail_exit);
 
         return true;
     }
@@ -8705,31 +9349,52 @@ private:
         // evaluate handle expression -> rax (pointer to spawn result: [handle, ctx_ptr])
         if (!generate_expr(*await_expr.handle)) return false;
 
-        // rax points to spawn result struct
-        // load handle from [rax+0], ctx_ptr from [rax-8]
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RAX, -8); // ctx_ptr
-        emit_.push(x64::Reg::RCX); // save ctx_ptr
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);  // handle
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t non_null_handle = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t null_handle_exit = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(non_null_handle);
 
-        // save handle
+        // rax points to heap-backed spawn result struct [handle, ctx_ptr]
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RAX, 0);  // handle
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::RAX, 8);  // ctx_ptr
+        emit_.push(x64::Reg::RAX); // result ptr
+        emit_.push(x64::Reg::RDX); // ctx ptr
+        emit_.push(x64::Reg::RCX); // handle
+
+        if (!emit_thread_wait_call()) return false;
+
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t wait_failed = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+        emit_.pop(x64::Reg::RCX); // handle
+        if (!emit_close_handle_call()) return false;
+
+        emit_.pop(x64::Reg::RDX); // ctx ptr
+        emit_.pop(x64::Reg::R8);  // result ptr
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RDX, CTX_RESULT);
         emit_.push(x64::Reg::RAX);
+        emit_.push(x64::Reg::R8); // preserve result ptr across runtime calls
+        if (!emit_runtime_free_reg(x64::Reg::RDX)) return false;
+        emit_.pop(x64::Reg::R8);
+        if (!emit_runtime_free_reg(x64::Reg::R8)) return false;
+        emit_.pop(x64::Reg::RAX);
 
-        // WaitForSingleObject(handle, INFINITE)
-        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
-        emit_.mov_imm32(x64::Reg::RDX, -1); // INFINITE = 0xFFFFFFFF
-        emit_.sub_imm(x64::Reg::RSP, 32);
-        emit_iat_call_raw(pe::iat::WaitForSingleObject);
-        emit_.add_smart(x64::Reg::RSP, 32);
+        std::size_t await_done = emit_.jmp_rel32_placeholder();
 
-        // CloseHandle(handle)
-        emit_.pop(x64::Reg::RCX); // restore handle
-        emit_.sub_imm(x64::Reg::RSP, 32);
-        emit_iat_call_raw(pe::iat::CloseHandle);
-        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.patch_jump(wait_failed);
+        emit_.pop(x64::Reg::RCX); // handle
+        if (!emit_close_handle_call()) return false;
+        emit_.pop(x64::Reg::RDX); // ctx ptr
+        emit_.pop(x64::Reg::R8);  // result ptr
+        emit_.push(x64::Reg::R8);
+        if (!emit_runtime_free_reg(x64::Reg::RDX)) return false;
+        emit_.pop(x64::Reg::R8);
+        if (!emit_runtime_free_reg(x64::Reg::R8)) return false;
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
 
-        // load result from context
-        emit_.pop(x64::Reg::RAX); // restore ctx_ptr
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, CTX_RESULT);
+        emit_.patch_jump(await_done);
+        emit_.patch_jump(null_handle_exit);
 
         return true;
     }
@@ -9010,6 +9675,11 @@ private:
 
     // parallel for codegen ? extracts body into internal function, spawns N threads, waits for all
     [[nodiscard]] bool generate_parallel_for(const ast::ParallelForStmt& pfor) {
+        if (!dll_mode_) {
+            error("parallel for is not supported in JIT mode yet");
+            return false;
+        }
+
         push_scope();
 
         // evaluate start and end into temp vars
@@ -9032,11 +9702,212 @@ private:
         // collect captured variables from parent scopes
         // threads cant access the callers stack directly, so we snapshot vars into the body frame
         std::vector<CapturedVar> captures;
+        std::unordered_set<std::string> seen_captures;
         for (Scope* s = current_scope_; s != nullptr; s = s->parent) {
             for (const auto& [name, sym] : s->symbols) {
                 if (name.starts_with("__pfor_")) continue;
                 if (name == pfor.name) continue;
+                if (!seen_captures.insert(name).second) continue;
                 captures.push_back({name, sym.stack_offset});
+            }
+        }
+
+        auto root_targets_ident = [&](const ast::Expr& expr, const std::string& target, const std::unordered_set<std::string>& shadowed, const auto& self) -> bool {
+            return std::visit(overloaded{
+                [&](const ast::IdentExpr& e) -> bool {
+                    return !shadowed.contains(e.name) && e.name == target;
+                },
+                [&](const ast::FieldExpr& e) -> bool {
+                    return self(*e.base, target, shadowed, self);
+                },
+                [&](const ast::UnaryExpr& e) -> bool {
+                    if (e.op == ast::UnaryExpr::Op::Deref) return false;
+                    return self(*e.operand, target, shadowed, self);
+                },
+                [&](const auto&) -> bool {
+                    return false;
+                }
+            }, expr.kind);
+        };
+
+        std::function<bool(const ast::Expr&, const std::string&, std::unordered_set<std::string>&)> expr_mutates_ident;
+        std::function<bool(const std::vector<ast::StmtPtr>&, const std::string&, std::unordered_set<std::string>&)> stmts_mutate_ident;
+        std::function<bool(const ast::Stmt&, const std::string&, std::unordered_set<std::string>&)> stmt_mutates_ident;
+
+        expr_mutates_ident = [&](const ast::Expr& expr, const std::string& target, std::unordered_set<std::string>& shadowed) -> bool {
+            using BinOp = ast::BinaryExpr::Op;
+            using UnOp = ast::UnaryExpr::Op;
+            return std::visit(overloaded{
+                [&](const ast::BinaryExpr& e) -> bool {
+                    bool is_assign =
+                        e.op == BinOp::Assign ||
+                        e.op == BinOp::AddAssign ||
+                        e.op == BinOp::SubAssign ||
+                        e.op == BinOp::MulAssign ||
+                        e.op == BinOp::DivAssign ||
+                        e.op == BinOp::ModAssign;
+                    if (is_assign && root_targets_ident(*e.lhs, target, shadowed, root_targets_ident)) {
+                        return true;
+                    }
+                    return expr_mutates_ident(*e.lhs, target, shadowed) ||
+                           expr_mutates_ident(*e.rhs, target, shadowed);
+                },
+                [&](const ast::UnaryExpr& e) -> bool {
+                    bool is_mutating =
+                        e.op == UnOp::PreInc || e.op == UnOp::PreDec ||
+                        e.op == UnOp::PostInc || e.op == UnOp::PostDec;
+                    if (is_mutating && root_targets_ident(*e.operand, target, shadowed, root_targets_ident)) {
+                        return true;
+                    }
+                    return expr_mutates_ident(*e.operand, target, shadowed);
+                },
+                [&](const ast::CallExpr& e) -> bool {
+                    if (expr_mutates_ident(*e.callee, target, shadowed)) return true;
+                    for (const auto& arg : e.args) {
+                        if (expr_mutates_ident(*arg, target, shadowed)) return true;
+                    }
+                    return false;
+                },
+                [&](const ast::IndexExpr& e) -> bool {
+                    return expr_mutates_ident(*e.base, target, shadowed) ||
+                           expr_mutates_ident(*e.index, target, shadowed);
+                },
+                [&](const ast::FieldExpr& e) -> bool {
+                    return expr_mutates_ident(*e.base, target, shadowed);
+                },
+                [&](const ast::CastExpr& e) -> bool {
+                    return expr_mutates_ident(*e.expr, target, shadowed);
+                },
+                [&](const ast::ArrayExpr& e) -> bool {
+                    for (const auto& elem : e.elements) {
+                        if (expr_mutates_ident(*elem, target, shadowed)) return true;
+                    }
+                    return false;
+                },
+                [&](const ast::StructExpr& e) -> bool {
+                    for (const auto& [_, value] : e.fields) {
+                        if (expr_mutates_ident(*value, target, shadowed)) return true;
+                    }
+                    return false;
+                },
+                [&](const ast::IfExpr& e) -> bool {
+                    if (expr_mutates_ident(*e.condition, target, shadowed)) return true;
+                    auto then_shadowed = shadowed;
+                    if (stmts_mutate_ident(e.then_block, target, then_shadowed)) return true;
+                    auto else_shadowed = shadowed;
+                    return stmts_mutate_ident(e.else_block, target, else_shadowed);
+                },
+                [&](const ast::BlockExpr& e) -> bool {
+                    auto nested_shadowed = shadowed;
+                    if (stmts_mutate_ident(e.stmts, target, nested_shadowed)) return true;
+                    return e.result && expr_mutates_ident(*e.result.value(), target, nested_shadowed);
+                },
+                [&](const ast::SpawnExpr& e) -> bool {
+                    if (expr_mutates_ident(*e.callee, target, shadowed)) return true;
+                    for (const auto& arg : e.args) {
+                        if (expr_mutates_ident(*arg, target, shadowed)) return true;
+                    }
+                    return false;
+                },
+                [&](const ast::AwaitExpr& e) -> bool {
+                    return expr_mutates_ident(*e.handle, target, shadowed);
+                },
+                [&](const ast::AtomicOpExpr& e) -> bool {
+                    if (expr_mutates_ident(*e.ptr, target, shadowed)) return true;
+                    for (const auto& arg : e.args) {
+                        if (expr_mutates_ident(*arg, target, shadowed)) return true;
+                    }
+                    return false;
+                },
+                [&](const auto&) -> bool {
+                    return false;
+                }
+            }, expr.kind);
+        };
+
+        stmt_mutates_ident = [&](const ast::Stmt& stmt, const std::string& target, std::unordered_set<std::string>& shadowed) -> bool {
+            return std::visit(overloaded{
+                [&](const ast::LetStmt& s) -> bool {
+                    bool mutated = s.init && expr_mutates_ident(*s.init.value(), target, shadowed);
+                    shadowed.insert(s.name);
+                    return mutated;
+                },
+                [&](const ast::ExprStmt& s) -> bool {
+                    return expr_mutates_ident(*s.expr, target, shadowed);
+                },
+                [&](const ast::ReturnStmt& s) -> bool {
+                    return s.value && expr_mutates_ident(*s.value.value(), target, shadowed);
+                },
+                [&](const ast::IfStmt& s) -> bool {
+                    if (expr_mutates_ident(*s.condition, target, shadowed)) return true;
+                    auto then_shadowed = shadowed;
+                    if (stmts_mutate_ident(s.then_block, target, then_shadowed)) return true;
+                    auto else_shadowed = shadowed;
+                    return stmts_mutate_ident(s.else_block, target, else_shadowed);
+                },
+                [&](const ast::WhileStmt& s) -> bool {
+                    if (expr_mutates_ident(*s.condition, target, shadowed)) return true;
+                    auto body_shadowed = shadowed;
+                    return stmts_mutate_ident(s.body, target, body_shadowed);
+                },
+                [&](const ast::ForStmt& s) -> bool {
+                    if (expr_mutates_ident(*s.iterable, target, shadowed)) return true;
+                    auto body_shadowed = shadowed;
+                    body_shadowed.insert(s.name);
+                    return stmts_mutate_ident(s.body, target, body_shadowed);
+                },
+                [&](const ast::LoopStmt& s) -> bool {
+                    auto body_shadowed = shadowed;
+                    return stmts_mutate_ident(s.body, target, body_shadowed);
+                },
+                [&](const ast::BlockStmt& s) -> bool {
+                    auto block_shadowed = shadowed;
+                    return stmts_mutate_ident(s.stmts, target, block_shadowed);
+                },
+                [&](const ast::ParallelForStmt& s) -> bool {
+                    if (expr_mutates_ident(*s.start, target, shadowed) ||
+                        expr_mutates_ident(*s.end, target, shadowed)) {
+                        return true;
+                    }
+                    auto body_shadowed = shadowed;
+                    body_shadowed.insert(s.name);
+                    return stmts_mutate_ident(s.body, target, body_shadowed);
+                },
+                [&](const auto&) -> bool {
+                    return false;
+                }
+            }, stmt.kind);
+        };
+
+        stmts_mutate_ident = [&](const std::vector<ast::StmtPtr>& stmts, const std::string& target, std::unordered_set<std::string>& shadowed) -> bool {
+            for (const auto& stmt : stmts) {
+                if (stmt_mutates_ident(*stmt, target, shadowed)) return true;
+            }
+            return false;
+        };
+
+        for (const auto& cap : captures) {
+            std::unordered_set<std::string> shadowed_names;
+            shadowed_names.insert(pfor.name);
+            if (stmts_mutate_ident(pfor.body, cap.name, shadowed_names)) {
+                error(std::format(
+                    "parallel for cannot mutate captured variable '{}' (captures are by value; use explicit shared pointers or atomics)",
+                    cap.name));
+                pop_scope();
+                return false;
+            }
+        }
+
+        for (const auto& [name, gv] : globals_) {
+            if (!gv.is_mut) continue;
+            std::unordered_set<std::string> shadowed_names;
+            shadowed_names.insert(pfor.name);
+            if (stmts_mutate_ident(pfor.body, name, shadowed_names)) {
+                error(std::format(
+                    "parallel for cannot mutate global '{}' directly (use explicit shared pointers and atomics for shared state)",
+                    name));
+                pop_scope();
+                return false;
             }
         }
 
@@ -9114,7 +9985,7 @@ private:
             break;
         }
         case ast::AtomicOpExpr::Op::CAS: {
-            // atomic_cas(ptr, expected, desired) -> old value (rax)
+            // atomic_cas(ptr, expected, desired) -> bool success in rax
             if (atomic.args.size() < 2) { error("atomic_cas needs expected and desired"); return false; }
             // eval expected
             if (!generate_expr(*atomic.args[0])) return false;
@@ -9126,7 +9997,8 @@ private:
             emit_.pop(x64::Reg::RCX); // ptr
             // lock cmpxchg [rcx], rdx
             emit_.lock_cmpxchg(x64::Reg::RCX, 0, x64::Reg::RDX);
-            // rax = old value (either expected if swap succeeded, or actual if failed)
+            emit_.setcc(x64::Emitter::CC_E, x64::Reg::RAX);
+            emit_.movzx_byte(x64::Reg::RAX, x64::Reg::RAX);
             break;
         }
         case ast::AtomicOpExpr::Op::Load: {
@@ -9151,4 +10023,3 @@ private:
 };
 
 } // namespace opus
-

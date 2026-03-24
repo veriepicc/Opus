@@ -10,6 +10,7 @@ module;
 #include <cstring>
 #include <ctime>
 #include <cassert>
+#include <limits>
 
 export module opus.pe;
 
@@ -233,6 +234,9 @@ public:
         
         constexpr std::size_t text_rva = 0x1000;
         std::size_t estimated_code_size = user_code.size() + layout.startup_code_size;
+        if (estimated_code_size > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) {
+            throw std::overflow_error("startup + user code exceeds rel32-safe range");
+        }
         std::size_t text_pages = (estimated_code_size + kSectAlign - 1) / kSectAlign;
         
         // dynamic rvas based on code size
@@ -245,19 +249,22 @@ public:
         // Patch IAT fixups in user_code before building the text section
         std::size_t user_code_offset = layout.startup_code_size;
         for (const auto& fixup : cfg.iat_fixups) {
+            if (fixup.patch_site + 4 > user_code.size()) {
+                throw std::logic_error("IAT fixup patch site extends past generated user code");
+            }
             // iat lives in .data now, not .rdata
             std::size_t iat_rva = data_rva + fixup.iat_offset;
             // code position rva (patch_site is offset within user_code)
             std::size_t code_rva = text_rva + user_code_offset + fixup.patch_site + 4;
             // RIP-relative displacement
-            std::int32_t disp = static_cast<std::int32_t>(iat_rva) - static_cast<std::int32_t>(code_rva);
-            
-            if (fixup.patch_site + 3 < user_code.size()) {
-                user_code[fixup.patch_site + 0] = static_cast<std::uint8_t>(disp & 0xFF);
-                user_code[fixup.patch_site + 1] = static_cast<std::uint8_t>((disp >> 8) & 0xFF);
-                user_code[fixup.patch_site + 2] = static_cast<std::uint8_t>((disp >> 16) & 0xFF);
-                user_code[fixup.patch_site + 3] = static_cast<std::uint8_t>((disp >> 24) & 0xFF);
-            }
+            std::int32_t disp = checked_rel32(
+                static_cast<std::int64_t>(iat_rva) - static_cast<std::int64_t>(code_rva),
+                "IAT fixup");
+
+            user_code[fixup.patch_site + 0] = static_cast<std::uint8_t>(disp & 0xFF);
+            user_code[fixup.patch_site + 1] = static_cast<std::uint8_t>((disp >> 8) & 0xFF);
+            user_code[fixup.patch_site + 2] = static_cast<std::uint8_t>((disp >> 16) & 0xFF);
+            user_code[fixup.patch_site + 3] = static_cast<std::uint8_t>((disp >> 24) & 0xFF);
         }
         
         auto imports = build_imports(rdata_rva, data_rva);
@@ -288,6 +295,9 @@ public:
             image_size = src_rva + kSectAlign;
         } else {
             image_size = reloc_rva + kSectAlign;
+        }
+        if (image_size > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) {
+            throw std::overflow_error("image size exceeds rel32-safe range");
         }
         
         std::vector<std::uint8_t> dll;
@@ -456,6 +466,9 @@ public:
     // validates a raw PE blob and returns any structural issues it finds
     static std::vector<std::string> validate_pe(const std::vector<std::uint8_t>& pe_data) {
         std::vector<std::string> errors;
+        auto range_fits = [](std::size_t base, std::size_t size, std::size_t total) {
+            return base <= total && size <= total - base;
+        };
         
         // need at least a dos header to do anything
         if (pe_data.size() < sizeof(IMAGE_DOS_HEADER)) {
@@ -472,10 +485,15 @@ public:
         }
         
         // make sure we can read pe sig + file header + optional header
-        std::size_t pe_offset = dos.e_lfanew;
-        std::size_t needed = pe_offset + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) + sizeof(IMAGE_OPTIONAL_HEADER64);
-        if (needed > pe_data.size()) {
-            errors.push_back("PE headers extend past end of data (need " + std::to_string(needed) + ", got " + std::to_string(pe_data.size()) + ")");
+        if (dos.e_lfanew < 0) {
+            errors.push_back("negative e_lfanew in DOS header");
+            return errors;
+        }
+
+        std::size_t pe_offset = static_cast<std::size_t>(dos.e_lfanew);
+        std::size_t nt_header_span = sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) + sizeof(IMAGE_OPTIONAL_HEADER64);
+        if (!range_fits(pe_offset, nt_header_span, pe_data.size())) {
+            errors.push_back("PE headers extend past end of data (offset " + std::to_string(pe_offset) + ", span " + std::to_string(nt_header_span) + ", got " + std::to_string(pe_data.size()) + ")");
             return errors;
         }
         
@@ -494,6 +512,14 @@ public:
         
         DWORD file_align = opt.FileAlignment;
         DWORD sect_align = opt.SectionAlignment;
+        if (file_align == 0) {
+            errors.push_back("FileAlignment is zero");
+            return errors;
+        }
+        if (sect_align == 0) {
+            errors.push_back("SectionAlignment is zero");
+            return errors;
+        }
         
         // SizeOfHeaders should be aligned to FileAlignment
         if (opt.SizeOfHeaders % file_align != 0) {
@@ -579,14 +605,23 @@ public:
             
             bool found = false;
             for (const auto& s : sections) {
-                if (entry.VirtualAddress >= s.VirtualAddress &&
-                    entry.VirtualAddress < s.VirtualAddress + s.Misc.VirtualSize) {
+                std::size_t section_start = s.VirtualAddress;
+                std::size_t section_span = (std::max)(static_cast<std::size_t>(s.Misc.VirtualSize),
+                                                      static_cast<std::size_t>(s.SizeOfRawData));
+                if (section_span == 0) continue;
+                std::size_t section_end = section_start + section_span;
+                std::size_t dir_start = entry.VirtualAddress;
+                std::size_t dir_end = dir_start + entry.Size;
+                if (section_end < section_start || dir_end < dir_start) {
+                    continue;
+                }
+                if (dir_start >= section_start && dir_end <= section_end) {
                     found = true;
                     break;
                 }
             }
             if (!found) {
-                errors.push_back(std::string(d.name) + " directory RVA (0x" + to_hex32(entry.VirtualAddress) + ") does not fall within any section");
+                errors.push_back(std::string(d.name) + " directory span [0x" + to_hex32(entry.VirtualAddress) + ", 0x" + to_hex32(entry.VirtualAddress + entry.Size) + ") does not fit within any section");
             }
         }
         
@@ -605,6 +640,21 @@ private:
     
     // align up helper specifically for validation (doesnt collide with the existing one)
     static DWORD val_align_up(DWORD v, DWORD a) { return (v + a - 1) & ~(a - 1); }
+
+    static std::int32_t checked_rel32(std::int64_t delta, const char* what) {
+        if (delta < (std::numeric_limits<std::int32_t>::min)() ||
+            delta > (std::numeric_limits<std::int32_t>::max)()) {
+            throw std::overflow_error(std::string(what) + " does not fit in rel32");
+        }
+        return static_cast<std::int32_t>(delta);
+    }
+
+    static std::uint32_t checked_u32(std::size_t value, const char* what) {
+        if (value > (std::numeric_limits<std::uint32_t>::max)()) {
+            throw std::overflow_error(std::string(what) + " does not fit in u32");
+        }
+        return static_cast<std::uint32_t>(value);
+    }
     
     struct ImportResult {
         std::vector<std::uint8_t> rdata;     // import descriptors, ILT, dll name, hint/names, strings
@@ -737,7 +787,9 @@ private:
             
             // call main
             std::size_t call_pos = code.size();
-            std::int32_t main_rel = static_cast<std::int32_t>((user_code_offset + main_offset) - (call_pos + 5));
+            std::int32_t main_rel = checked_rel32(
+                static_cast<std::int64_t>(user_code_offset + main_offset) - static_cast<std::int64_t>(call_pos + 5),
+                "exe main call");
             emit8(code, 0xE8);
             emit32(code, static_cast<std::uint32_t>(main_rel));
             
@@ -747,7 +799,9 @@ private:
             // call [rip+ExitProcess]
             std::size_t exit_rip = text_rva + code.size() + 6;
             std::size_t exit_iat = data_rva + iat_slot(iat_idx::ExitProcess);
-            std::int32_t exit_rel = static_cast<std::int32_t>(exit_iat - exit_rip);
+            std::int32_t exit_rel = checked_rel32(
+                static_cast<std::int64_t>(exit_iat) - static_cast<std::int64_t>(exit_rip),
+                "ExitProcess IAT call");
             emit8(code, 0xFF); emit8(code, 0x15);
             emit32(code, static_cast<std::uint32_t>(exit_rel));
             
@@ -774,7 +828,9 @@ private:
                 emit8(code, 0x31); emit8(code, 0xD2);  // xor edx, edx
                 
                 std::size_t lea_pos = code.size();
-                std::int32_t rel = static_cast<std::int32_t>(DLLMAIN_SIZE - (lea_pos + 7));
+                std::int32_t rel = checked_rel32(
+                    static_cast<std::int64_t>(DLLMAIN_SIZE) - static_cast<std::int64_t>(lea_pos + 7),
+                    "DllMain thread lea");
                 emit8(code, 0x4C); emit8(code, 0x8D); emit8(code, 0x05);  // lea r8, [rip+...]
                 emit32(code, static_cast<std::uint32_t>(rel));
                 
@@ -806,7 +862,9 @@ private:
             
             // call user main
             std::size_t call_pos = code.size();
-            std::int32_t main_rel = static_cast<std::int32_t>((user_code_offset + main_offset) - (call_pos + 5));
+            std::int32_t main_rel = checked_rel32(
+                static_cast<std::int64_t>(user_code_offset + main_offset) - static_cast<std::int64_t>(call_pos + 5),
+                "dll thread main call");
             emit8(code, 0xE8);
             emit32(code, static_cast<std::uint32_t>(main_rel));
             
@@ -993,21 +1051,27 @@ private:
     
     void emit_call_iat(std::vector<std::uint8_t>& code, std::size_t text_rva, std::size_t iat_entry_rva) {
         std::size_t rip_after = text_rva + code.size() + 6;
-        std::int32_t rel32 = static_cast<std::int32_t>(iat_entry_rva - rip_after);
+        std::int32_t rel32 = checked_rel32(
+            static_cast<std::int64_t>(iat_entry_rva) - static_cast<std::int64_t>(rip_after),
+            "IAT call");
         emit8(code, 0xFF); emit8(code, 0x15);
         emit32(code, static_cast<std::uint32_t>(rel32));
     }
     
     void emit_lea_rcx(std::vector<std::uint8_t>& code, std::size_t text_rva, std::size_t target_rva) {
         std::size_t rip_after = text_rva + code.size() + 7;
-        std::int32_t rel32 = static_cast<std::int32_t>(target_rva - rip_after);
+        std::int32_t rel32 = checked_rel32(
+            static_cast<std::int64_t>(target_rva) - static_cast<std::int64_t>(rip_after),
+            "lea rcx");
         emit8(code, 0x48); emit8(code, 0x8D); emit8(code, 0x0D);
         emit32(code, static_cast<std::uint32_t>(rel32));
     }
     
     void emit_lea_rdx(std::vector<std::uint8_t>& code, std::size_t text_rva, std::size_t target_rva) {
         std::size_t rip_after = text_rva + code.size() + 7;
-        std::int32_t rel32 = static_cast<std::int32_t>(target_rva - rip_after);
+        std::int32_t rel32 = checked_rel32(
+            static_cast<std::int64_t>(target_rva) - static_cast<std::int64_t>(rip_after),
+            "lea rdx");
         emit8(code, 0x48); emit8(code, 0x8D); emit8(code, 0x15);
         emit32(code, static_cast<std::uint32_t>(rel32));
     }
@@ -1091,11 +1155,15 @@ private:
         for (std::size_t i = 0; i < len; i++) emit8(code, static_cast<std::uint8_t>(str[i]));
         // lea rcx, [rip + back_to_str]
         std::size_t lea_pos = code.size();
-        std::int32_t str_rel = static_cast<std::int32_t>(str_start - (lea_pos + 7));
+        std::int32_t str_rel = checked_rel32(
+            static_cast<std::int64_t>(str_start) - static_cast<std::int64_t>(lea_pos + 7),
+            "inline string lea");
         emit8(code, 0x48); emit8(code, 0x8D); emit8(code, 0x0D); emit32(code, static_cast<std::uint32_t>(str_rel));
         // call print_impl
         std::size_t call_pos = code.size();
-        std::int32_t print_rel = static_cast<std::int32_t>((text_rva + print_offset) - (text_rva + call_pos + 5));
+        std::int32_t print_rel = checked_rel32(
+            static_cast<std::int64_t>(text_rva + print_offset) - static_cast<std::int64_t>(text_rva + call_pos + 5),
+            "print_impl call");
         emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(print_rel));
     }
     
@@ -1129,7 +1197,9 @@ private:
 
     // patch a rel32 at fixup_pos to jump to current code.size()
     static void patch32(std::vector<std::uint8_t>& code, std::size_t fixup_pos) {
-        std::int32_t rel = static_cast<std::int32_t>(code.size() - (fixup_pos + 4));
+        std::int32_t rel = checked_rel32(
+            static_cast<std::int64_t>(code.size()) - static_cast<std::int64_t>(fixup_pos + 4),
+            "patch32");
         code[fixup_pos + 0] = static_cast<std::uint8_t>(rel & 0xFF);
         code[fixup_pos + 1] = static_cast<std::uint8_t>((rel >> 8) & 0xFF);
         code[fixup_pos + 2] = static_cast<std::uint8_t>((rel >> 16) & 0xFF);

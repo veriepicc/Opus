@@ -28,9 +28,25 @@ export namespace opus {
 // runtime builtins
 
 // string table is shared between host and jit code
+inline std::mutex& get_string_table_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
 inline std::vector<std::string>& get_string_table() {
     static std::vector<std::string> table;
     return table;
+}
+
+inline std::int64_t& get_jit_global_base_slot() {
+    static std::int64_t slot = 0;
+    return slot;
+}
+
+inline void reset_runtime_state() {
+    std::lock_guard lock(get_string_table_mutex());
+    get_string_table().clear();
+    get_jit_global_base_slot() = 0;
 }
 
 extern "C" void opus_print_int(std::int64_t value) {
@@ -46,24 +62,33 @@ extern "C" void opus_print_newline() {
 }
 
 extern "C" std::int64_t opus_read_file(std::int64_t filename_handle) {
-    auto& table = get_string_table();
-    if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) {
-        return -1;
+    std::string path;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) {
+            return -1;
+        }
+        path = table[filename_handle];
     }
     
-    std::ifstream file(table[filename_handle]);
+    std::ifstream file(path);
     if (!file) {
         return -1;
     }
     std::stringstream buffer;
     buffer << file.rdbuf();
-    
+
+    std::lock_guard lock(get_string_table_mutex());
+    auto& table = get_string_table();
     std::int64_t handle = static_cast<std::int64_t>(table.size());
     table.push_back(buffer.str());
     return handle;
 }
 
 extern "C" std::int64_t opus_make_string(const char* str) {
+    if (!str) return -1;
+    std::lock_guard lock(get_string_table_mutex());
     auto& table = get_string_table();
     std::int64_t handle = static_cast<std::int64_t>(table.size());
     table.push_back(str);
@@ -71,6 +96,7 @@ extern "C" std::int64_t opus_make_string(const char* str) {
 }
 
 extern "C" std::int64_t opus_string_length(std::int64_t handle) {
+    std::lock_guard lock(get_string_table_mutex());
     auto& table = get_string_table();
     if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) {
         return 0;
@@ -79,6 +105,7 @@ extern "C" std::int64_t opus_string_length(std::int64_t handle) {
 }
 
 extern "C" std::int64_t opus_string_get_char(std::int64_t handle, std::int64_t index) {
+    std::lock_guard lock(get_string_table_mutex());
     auto& table = get_string_table();
     if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) {
         return 0;
@@ -91,27 +118,40 @@ extern "C" std::int64_t opus_string_get_char(std::int64_t handle, std::int64_t i
 }
 
 extern "C" void opus_print_string(std::int64_t handle) {
-    auto& table = get_string_table();
-    if (handle >= 0 && handle < static_cast<std::int64_t>(table.size())) {
-        std::print("{}", table[handle]);
+    std::string value;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) {
+            return;
+        }
+        value = table[handle];
     }
+    std::print("{}", value);
 }
 
 extern "C" std::int64_t opus_write_file(std::int64_t filename_handle, std::int64_t content_handle) {
-    auto& table = get_string_table();
-    if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) {
-        return -1;
-    }
-    if (content_handle < 0 || content_handle >= static_cast<std::int64_t>(table.size())) {
-        return -1;
+    std::string path;
+    std::string content;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) {
+            return -1;
+        }
+        if (content_handle < 0 || content_handle >= static_cast<std::int64_t>(table.size())) {
+            return -1;
+        }
+        path = table[filename_handle];
+        content = table[content_handle];
     }
     
-    std::ofstream file(table[filename_handle], std::ios::binary);
+    std::ofstream file(path, std::ios::binary);
     if (!file) {
         return -1;
     }
-    file.write(table[content_handle].data(), table[content_handle].size());
-    return static_cast<std::int64_t>(table[content_handle].size());
+    file.write(content.data(), content.size());
+    return static_cast<std::int64_t>(content.size());
 }
 
 extern "C" std::int64_t opus_malloc(std::int64_t size) {
@@ -197,12 +237,12 @@ extern "C" void opus_mem_write_ptr(std::int64_t addr, std::int64_t value) {
 }
 
 extern "C" void opus_mem_copy(std::int64_t dest, std::int64_t src, std::int64_t size) {
-    if (dest == 0 || src == 0) return;
+    if (dest == 0 || src == 0 || size <= 0) return;
     std::memcpy(reinterpret_cast<void*>(dest), reinterpret_cast<void*>(src), static_cast<std::size_t>(size));
 }
 
 extern "C" void opus_mem_set(std::int64_t dest, std::int64_t value, std::int64_t size) {
-    if (dest == 0) return;
+    if (dest == 0 || size <= 0) return;
     std::memset(reinterpret_cast<void*>(dest), static_cast<int>(value), static_cast<std::size_t>(size));
 }
 
@@ -211,12 +251,16 @@ extern "C" void opus_mem_set(std::int64_t dest, std::int64_t value, std::int64_t
 #ifdef _WIN32
 
 extern "C" std::int64_t opus_get_module(std::int64_t name_handle) {
-    auto& table = get_string_table();
-    if (name_handle < 0 || name_handle >= static_cast<std::int64_t>(table.size())) {
-        // no name = current module
-        return reinterpret_cast<std::int64_t>(GetModuleHandleA(nullptr));
+    std::string name;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (name_handle < 0 || name_handle >= static_cast<std::int64_t>(table.size())) {
+            return reinterpret_cast<std::int64_t>(GetModuleHandleA(nullptr));
+        }
+        name = table[name_handle];
     }
-    HMODULE mod = GetModuleHandleA(table[name_handle].c_str());
+    HMODULE mod = GetModuleHandleA(name.c_str());
     return reinterpret_cast<std::int64_t>(mod);
 }
 
@@ -226,22 +270,32 @@ extern "C" std::int64_t opus_get_module_str(const char* name) {
 }
 
 extern "C" std::int64_t opus_load_library(std::int64_t name_handle) {
-    auto& table = get_string_table();
-    if (name_handle < 0 || name_handle >= static_cast<std::int64_t>(table.size())) {
-        return 0;
+    std::string name;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (name_handle < 0 || name_handle >= static_cast<std::int64_t>(table.size())) {
+            return 0;
+        }
+        name = table[name_handle];
     }
-    HMODULE mod = LoadLibraryA(table[name_handle].c_str());
+    HMODULE mod = LoadLibraryA(name.c_str());
     return reinterpret_cast<std::int64_t>(mod);
 }
 
 extern "C" std::int64_t opus_get_proc(std::int64_t module, std::int64_t name_handle) {
-    auto& table = get_string_table();
-    if (name_handle < 0 || name_handle >= static_cast<std::int64_t>(table.size())) {
-        return 0;
+    std::string name;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (name_handle < 0 || name_handle >= static_cast<std::int64_t>(table.size())) {
+            return 0;
+        }
+        name = table[name_handle];
     }
     FARPROC proc = GetProcAddress(
         reinterpret_cast<HMODULE>(module),
-        table[name_handle].c_str()
+        name.c_str()
     );
     return reinterpret_cast<std::int64_t>(proc);
 }
@@ -289,16 +343,19 @@ extern "C" std::int64_t opus_ffi_call6(std::int64_t fn_ptr, std::int64_t a1, std
 }
 
 extern "C" std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text_handle, std::int64_t flags) {
-    auto& table = get_string_table();
-    const char* title = "";
-    const char* text = "";
-    if (title_handle >= 0 && title_handle < static_cast<std::int64_t>(table.size())) {
-        title = table[title_handle].c_str();
+    std::string title;
+    std::string text;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (title_handle >= 0 && title_handle < static_cast<std::int64_t>(table.size())) {
+            title = table[title_handle];
+        }
+        if (text_handle >= 0 && text_handle < static_cast<std::int64_t>(table.size())) {
+            text = table[text_handle];
+        }
     }
-    if (text_handle >= 0 && text_handle < static_cast<std::int64_t>(table.size())) {
-        text = table[text_handle].c_str();
-    }
-    return MessageBoxA(nullptr, text, title, static_cast<UINT>(flags));
+    return MessageBoxA(nullptr, text.c_str(), title.c_str(), static_cast<UINT>(flags));
 }
 
 extern "C" std::int64_t opus_get_last_error() {
@@ -324,10 +381,16 @@ extern "C" void opus_free_console() {
 }
 
 extern "C" void opus_set_console_title(std::int64_t title_handle) {
-    auto& table = get_string_table();
-    if (title_handle >= 0 && title_handle < static_cast<std::int64_t>(table.size())) {
-        SetConsoleTitleA(table[title_handle].c_str());
+    std::string title;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (title_handle < 0 || title_handle >= static_cast<std::int64_t>(table.size())) {
+            return;
+        }
+        title = table[title_handle];
     }
+    SetConsoleTitleA(title.c_str());
 }
 
 extern "C" std::int64_t opus_virtual_protect(std::int64_t address, std::int64_t size, std::int64_t new_protect) {
@@ -376,6 +439,31 @@ extern "C" std::int64_t opus_get_current_process_id() {
     return static_cast<std::int64_t>(GetCurrentProcessId());
 }
 
+extern "C" std::int64_t opus_thread_spawn(std::int64_t entry_ptr, std::int64_t ctx_ptr) {
+    HANDLE handle = CreateThread(
+        nullptr,
+        0,
+        reinterpret_cast<LPTHREAD_START_ROUTINE>(entry_ptr),
+        reinterpret_cast<void*>(ctx_ptr),
+        0,
+        nullptr
+    );
+    return reinterpret_cast<std::int64_t>(handle);
+}
+
+extern "C" std::int64_t opus_thread_wait(std::int64_t handle, std::int64_t timeout_ms) {
+    if (handle == 0) return static_cast<std::int64_t>(WAIT_FAILED);
+    return static_cast<std::int64_t>(WaitForSingleObject(
+        reinterpret_cast<HANDLE>(handle),
+        static_cast<DWORD>(timeout_ms)
+    ));
+}
+
+extern "C" std::int64_t opus_close_handle(std::int64_t handle) {
+    if (handle == 0) return 0;
+    return CloseHandle(reinterpret_cast<HANDLE>(handle)) ? 1 : 0;
+}
+
 #else
 // non-windows stubs
 extern "C" std::int64_t opus_get_module(std::int64_t name_handle) { return 0; }
@@ -396,6 +484,9 @@ extern "C" std::int64_t opus_read_process_memory(std::int64_t process, std::int6
 extern "C" std::int64_t opus_write_process_memory(std::int64_t process, std::int64_t address, std::int64_t buffer, std::int64_t size) { return -1; }
 extern "C" std::int64_t opus_get_current_process() { return 0; }
 extern "C" std::int64_t opus_get_current_process_id() { return 0; }
+extern "C" std::int64_t opus_thread_spawn(std::int64_t entry_ptr, std::int64_t ctx_ptr) { return 0; }
+extern "C" std::int64_t opus_thread_wait(std::int64_t handle, std::int64_t timeout_ms) { return -1; }
+extern "C" std::int64_t opus_close_handle(std::int64_t handle) { return 0; }
 #endif
 
 // layout: arr[0] = length, arr[1..n] = elements
@@ -433,6 +524,7 @@ extern "C" void opus_array_free(std::int64_t arr_ptr) {
 }
 
 extern "C" std::int64_t opus_string_append(std::int64_t handle1, std::int64_t handle2) {
+    std::lock_guard lock(get_string_table_mutex());
     auto& table = get_string_table();
     if (handle1 < 0 || handle1 >= static_cast<std::int64_t>(table.size())) return -1;
     if (handle2 < 0 || handle2 >= static_cast<std::int64_t>(table.size())) return -1;
@@ -445,6 +537,7 @@ extern "C" std::int64_t opus_string_append(std::int64_t handle1, std::int64_t ha
 }
 
 extern "C" std::int64_t opus_int_to_string(std::int64_t value) {
+    std::lock_guard lock(get_string_table_mutex());
     auto& table = get_string_table();
     std::int64_t handle = static_cast<std::int64_t>(table.size());
     table.push_back(std::to_string(value));
@@ -458,6 +551,7 @@ extern "C" void opus_print_char(std::int64_t ch) {
 // self-hosting helpers
 
 extern "C" std::int64_t opus_string_equals(std::int64_t h1, std::int64_t h2) {
+    std::lock_guard lock(get_string_table_mutex());
     auto& table = get_string_table();
     if (h1 < 0 || h1 >= static_cast<std::int64_t>(table.size())) return 0;
     if (h2 < 0 || h2 >= static_cast<std::int64_t>(table.size())) return 0;
@@ -465,6 +559,7 @@ extern "C" std::int64_t opus_string_equals(std::int64_t h1, std::int64_t h2) {
 }
 
 extern "C" std::int64_t opus_string_substring(std::int64_t handle, std::int64_t start, std::int64_t len) {
+    std::lock_guard lock(get_string_table_mutex());
     auto& table = get_string_table();
     if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) return -1;
     const auto& str = table[handle];
@@ -495,6 +590,7 @@ extern "C" std::int64_t opus_is_whitespace(std::int64_t ch) {
 }
 
 extern "C" std::int64_t opus_string_starts_with(std::int64_t str_handle, std::int64_t prefix_handle) {
+    std::lock_guard lock(get_string_table_mutex());
     auto& table = get_string_table();
     if (str_handle < 0 || str_handle >= static_cast<std::int64_t>(table.size())) return 0;
     if (prefix_handle < 0 || prefix_handle >= static_cast<std::int64_t>(table.size())) return 0;
@@ -506,13 +602,20 @@ extern "C" void opus_exit(std::int64_t code) {
 }
 
 extern "C" std::int64_t opus_write_bytes(std::int64_t filename_handle, std::int64_t arr_ptr, std::int64_t len) {
-    auto& table = get_string_table();
-    if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) return -1;
+    std::string path;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) return -1;
+        path = table[filename_handle];
+    }
     
     std::int64_t* arr = reinterpret_cast<std::int64_t*>(arr_ptr);
-    if (!arr) return -1;
+    if (!arr || len < 0) return -1;
+    std::int64_t arr_len = arr[0];
+    if (arr_len < 0 || len > arr_len) return -1;
     
-    std::ofstream file(table[filename_handle], std::ios::binary);
+    std::ofstream file(path, std::ios::binary);
     if (!file) return -1;
     
     for (std::int64_t i = 0; i < len; ++i) {
@@ -557,10 +660,15 @@ extern "C" std::int64_t opus_buffer_len(std::int64_t arr_ptr) {
 }
 
 extern "C" std::int64_t opus_parse_int(std::int64_t handle) {
-    auto& table = get_string_table();
-    if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) return 0;
+    std::string value;
+    {
+        std::lock_guard lock(get_string_table_mutex());
+        auto& table = get_string_table();
+        if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) return 0;
+        value = table[handle];
+    }
     try {
-        return std::stoll(table[handle]);
+        return std::stoll(value);
     } catch (...) {
         return 0;
     }
@@ -582,6 +690,10 @@ struct RuntimeFunctions {
     // memory
     RtI64I64    malloc_fn = &opus_malloc;
     RtVoidI64   free_fn = &opus_free;
+    RtI64I64I64 thread_spawn = &opus_thread_spawn;
+    RtI64I64I64 thread_wait = &opus_thread_wait;
+    RtI64I64    close_handle = &opus_close_handle;
+    std::int64_t* jit_global_base_slot = &get_jit_global_base_slot();
 
     // arrays
     RtI64I64    array_new = &opus_array_new;
@@ -736,6 +848,10 @@ public:
             .write_file = rt.write_file,
             .malloc_fn = rt.malloc_fn,
             .free_fn = rt.free_fn,
+            .thread_spawn = rt.thread_spawn,
+            .thread_wait = rt.thread_wait,
+            .close_handle = rt.close_handle,
+            .jit_global_base_slot = rt.jit_global_base_slot,
             .array_new = rt.array_new,
             .array_get = rt.array_get,
             .array_set = rt.array_set,
@@ -829,6 +945,7 @@ public:
     }
 
     std::expected<std::int64_t, std::string> compile_and_run(std::string_view source) {
+        reset_runtime_state();
         auto result = compile({.source = source});
         
         if (!result.success) {
@@ -850,6 +967,15 @@ public:
         // so we memcpy directly then finalize for W^X
         std::memcpy(exec.ptr(), result.code.data(), result.code.size());
         exec.finalize();
+
+        auto init_it = result.function_offsets.find("__opus_init");
+        if (init_it != result.function_offsets.end()) {
+            using InitFn = void(*)();
+            auto init_fn = reinterpret_cast<InitFn>(
+                static_cast<std::uint8_t*>(exec.ptr()) + init_it->second
+            );
+            init_fn();
+        }
 
         using MainFn = std::int64_t(*)();
         auto main_fn = reinterpret_cast<MainFn>(
@@ -923,4 +1049,3 @@ private:
 };
 
 } // namespace opus
-
