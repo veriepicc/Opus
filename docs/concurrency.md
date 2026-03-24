@@ -26,7 +26,8 @@ What you get:
 - `parallel for` — automatically split loop iterations across CPU cores
 - Atomic operations — lock-free shared state for concurrent code
 
-All of this works in EXE mode, DLL mode, and JIT mode.
+`spawn` / `await` and atomics work in EXE mode, DLL mode, and JIT mode.
+`parallel for` currently requires EXE or DLL codegen and is rejected in JIT mode.
 
 ---
 
@@ -299,7 +300,7 @@ let old = atomic_add(counter, 1)    // old = previous value
 Compare-and-swap. If the value at `ptr` equals `expected`, replace it with `desired`.
 Returns `1` on success, `0` on failure.
 
-Maps to `lock cmpxchg` (InterlockedCompareExchange64).
+Maps to `lock cmpxchg` and exposes the success flag directly.
 
 ```c
 let flag = malloc(8)
@@ -384,10 +385,19 @@ parallel for i in range(0, 100) {
 ```
 
 ```c
-// UNSAFE: data race! dont do this
+// REJECTED: parallel for captures outer locals by value,
+// so mutating one is almost always a race or a lie
 var shared = 0
 parallel for i in range(0, 100) {
     shared = shared + 1    // race condition, result is undefined
+}
+```
+
+```c
+// REJECTED: direct global mutation is also treated as implicit shared state
+mut total = 0
+parallel for i in range(0, 100) {
+    total = total + i
 }
 ```
 

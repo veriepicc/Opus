@@ -1,0 +1,6 @@
+var counter: i64 = 41
+
+function int main() {
+    counter = counter + 1
+    return counter
+}

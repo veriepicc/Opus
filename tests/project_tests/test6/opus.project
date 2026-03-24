@@ -1,0 +1,11 @@
+project First {
+    entry: "main.op"
+    output: "first.exe"
+    mode: "exe"
+}
+
+project Second {
+    entry: "missing.op"
+    output: "second.exe"
+    mode: "exe"
+}

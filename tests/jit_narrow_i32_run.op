@@ -1,0 +1,13 @@
+function int f(i32 x) {
+    print_int(x)
+    return 0
+}
+
+function int main() {
+    var x: i32 = 4294967296
+    x = 4294967297
+    x += 1
+    f(4294967298)
+    print_int(x)
+    return 0
+}

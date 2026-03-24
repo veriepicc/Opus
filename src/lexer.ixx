@@ -150,7 +150,9 @@ public:
     {}
 
     Token next() {
-        skip_whitespace();
+        if (auto err = skip_whitespace()) {
+            return *err;
+        }
         
         if (at_end()) {
             return make_token(TokenKind::Eof, "", loc_);
@@ -256,7 +258,7 @@ private:
         return c;
     }
 
-    void skip_whitespace() {
+    std::optional<Token> skip_whitespace() {
         while (!at_end()) {
             char c = peek();
             
@@ -265,15 +267,20 @@ private:
             } else if (c == '/' && peek(1) == '/') {
                 while (!at_end() && peek() != '\n') advance();
             } else if (c == '/' && peek(1) == '*') {
+                SourceLoc start = loc_;
                 advance(); advance();
                 while (!at_end() && !(peek() == '*' && peek(1) == '/')) {
                     advance();
                 }
-                if (!at_end()) { advance(); advance(); }
+                if (at_end()) {
+                    return make_token(TokenKind::Error, "unterminated block comment", start);
+                }
+                advance(); advance();
             } else {
                 break;
             }
         }
+        return std::nullopt;
     }
 
     Token make_token(TokenKind kind, std::string_view text, SourceLoc start) {
@@ -323,48 +330,52 @@ private:
             }
         }
 
-        // TODO: properly parse type suffixes like i32, u64, f32
-        while (is_alnum_char(peek())) advance();
-
         std::string_view text = source_.substr(start_pos, pos_ - start_pos);
         Token tok = make_token(is_float ? TokenKind::FloatLit : TokenKind::IntLit, text, start);
+        auto consumed_all = [&](const char* begin, const char* end, const auto& parsed) {
+            return parsed.ec == std::errc{} && parsed.ptr == end;
+        };
 
         // parse numeric value with from_chars (no locale, no alloc)
         if (is_float) {
             double dval = 0.0;
-            auto [p, ec] = std::from_chars(text.data(), text.data() + text.size(), dval);
-            if (ec == std::errc{}) {
+            auto parsed = std::from_chars(text.data(), text.data() + text.size(), dval);
+            if (consumed_all(text.data(), text.data() + text.size(), parsed)) {
                 tok.value = dval;
             } else {
                 tok.kind = TokenKind::Error;
+                tok.text = "invalid float literal";
             }
         } else if (is_hex) {
             // skip the 0x prefix for from_chars
             std::string_view digits = text.substr(2);
             std::uint64_t uval = 0;
-            auto [p, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), uval, 16);
-            if (ec == std::errc{}) {
+            auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), uval, 16);
+            if (!digits.empty() && consumed_all(digits.data(), digits.data() + digits.size(), parsed)) {
                 tok.value = static_cast<std::int64_t>(uval);
             } else {
                 tok.kind = TokenKind::Error;
+                tok.text = "invalid hex literal";
             }
         } else if (is_bin) {
             // skip the 0b prefix for from_chars
             std::string_view digits = text.substr(2);
             std::uint64_t uval = 0;
-            auto [p, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), uval, 2);
-            if (ec == std::errc{}) {
+            auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), uval, 2);
+            if (!digits.empty() && consumed_all(digits.data(), digits.data() + digits.size(), parsed)) {
                 tok.value = static_cast<std::int64_t>(uval);
             } else {
                 tok.kind = TokenKind::Error;
+                tok.text = "invalid binary literal";
             }
         } else {
             std::int64_t ival = 0;
-            auto [p, ec] = std::from_chars(text.data(), text.data() + text.size(), ival);
-            if (ec == std::errc{}) {
+            auto parsed = std::from_chars(text.data(), text.data() + text.size(), ival);
+            if (consumed_all(text.data(), text.data() + text.size(), parsed)) {
                 tok.value = ival;
             } else {
                 tok.kind = TokenKind::Error;
+                tok.text = "invalid integer literal";
             }
         }
 
@@ -390,7 +401,8 @@ private:
                     case '\\': value += '\\'; break;
                     case '"':  value += '"';  break;
                     case '0':  value += '\0'; break;
-                    default:   value += peek(); break;
+                    default:
+                        return make_token(TokenKind::Error, "unknown escape sequence in string", start);
                 }
                 advance();
             } else {
@@ -417,7 +429,7 @@ private:
             return make_token(TokenKind::Error, "unterminated char", start);
         }
 
-        char value = 0;
+        std::uint32_t value = 0;
         if (peek() == '\\') {
             advance();
             if (at_end()) {
@@ -430,11 +442,16 @@ private:
                 case '\\': value = '\\'; break;
                 case '\'': value = '\''; break;
                 case '0':  value = '\0'; break;
-                default:   value = peek(); break;
+                default:
+                    return make_token(TokenKind::Error, "unknown escape sequence in char", start);
             }
             advance();
         } else {
-            value = advance();
+            auto decoded = advance_utf8_codepoint();
+            if (!decoded) {
+                return make_token(TokenKind::Error, "invalid utf-8 char literal", start);
+            }
+            value = *decoded;
         }
 
         if (peek() != '\'') {
@@ -451,6 +468,7 @@ private:
         advance();
         
         std::vector<std::uint8_t> bytes;
+        std::optional<char> pending_nibble;
         
         while (!at_end() && peek() != '\"') {
             char c = peek();
@@ -461,23 +479,27 @@ private:
             }
             
             if (is_xdigit_char(c)) {
-                char hex[3] = {c, 0, 0};
-                advance();
-                
-                if (!at_end() && is_xdigit_char(peek())) {
-                    hex[1] = peek();
+                if (!pending_nibble) {
+                    pending_nibble = c;
                     advance();
-                }
-                
-                try {
-                    std::uint8_t byte = static_cast<std::uint8_t>(std::stoul(hex, nullptr, 16));
-                    bytes.push_back(byte);
-                } catch (...) {
-                    return make_token(TokenKind::Error, "invalid hex in hex string", start);
+                } else {
+                    char hex[3] = {*pending_nibble, c, 0};
+                    advance();
+                    try {
+                        std::uint8_t byte = static_cast<std::uint8_t>(std::stoul(hex, nullptr, 16));
+                        bytes.push_back(byte);
+                    } catch (...) {
+                        return make_token(TokenKind::Error, "invalid hex in hex string", start);
+                    }
+                    pending_nibble.reset();
                 }
             } else {
                 return make_token(TokenKind::Error, "invalid character in hex string", start);
             }
+        }
+
+        if (pending_nibble) {
+            return make_token(TokenKind::Error, "hex string must contain whole bytes", start);
         }
         
         if (at_end()) {
@@ -494,6 +516,61 @@ private:
         Token tok = make_token(TokenKind::HexStringLit, source_.substr(start_pos, pos_ - start_pos), start);
         tok.value = std::move(hex_data);
         return tok;
+    }
+
+    std::optional<std::uint32_t> advance_utf8_codepoint() {
+        if (at_end()) return std::nullopt;
+
+        auto read_cont = [this]() -> std::optional<std::uint8_t> {
+            if (at_end()) return std::nullopt;
+            unsigned char b = static_cast<unsigned char>(peek());
+            if ((b & 0xC0) != 0x80) return std::nullopt;
+            advance();
+            return static_cast<std::uint8_t>(b & 0x3F);
+        };
+
+        unsigned char first = static_cast<unsigned char>(peek());
+        if (first < 0x80) {
+            advance();
+            return first;
+        }
+
+        if ((first & 0xE0) == 0xC0) {
+            advance();
+            auto c1 = read_cont();
+            if (!c1) return std::nullopt;
+            std::uint32_t cp = (static_cast<std::uint32_t>(first & 0x1F) << 6) | *c1;
+            if (cp < 0x80) return std::nullopt;
+            return cp;
+        }
+
+        if ((first & 0xF0) == 0xE0) {
+            advance();
+            auto c1 = read_cont();
+            auto c2 = read_cont();
+            if (!c1 || !c2) return std::nullopt;
+            std::uint32_t cp = (static_cast<std::uint32_t>(first & 0x0F) << 12)
+                             | (static_cast<std::uint32_t>(*c1) << 6)
+                             | *c2;
+            if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) return std::nullopt;
+            return cp;
+        }
+
+        if ((first & 0xF8) == 0xF0) {
+            advance();
+            auto c1 = read_cont();
+            auto c2 = read_cont();
+            auto c3 = read_cont();
+            if (!c1 || !c2 || !c3) return std::nullopt;
+            std::uint32_t cp = (static_cast<std::uint32_t>(first & 0x07) << 18)
+                             | (static_cast<std::uint32_t>(*c1) << 12)
+                             | (static_cast<std::uint32_t>(*c2) << 6)
+                             | *c3;
+            if (cp < 0x10000 || cp > 0x10FFFF) return std::nullopt;
+            return cp;
+        }
+
+        return std::nullopt;
     }
 
     Token lex_ident() {
@@ -840,4 +917,3 @@ constexpr std::string_view token_kind_name(TokenKind k) {
 }
 
 } // namespace opus
-

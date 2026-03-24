@@ -195,6 +195,33 @@ private:
         }
     }
 
+    [[nodiscard]] bool looks_like_type_first_fn_decl_start() const {
+        if (current().is_type()) return true;
+        return check(TokenKind::Ident) &&
+               peek(1).kind == TokenKind::Ident &&
+               peek(2).kind == TokenKind::LParen;
+    }
+
+    [[nodiscard]] bool is_contextual_name_token(const Token& tok) const {
+        return tok.kind == TokenKind::Ident || tok.kind == TokenKind::Value;
+    }
+
+    Token consume_name(std::string_view message, bool allow_type_keywords = false) {
+        if (is_contextual_name_token(current())) {
+            return advance();
+        }
+        if (allow_type_keywords && current().is_type()) {
+            return advance();
+        }
+        error(message);
+        return current();
+    }
+
+    [[nodiscard]] bool looks_like_typed_name_start() const {
+        if (current().is_type()) return true;
+        return check(TokenKind::Ident) && peek(1).kind == TokenKind::Ident;
+    }
+
     // ========================================================================
     // DECLARATIONS
     // ========================================================================
@@ -240,7 +267,7 @@ private:
         if (match(TokenKind::Var)) {
             return parse_static_decl(true);
         }
-        if (current().is_type()) {
+        if (looks_like_type_first_fn_decl_start()) {
             return parse_fn_decl_v2_type_first();
         }
         
@@ -272,7 +299,7 @@ private:
     std::optional<ast::DeclPtr> parse_fn_decl_c() {
         SourceSpan span{.start = previous().loc};
         
-        Token name_tok = consume(TokenKind::Ident, "expected function name");
+        Token name_tok = consume_name("expected function name");
         std::string name(name_tok.text);
 
         consume(TokenKind::LParen, "expected '(' after function name");
@@ -306,13 +333,13 @@ private:
     std::optional<ast::DeclPtr> parse_fn_decl_english() {
         SourceSpan span{.start = previous().loc};
         
-        Token name_tok = consume(TokenKind::Ident, "expected function name");
+        Token name_tok = consume_name("expected function name");
         std::string name(name_tok.text);
 
         std::vector<ast::Param> params;
         if (match(TokenKind::With)) {
             do {
-                Token pname = consume(TokenKind::Ident, "expected parameter name");
+                Token pname = consume_name("expected parameter name");
                 consume(TokenKind::As, "expected 'as' after parameter name");
                 auto ptype = parse_type();
                 if (ptype) {
@@ -414,7 +441,7 @@ private:
         auto ret_type_opt = parse_type();
         Type ret_type = ret_type_opt ? std::move(*ret_type_opt) : Type::make_primitive(PrimitiveType::Void);
         
-        Token name_tok = consume(TokenKind::Ident, "expected function name after type");
+        Token name_tok = consume_name("expected function name after type");
         std::string name(name_tok.text);
 
         consume(TokenKind::LParen, "expected '('");
@@ -449,7 +476,7 @@ private:
                 error("expected parameter type");
                 return params;
             }
-            Token pname = consume(TokenKind::Ident, "expected parameter name after type");
+            Token pname = consume_name("expected parameter name after type");
             params.push_back(ast::Param{
                 .name = std::string(pname.text),
                 .type = std::move(*ptype),
@@ -485,7 +512,8 @@ private:
         SourceLoc stmt_start = current().loc;
         
         if (match(TokenKind::Let)) {
-            auto s = parse_let_or_var_v2(false);
+            bool is_mut = match(TokenKind::Mut);
+            auto s = parse_let_or_var_v2(is_mut);
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
@@ -505,7 +533,7 @@ private:
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
-        if (current().is_type()) {
+        if (looks_like_typed_name_start()) {
             auto s = parse_type_decl_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
             return s;
@@ -584,7 +612,7 @@ private:
         } else if (current().is_type()) {
             name = advance();
         } else {
-            name = consume(TokenKind::Ident, "expected variable name");
+            name = consume_name("expected variable name");
         }
         
         std::optional<Type> type;
@@ -610,7 +638,7 @@ private:
     }
 
     std::optional<ast::StmtPtr> parse_const_stmt_v2() {
-        Token name = consume(TokenKind::Ident, "expected constant name");
+        Token name = consume_name("expected constant name");
         
         std::optional<Type> type;
         if (match(TokenKind::Colon)) {
@@ -636,7 +664,7 @@ private:
         auto type = parse_type();
         if (!type) return std::nullopt;
         
-        Token name = consume(TokenKind::Ident, "expected variable name after type");
+        Token name = consume_name("expected variable name after type");
         
         std::optional<ast::ExprPtr> init;
         if (match(TokenKind::Assign)) {
@@ -722,7 +750,7 @@ private:
     }
 
     std::optional<ast::DeclPtr> parse_class_decl() {
-        Token name_tok = consume(TokenKind::Ident, "expected class name");
+        Token name_tok = consume_name("expected class name");
         consume(TokenKind::LBrace, "expected '{'");
 
         std::vector<std::pair<std::string, Type>> fields;
@@ -730,10 +758,11 @@ private:
 
         while (!check(TokenKind::RBrace) && !at_end()) {
             if (!check_loop_safeguard("parse_class_decl")) break;
+            std::size_t before = pos_;
             
             if (match(TokenKind::Function)) {
                 auto ret_type = parse_type();
-                Token method_name = consume(TokenKind::Ident, "expected method name");
+                Token method_name = consume_name("expected method name");
                 consume(TokenKind::LParen, "expected '(' after method name");
                 auto params = parse_param_list_v2();
                 consume(TokenKind::RParen, "expected ')'");
@@ -764,9 +793,9 @@ private:
                     error("expected ':' after field name");
                 }
             }
-            else if (current().is_type()) {
+            else if (looks_like_typed_name_start()) {
                 auto ftype = parse_type();
-                Token fname = consume(TokenKind::Ident, "expected field name");
+                Token fname = consume_name("expected field name");
                 if (ftype) {
                     fields.emplace_back(std::string(fname.text), std::move(*ftype));
                 }
@@ -775,6 +804,10 @@ private:
             }
             else {
                 error("expected field or method in class");
+                advance();
+            }
+
+            if (pos_ == before && !at_end()) {
                 advance();
             }
         }
@@ -796,7 +829,7 @@ private:
 
         do {
             bool is_mut = match(TokenKind::Mut);
-            Token pname = consume(TokenKind::Ident, "expected parameter name");
+            Token pname = consume_name("expected parameter name");
             consume(TokenKind::Colon, "expected ':' after parameter name");
             auto ptype = parse_type();
             if (ptype) {
@@ -816,7 +849,7 @@ private:
     // ========================================================================
 
     std::optional<ast::DeclPtr> parse_struct_decl() {
-        Token name_tok = consume(TokenKind::Ident, "expected struct name");
+        Token name_tok = consume_name("expected struct name");
         consume(TokenKind::LBrace, "expected '{'");
 
         std::vector<std::pair<std::string, Type>> fields;
@@ -824,18 +857,19 @@ private:
             if (!check_loop_safeguard("parse_struct_decl")) {
                 break;
             }
+            std::size_t before = pos_;
             // supports both rust-style (name: Type,) and c-style (Type name;)
             
-            if (current().is_type()) {
+            if (looks_like_typed_name_start()) {
                 auto ftype = parse_type();
-                Token fname = consume(TokenKind::Ident, "expected field name");
+                Token fname = consume_name("expected field name");
                 if (ftype) {
                     fields.emplace_back(std::string(fname.text), std::move(*ftype));
                 }
                 match(TokenKind::Semicolon);
                 match(TokenKind::Comma);
             } else {
-                Token fname = consume(TokenKind::Ident, "expected field name");
+                Token fname = consume_name("expected field name");
                 consume(TokenKind::Colon, "expected ':'");
                 auto ftype = parse_type();
                 if (ftype) {
@@ -843,6 +877,10 @@ private:
                 }
                 match(TokenKind::Comma);
                 match(TokenKind::Semicolon);
+            }
+
+            if (pos_ == before && !at_end()) {
+                advance();
             }
         }
 
@@ -857,7 +895,7 @@ private:
     }
 
     std::optional<ast::DeclPtr> parse_enum_decl() {
-        Token name_tok = consume(TokenKind::Ident, "expected enum name");
+        Token name_tok = consume_name("expected enum name");
         consume(TokenKind::LBrace, "expected '{' after enum name");
         
         std::vector<std::pair<std::string, std::optional<std::int64_t>>> variants;
@@ -865,7 +903,8 @@ private:
         
         while (!check(TokenKind::RBrace) && !at_end()) {
             if (!check_loop_safeguard("parse_enum_decl")) break;
-            Token variant_name = consume(TokenKind::Ident, "expected variant name");
+            std::size_t before = pos_;
+            Token variant_name = consume_name("expected variant name");
             
             std::optional<std::int64_t> explicit_value;
             if (match(TokenKind::Assign)) {
@@ -888,6 +927,10 @@ private:
                     }
                 }
             }
+
+            if (pos_ == before && !at_end()) {
+                advance();
+            }
         }
         
         consume(TokenKind::RBrace, "expected '}' after enum variants");
@@ -901,7 +944,7 @@ private:
     }
 
     std::optional<ast::DeclPtr> parse_const_decl() {
-        Token name_tok = consume(TokenKind::Ident, "expected constant name");
+        Token name_tok = consume_name("expected constant name");
         consume(TokenKind::Colon, "expected ':'");
         auto type = parse_type();
         consume(TokenKind::Assign, "expected '='");
@@ -920,7 +963,7 @@ private:
     }
 
     std::optional<ast::DeclPtr> parse_static_decl(bool is_mut) {
-        Token name_tok = consume(TokenKind::Ident, "expected variable name");
+        Token name_tok = consume_name("expected variable name");
         
         std::optional<Type> type;
         if (match(TokenKind::Colon)) {
@@ -963,7 +1006,7 @@ private:
 
         std::optional<std::string> alias;
         if (match(TokenKind::As)) {
-            Token alias_tok = consume(TokenKind::Ident, "expected alias");
+            Token alias_tok = consume_name("expected alias");
             alias = std::string(alias_tok.text);
         }
 
@@ -978,7 +1021,7 @@ private:
     }
 
     std::optional<ast::DeclPtr> parse_project_decl() {
-        Token name_tok = consume(TokenKind::Ident, "expected project name");
+        Token name_tok = consume_name("expected project name");
         consume(TokenKind::LBrace, "expected '{' after project name");
         
         ast::ProjectDecl proj;
@@ -987,6 +1030,7 @@ private:
         
         while (!check(TokenKind::RBrace) && !at_end()) {
             if (!check_loop_safeguard("parse_project_decl")) break;
+            std::size_t before = pos_;
             
             // property name could be ident or keyword like include
             std::string key_str;
@@ -1040,12 +1084,16 @@ private:
                 consume(TokenKind::LBracket, "expected '[' for include list");
                 while (!check(TokenKind::RBracket) && !at_end()) {
                     if (!check_loop_safeguard("parse_project_include")) break;
+                    std::size_t include_before = pos_;
                     Token path = consume(TokenKind::StringLit, "expected include path string");
                     auto* inc_ptr = std::get_if<std::string>(&path.value);
                     if (!inc_ptr) { error("expected string value for include path"); return std::nullopt; }
                     proj.includes.push_back(*inc_ptr);
                     if (!check(TokenKind::RBracket)) {
                         match(TokenKind::Comma);
+                    }
+                    if (pos_ == include_before && !at_end()) {
+                        advance();
                     }
                 }
                 consume(TokenKind::RBracket, "expected ']' after include list");
@@ -1085,9 +1133,12 @@ private:
             }
             
             match(TokenKind::Comma);
+            if (pos_ == before && !at_end()) {
+                advance();
+            }
         }
-        
-        consume(TokenKind::RBrace, "expected '}' after project properties");
+
+        consume(TokenKind::RBrace, "expected '}' after project declaration");
         
         auto decl = std::make_unique<ast::Decl>();
         decl->kind = std::move(proj);
@@ -1096,7 +1147,7 @@ private:
 
     std::optional<ast::DeclPtr> parse_extern_decl() {
         if (match(TokenKind::Fn)) {
-            Token name_tok = consume(TokenKind::Ident, "expected function name");
+            Token name_tok = consume_name("expected function name");
             consume(TokenKind::LParen, "expected '('");
             auto params = parse_param_list();
             consume(TokenKind::RParen, "expected ')'");
@@ -1147,21 +1198,8 @@ private:
     std::optional<ast::StmtPtr> parse_stmt_mixed() {
         if (check(TokenKind::Create)) return parse_stmt_english();
         if (check(TokenKind::Set)) return parse_stmt_english();
-        if (check(TokenKind::Return)) return parse_stmt_english();
-        if (check(TokenKind::If)) {
-            if (peek(1).kind == TokenKind::LParen) {
-                return parse_stmt_c();
-            }
-            return parse_stmt_english();
-        }
-        if (check(TokenKind::While)) {
-            if (peek(1).kind == TokenKind::LParen) {
-                return parse_stmt_c();
-            }
-            return parse_stmt_english();
-        }
         if (check(TokenKind::Call)) return parse_stmt_english();
-        return parse_stmt_c();
+        return parse_stmt_v2();
     }
 
     std::optional<ast::StmtPtr> parse_stmt_c() {
@@ -1239,7 +1277,7 @@ private:
         if (check(TokenKind::Create) && peek(1).kind == TokenKind::Variable) {
             advance(); // consume Create
             advance(); // consume Variable
-            Token name = consume(TokenKind::Ident, "expected variable name");
+            Token name = consume_name("expected variable name");
             consume(TokenKind::As, "expected 'as'");
             auto type = parse_type();
             
@@ -1301,7 +1339,7 @@ private:
 
     std::optional<ast::StmtPtr> parse_let_stmt() {
         bool is_mut = match(TokenKind::Mut);
-        Token name = consume(TokenKind::Ident, "expected variable name");
+        Token name = consume_name("expected variable name");
         
         std::optional<Type> type;
         if (match(TokenKind::Colon)) {
@@ -1498,11 +1536,12 @@ private:
             return Type::make_ptr(std::move(*inner), is_mut);
         }
 
-        // Array types [T; N] or [T]
+        std::optional<Type> base;
+
         if (match(TokenKind::LBracket)) {
             auto elem = parse_type();
             if (!elem) return std::nullopt;
-            
+
             std::optional<std::size_t> size;
             if (match(TokenKind::Semicolon)) {
                 Token n = consume(TokenKind::IntLit, "expected array size");
@@ -1511,20 +1550,17 @@ private:
                 }
             }
             consume(TokenKind::RBracket, "expected ']'");
-            
+
             Type t;
             t.kind = ArrayType{
                 .element = std::make_unique<Type>(std::move(*elem)),
                 .size = size
             };
-            return t;
-        }
-
-        if (current().is_type()) {
+            base = std::move(t);
+        } else if (current().is_type()) {
             Token t = advance();
             PrimitiveType pt;
             switch (t.kind) {
-                // v2.0 types
                 case TokenKind::TypeVoid:   pt = PrimitiveType::Void; break;
                 case TokenKind::TypeBool:   pt = PrimitiveType::Bool; break;
                 case TokenKind::TypeInt:    pt = PrimitiveType::I32; break;
@@ -1540,7 +1576,6 @@ private:
                 case TokenKind::TypeString: pt = PrimitiveType::Str; break;
                 case TokenKind::TypeChar:   pt = PrimitiveType::Char; break;
                 case TokenKind::TypePtr:    pt = PrimitiveType::Ptr; break;
-                // legacy types
                 case TokenKind::TypeI8:     pt = PrimitiveType::I8; break;
                 case TokenKind::TypeI16:    pt = PrimitiveType::I16; break;
                 case TokenKind::TypeI32:    pt = PrimitiveType::I32; break;
@@ -1556,18 +1591,41 @@ private:
                 case TokenKind::TypeStr:    pt = PrimitiveType::Str; break;
                 default: return std::nullopt;
             }
-            return Type::make_primitive(pt);
-        }
-
-        if (check(TokenKind::Ident)) {
+            base = Type::make_primitive(pt);
+        } else if (check(TokenKind::Ident)) {
             Token name = advance();
             Type t;
             t.kind = std::string(name.text);
-            return t;
+            base = std::move(t);
+        } else {
+            error("expected type");
+            return std::nullopt;
         }
 
-        error("expected type");
-        return std::nullopt;
+        while (match(TokenKind::LBracket)) {
+            std::optional<std::size_t> size;
+            if (match(TokenKind::Semicolon)) {
+                Token n = consume(TokenKind::IntLit, "expected array size");
+                if (auto* v = std::get_if<std::int64_t>(&n.value)) {
+                    size = static_cast<std::size_t>(*v);
+                }
+            } else if (!check(TokenKind::RBracket)) {
+                Token n = consume(TokenKind::IntLit, "expected array size or ']' after '['");
+                if (auto* v = std::get_if<std::int64_t>(&n.value)) {
+                    size = static_cast<std::size_t>(*v);
+                }
+            }
+            consume(TokenKind::RBracket, "expected ']'");
+
+            Type t;
+            t.kind = ArrayType{
+                .element = std::make_unique<Type>(std::move(*base)),
+                .size = size
+            };
+            base = std::move(t);
+        }
+
+        return base;
     }
 
     // ========================================================================
@@ -1589,7 +1647,13 @@ private:
             if (prec < min_prec) break;
             
             advance();
-            auto rhs = parse_expr_prec(prec + 1);
+            bool right_assoc = (op == ast::BinaryExpr::Op::Assign ||
+                                op == ast::BinaryExpr::Op::AddAssign ||
+                                op == ast::BinaryExpr::Op::SubAssign ||
+                                op == ast::BinaryExpr::Op::MulAssign ||
+                                op == ast::BinaryExpr::Op::DivAssign ||
+                                op == ast::BinaryExpr::Op::ModAssign);
+            auto rhs = parse_expr_prec(right_assoc ? prec : prec + 1);
             if (!rhs) return std::nullopt;
 
             auto bin = std::make_unique<ast::Expr>();
@@ -1735,7 +1799,7 @@ private:
                 }
             }
             else if (match(TokenKind::Dot)) {
-                Token field = consume(TokenKind::Ident, "expected field name");
+                Token field = consume_name("expected field name");
                 auto access = std::make_unique<ast::Expr>();
                 access->kind = ast::FieldExpr{
                     .base = std::move(*expr),
@@ -1793,7 +1857,8 @@ private:
             if (!check_loop_safeguard("parse_struct_literal")) {
                 break;
             }
-            Token field_name = consume(TokenKind::Ident, "expected field name");
+            std::size_t before = pos_;
+            Token field_name = consume_name("expected field name");
             consume(TokenKind::Colon, "expected ':' after field name");
             
             auto value = parse_expr();
@@ -1811,6 +1876,10 @@ private:
                         return std::nullopt;
                     }
                 }
+            }
+
+            if (pos_ == before && !at_end()) {
+                advance();
             }
         }
 
@@ -1845,7 +1914,7 @@ private:
 
     // spawn func(args) -> SpawnExpr
     std::optional<ast::ExprPtr> parse_spawn_expr() {
-        Token callee_tok = consume(TokenKind::Ident, "expected function name after 'spawn'");
+        Token callee_tok = consume_name("expected function name after 'spawn'");
         
         auto callee = std::make_unique<ast::Expr>();
         callee->kind = ast::IdentExpr{.name = std::string(callee_tok.text)};
@@ -2079,4 +2148,3 @@ private:
 };
 
 } // namespace opus
-

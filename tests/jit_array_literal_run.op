@@ -1,0 +1,5 @@
+function int main() {
+    let xs = [1, 2, 3]
+    print_int(xs[1])
+    return 0
+}

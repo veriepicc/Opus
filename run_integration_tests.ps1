@@ -14,12 +14,12 @@ $tests = @(
     "test_globals_simple",
     "test_globals",
     "test_import_basic",
-    "test_import_lib",
     "test_index_expr_array",
     "test_method_args",
     "test_multi_return",
     "test_nested_exprs",
     "test_print_int_decimal",
+    "test_parallel_capture_shadow",
     "test_reg_preserve",
     "test_short_circuit",
     "test_str_arg_helper",
@@ -29,10 +29,91 @@ $tests = @(
 )
 
 $negativeTests = @(
+    @{
+        Name = "test_import_lib"
+        File = "tests\\test_import_lib.op"
+        ExpectedErrorContains = "no 'main' function found"
+    },
+    "invalid_unterminated_block_comment",
+    "invalid_unknown_string_escape",
+    "invalid_hex_string_odd_nibbles",
     "invalid_unterminated_string_escape",
     "invalid_unterminated_char_escape",
     "invalid_english_block",
-    "invalid_struct_literal_eof"
+    "invalid_struct_literal_eof",
+    @{
+        Name = "invalid_spawn_void"
+        File = "tests\\invalid_spawn_void.op"
+        ExpectedErrorContains = "must return an integer-compatible value"
+    },
+    @{
+        Name = "invalid_spawn_arg_count"
+        File = "tests\\invalid_spawn_arg_count.op"
+        ExpectedErrorContains = "requires 2 arguments, got 1"
+    },
+    @{
+        Name = "invalid_parallel_capture_mutation"
+        File = "tests\\invalid_parallel_capture_mutation.op"
+        ExpectedErrorContains = "parallel for cannot mutate captured variable 'shared'"
+    },
+    @{
+        Name = "invalid_parallel_global_mutation"
+        File = "tests\\invalid_parallel_global_mutation.op"
+        ExpectedErrorContains = "parallel for cannot mutate global 'global_counter' directly"
+    }
+)
+
+$negativeRunTests = @(
+    @{
+        Name = "invalid_jit_parallel_for"
+        File = "tests\\invalid_jit_parallel_for.op"
+        ExpectedErrorContains = "parallel for is not supported in JIT mode yet"
+    }
+)
+
+$positiveRunTests = @(
+    @{
+        Name = "jit_cast_to_int_run"
+        File = "tests\\jit_cast_to_int_run.op"
+        ExpectedExit = 0
+        ExpectedOutputContains = "Program returned: 3"
+    },
+    @{
+        Name = "jit_narrow_i32_run"
+        File = "tests\\jit_narrow_i32_run.op"
+        ExpectedExit = 0
+        ExpectedOutputContains = "2`r`n2`r`nProgram returned: 0"
+    },
+    @{
+        Name = "jit_let_mut_typed_run"
+        File = "tests\\jit_let_mut_typed_run.op"
+        ExpectedExit = 0
+        ExpectedOutputContains = "Program returned: 3"
+    },
+    @{
+        Name = "jit_index_expr_run"
+        File = "tests\\jit_index_expr_run.op"
+        ExpectedExit = 0
+        ExpectedOutputContains = "10`r`n20`r`n30`r`nProgram returned: 0"
+    },
+    @{
+        Name = "jit_array_literal_run"
+        File = "tests\\jit_array_literal_run.op"
+        ExpectedExit = 0
+        ExpectedOutputContains = "2`r`nProgram returned: 0"
+    },
+    @{
+        Name = "jit_await_null_run"
+        File = "tests\\jit_await_null_run.op"
+        ExpectedExit = 0
+        ExpectedOutputContains = "0`r`nProgram returned: 0"
+    },
+    @{
+        Name = "jit_atomic_cas_run"
+        File = "tests\\jit_atomic_cas_run.op"
+        ExpectedExit = 0
+        ExpectedOutputContains = "1`r`n7`r`n0`r`n7`r`nProgram returned: 0"
+    }
 )
 
 $projectTests = @(
@@ -62,11 +143,16 @@ $negativeProjectTests = @(
         Name = "project_test5_import_cycle"
         ProjectFile = "tests\project_tests\test5\opus.project"
         ExpectedErrorContains = "import cycle detected"
+    },
+    @{
+        Name = "project_test6_duplicate_project_decl"
+        ProjectFile = "tests\project_tests\test6\opus.project"
+        ExpectedErrorContains = "multiple project declarations found"
     }
 )
 
 $results = @()
-$totalTests = $tests.Count + $negativeTests.Count + $projectTests.Count + $negativeProjectTests.Count
+$totalTests = $tests.Count + $negativeTests.Count + $negativeRunTests.Count + $positiveRunTests.Count + $projectTests.Count + $negativeProjectTests.Count
 $passedTests = 0
 $failedTests = 0
 
@@ -282,10 +368,11 @@ foreach ($project in $negativeProjectTests) {
 }
 
 foreach ($test in $negativeTests) {
-    $testFile = "tests\$test.op"
-    $exeFile = "tests\$test.exe"
+    $testName = if ($test -is [string]) { $test } else { $test.Name }
+    $testFile = if ($test -is [string]) { "tests\$test.op" } else { $test.File }
+    $exeFile = "tests\$testName.exe"
     
-    Write-Host "Testing: $test" -ForegroundColor Yellow
+    Write-Host "Testing: $testName" -ForegroundColor Yellow
     if (Test-Path $exeFile) {
         Remove-Item $exeFile -Force
     }
@@ -295,9 +382,12 @@ foreach ($test in $negativeTests) {
         $script:compileOutput = $output
     }).TotalMilliseconds
     
-    if ($LASTEXITCODE -ne 0) {
+    $compileText = ($script:compileOutput | Out-String)
+    $expectedMessage = if ($test -is [string]) { $null } else { $test.ExpectedErrorContains }
+
+    if ($LASTEXITCODE -ne 0 -and ($null -eq $expectedMessage -or $compileText.Contains($expectedMessage))) {
         $result = [PSCustomObject]@{
-            Test = $test
+            Test = $testName
             Status = "PASS"
             CompileTime = [math]::Round($compileTime, 2)
             BinarySize = 0
@@ -307,17 +397,98 @@ foreach ($test in $negativeTests) {
         $passedTests++
     } else {
         $result = [PSCustomObject]@{
-            Test = $test
+            Test = $testName
             Status = "FAIL"
             CompileTime = [math]::Round($compileTime, 2)
             BinarySize = if (Test-Path $exeFile) { [math]::Round(((Get-Item $exeFile).Length / 1KB), 2) } else { 0 }
-            Error = "expected compilation to fail"
+            Error = if ($null -eq $expectedMessage) {
+                "expected compilation to fail"
+            } else {
+                "expected compilation to fail with message containing '$expectedMessage'"
+            }
         }
         
         Write-Host "  FAIL - malformed input compiled successfully" -ForegroundColor Red
         $failedTests++
     }
     
+    $results += $result
+}
+
+foreach ($runTest in $positiveRunTests) {
+    Write-Host "Testing: $($runTest.Name)" -ForegroundColor Yellow
+
+    $output = & .\bin\Release\Opus.exe --run $runTest.File 2>&1
+    $combined = ($output | Out-String)
+    $expectedExit = $runTest.ExpectedExit
+    $expectedOutput = $runTest.ExpectedOutputContains
+    $exitOk = $LASTEXITCODE -eq $expectedExit
+    $outputOk = $combined.Contains($expectedOutput)
+
+    if ($exitOk -and $outputOk) {
+        $result = [PSCustomObject]@{
+            Test = $runTest.Name
+            Status = "PASS"
+            CompileTime = 0
+            BinarySize = 0
+        }
+
+        Write-Host "  PASS - run output matched" -ForegroundColor Green
+        $passedTests++
+    } else {
+        $result = [PSCustomObject]@{
+            Test = $runTest.Name
+            Status = "FAIL"
+            CompileTime = 0
+            BinarySize = 0
+            Error = $combined
+        }
+
+        Write-Host "  FAIL - unexpected run result" -ForegroundColor Red
+        Write-Host "  Output: $combined" -ForegroundColor Red
+        $failedTests++
+    }
+
+    $results += $result
+}
+
+foreach ($test in $negativeRunTests) {
+    $testName = $test.Name
+    $testFile = $test.File
+
+    Write-Host "Testing: $testName" -ForegroundColor Yellow
+
+    $compileTime = (Measure-Command {
+        $output = & .\bin\Release\Opus.exe --run $testFile 2>&1
+        $script:compileOutput = $output
+    }).TotalMilliseconds
+
+    $compileText = ($script:compileOutput | Out-String)
+
+    if ($LASTEXITCODE -ne 0 -and $compileText.Contains($test.ExpectedErrorContains)) {
+        $result = [PSCustomObject]@{
+            Test = $testName
+            Status = "PASS"
+            CompileTime = [math]::Round($compileTime, 2)
+            BinarySize = 0
+        }
+
+        Write-Host "  PASS - expected run failure in ${compileTime}ms" -ForegroundColor Green
+        $passedTests++
+    } else {
+        $result = [PSCustomObject]@{
+            Test = $testName
+            Status = "FAIL"
+            CompileTime = [math]::Round($compileTime, 2)
+            BinarySize = 0
+            Error = "expected run failure with message containing '$($test.ExpectedErrorContains)'"
+        }
+
+        Write-Host "  FAIL - unexpected run result" -ForegroundColor Red
+        Write-Host "  Error: $($script:compileOutput)" -ForegroundColor Red
+        $failedTests++
+    }
+
     $results += $result
 }
 

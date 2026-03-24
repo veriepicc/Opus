@@ -1,0 +1,6 @@
+function int main() {
+    let h = 0
+    let result = await h
+    print_int(result)
+    return 0
+}

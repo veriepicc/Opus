@@ -1,0 +1,7 @@
+function void worker() {
+}
+
+function int main() {
+    let h = spawn worker()
+    return 0
+}

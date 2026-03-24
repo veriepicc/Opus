@@ -129,6 +129,15 @@ public:
         return r;
     }
 
+    [[nodiscard]] constexpr std::uint8_t rex_sib(bool w, Reg reg, Reg index, Reg base) {
+        std::uint8_t r = 0x40;
+        if (w) r |= 0x08;
+        if (static_cast<std::uint8_t>(reg) >= 8) r |= 0x04;
+        if (static_cast<std::uint8_t>(index) >= 8) r |= 0x02;
+        if (static_cast<std::uint8_t>(base) >= 8) r |= 0x01;
+        return r;
+    }
+
     [[nodiscard]] constexpr std::uint8_t modrm(std::uint8_t mod, Reg reg, Reg rm) {
         return (mod << 6) | ((static_cast<std::uint8_t>(reg) & 7) << 3) | (static_cast<std::uint8_t>(rm) & 7);
     }
@@ -197,7 +206,7 @@ public:
         else if (scale == 4) scale_bits = 2;
         else if (scale == 8) scale_bits = 3;
         
-        buf_.emit8(rex(true, dst, base));
+        buf_.emit8(rex_sib(true, dst, index, base));
         buf_.emit8(0x8D);
         buf_.emit8(modrm(0b00, dst, Reg(4)));  // modrm points to SIB
         // SIB byte: scale.index.base
@@ -1025,6 +1034,8 @@ public:
     std::size_t size() const { return size_; }
 
     void copy_from(const CodeBuffer& buf) {
+        if (!ptr_)
+            throw std::logic_error("cannot copy into null executable memory");
         if (buf.pos() > size_)
             throw std::logic_error("code buffer too large for executable memory");
         std::memcpy(ptr_, buf.data(), buf.pos());
@@ -1038,6 +1049,9 @@ public:
         DWORD old_protect{};
         if (!VirtualProtect(ptr_, size_, PAGE_EXECUTE_READ, &old_protect))
             throw std::logic_error("VirtualProtect failed during finalize");
+#ifdef _WIN32
+        FlushInstructionCache(GetCurrentProcess(), ptr_, size_);
+#endif
         finalized_ = true;
     }
 
@@ -1060,4 +1074,3 @@ private:
 #endif // _WIN32
 
 } // namespace opus::x64
-

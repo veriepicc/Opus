@@ -1,0 +1,6 @@
+function int main() {
+    parallel for i in range(0, 8) {
+        print_int(i)
+    }
+    return 0
+}

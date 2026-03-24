@@ -1,0 +1,7 @@
+function int main() {
+    parallel for i in range(0, 4) {
+        let total = i
+        print_int(total)
+    }
+    return 0
+}
