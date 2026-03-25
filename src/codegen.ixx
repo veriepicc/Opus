@@ -272,10 +272,18 @@ public:
             }
         }
 
-        // if we have globals, reserve 8 bytes at the start of the code buffer
-        // for the global base pointer (rip-relative storage)
-        // emit a jmp over it so execution doesnt hit the data bytes
-        if (!globals_.empty() && dll_mode_) {
+        // imports can contribute globals too, so collect their declarations before
+        // deciding whether this module needs a writable globals slot
+        for (const auto& decl : mod.decls) {
+            if (decl->is<ast::ImportDecl>()) {
+                if (!collect_import_metadata(decl->as<ast::ImportDecl>())) return false;
+            }
+        }
+
+        // reserve a writable globals slot for native image mode up front.
+        // imports can introduce globals later, and the tiny cost here is much
+        // better than rejecting valid imported-global programs at codegen time.
+        if (dll_mode_) {
             std::size_t jmp_over = emit_.jmp_rel32_placeholder();
             global_base_slot_ = emit_.buffer().pos();
             has_global_slot_ = true;
@@ -491,6 +499,8 @@ private:
         std::vector<std::string> globals;
     };
     std::unordered_map<std::string, ImportedModuleExports> imported_module_exports_;
+    std::unordered_set<std::string> imported_module_metadata_;
+    std::unordered_map<std::string, std::shared_ptr<ast::Module>> imported_module_asts_;
     std::unordered_map<std::string, std::string> function_aliases_;
     std::unordered_map<std::string, std::string> type_aliases_;
     std::unordered_map<std::string, std::string> enum_aliases_;
@@ -1400,70 +1410,68 @@ private:
     [[nodiscard]] bool generate_stmt_list(const std::vector<ast::StmtPtr>& stmts) {
         return generate_stmt_list_from(stmts, 0);
     }
-    
-    // resolve and compile an imported module
-    [[nodiscard]] bool generate_import(const ast::ImportDecl& imp) {
+
+    [[nodiscard]] bool collect_import_metadata(const ast::ImportDecl& imp) {
         auto full_path = resolve_import_path(imp.path);
         std::string canonical = full_path.string();
 
-        if (auto state_it = import_states_.find(canonical); state_it != import_states_.end()) {
-            if (state_it->second == ImportState::InProgress) {
-                error(std::format("import cycle detected: {}", format_import_cycle(canonical)));
-                return false;
-            }
-            if (auto it = imported_module_exports_.find(canonical); it != imported_module_exports_.end()) {
-                return register_import_aliases(imp, it->second, canonical);
-            }
-            error(std::format("import bookkeeping error for module: {}", display_module_path(canonical)));
+        if (imported_module_metadata_.contains(canonical)) {
+            return true;
+        }
+
+        if (std::ranges::find(import_stack_, canonical) != import_stack_.end()) {
+            error(std::format("import cycle detected: {}", format_import_cycle(canonical)));
             return false;
         }
-        import_states_[canonical] = ImportState::InProgress;
+
         import_stack_.push_back(canonical);
 
         auto abandon_import = [&]() {
-            import_states_.erase(canonical);
             if (!import_stack_.empty() && import_stack_.back() == canonical) {
                 import_stack_.pop_back();
             }
         };
 
-        // read the file
-        std::ifstream file(full_path);
-        if (!file) {
-            abandon_import();
-            error(std::format("cannot find module: {}", full_path.string()));
-            return false;
-        }
-        std::stringstream buf;
-        buf << file.rdbuf();
-        std::string source = buf.str();
-
-        // lex
-        Lexer lexer(source, canonical);
-        auto tokens = lexer.tokenize_all();
-        for (const auto& tok : tokens) {
-            if (tok.kind == TokenKind::Error) {
+        std::shared_ptr<ast::Module> mod_ptr;
+        if (auto ast_it = imported_module_asts_.find(canonical); ast_it != imported_module_asts_.end()) {
+            mod_ptr = ast_it->second;
+        } else {
+            std::ifstream file(full_path);
+            if (!file) {
                 abandon_import();
-                error(std::format("{}:{}:{}: lexer error in imported module: {}",
-                    tok.loc.file, tok.loc.line, tok.loc.column, tok.text));
+                error(std::format("cannot find module: {}", full_path.string()));
                 return false;
             }
-        }
 
-        // parse
-        Parser parser(std::move(tokens), SyntaxMode::CStyle);
-        auto mod_result = parser.parse_module(canonical);
-        if (!mod_result) {
-            abandon_import();
-            for (const auto& err : mod_result.error()) {
-                error(std::format("error in imported module {}: {}", imp.path, err.to_string()));
+            std::stringstream buf;
+            buf << file.rdbuf();
+            std::string source = buf.str();
+
+            Lexer lexer(source, canonical);
+            auto tokens = lexer.tokenize_all();
+            for (const auto& tok : tokens) {
+                if (tok.kind == TokenKind::Error) {
+                    abandon_import();
+                    error(std::format("{}:{}:{}: lexer error in imported module: {}",
+                        tok.loc.file, tok.loc.line, tok.loc.column, tok.text));
+                    return false;
+                }
             }
-            return false;
+
+            Parser parser(std::move(tokens), SyntaxMode::CStyle);
+            auto mod_result = parser.parse_module(canonical);
+            if (!mod_result) {
+                abandon_import();
+                for (const auto& err : mod_result.error()) {
+                    error(std::format("error in imported module {}: {}", imp.path, err.to_string()));
+                }
+                return false;
+            }
+
+            mod_ptr = std::make_shared<ast::Module>(std::move(*mod_result));
+            imported_module_asts_[canonical] = mod_ptr;
         }
 
-        ImportedModuleExports exports = collect_imported_module_exports(*mod_result);
-
-        // save current source path, set to imported file
         auto saved_path = source_path_;
         source_path_ = canonical;
 
@@ -1473,8 +1481,15 @@ private:
             return false;
         };
 
-        // first pass: collect function signatures, structs, and globals from imported module
-        for (const auto& decl : mod_result->decls) {
+        for (const auto& decl : mod_ptr->decls) {
+            if (decl->is<ast::ImportDecl>()) {
+                if (!collect_import_metadata(decl->as<ast::ImportDecl>())) {
+                    return fail_import();
+                }
+            }
+        }
+
+        for (const auto& decl : mod_ptr->decls) {
             if (decl->is<ast::FnDecl>()) {
                 const auto& fn = decl->as<ast::FnDecl>();
                 if (!claim_symbol_name(function_owners_, "function", fn.name, current_symbol_owner())) {
@@ -1503,8 +1518,130 @@ private:
             }
         }
 
+        imported_module_exports_[canonical] = collect_imported_module_exports(*mod_ptr);
+        imported_module_metadata_.insert(canonical);
+        import_stack_.pop_back();
+        source_path_ = saved_path;
+        return true;
+    }
+    
+    // resolve and compile an imported module
+    [[nodiscard]] bool generate_import(const ast::ImportDecl& imp) {
+        auto full_path = resolve_import_path(imp.path);
+        std::string canonical = full_path.string();
+
+        if (auto state_it = import_states_.find(canonical); state_it != import_states_.end()) {
+            if (state_it->second == ImportState::InProgress) {
+                error(std::format("import cycle detected: {}", format_import_cycle(canonical)));
+                return false;
+            }
+            if (auto it = imported_module_exports_.find(canonical); it != imported_module_exports_.end()) {
+                return register_import_aliases(imp, it->second, canonical);
+            }
+            error(std::format("import bookkeeping error for module: {}", display_module_path(canonical)));
+            return false;
+        }
+        import_states_[canonical] = ImportState::InProgress;
+        import_stack_.push_back(canonical);
+
+        auto abandon_import = [&]() {
+            import_states_.erase(canonical);
+            if (!import_stack_.empty() && import_stack_.back() == canonical) {
+                import_stack_.pop_back();
+            }
+        };
+
+        std::shared_ptr<ast::Module> mod_ptr;
+        if (auto ast_it = imported_module_asts_.find(canonical); ast_it != imported_module_asts_.end()) {
+            mod_ptr = ast_it->second;
+        } else {
+            std::ifstream file(full_path);
+            if (!file) {
+                abandon_import();
+                error(std::format("cannot find module: {}", full_path.string()));
+                return false;
+            }
+            std::stringstream buf;
+            buf << file.rdbuf();
+            std::string source = buf.str();
+
+            Lexer lexer(source, canonical);
+            auto tokens = lexer.tokenize_all();
+            for (const auto& tok : tokens) {
+                if (tok.kind == TokenKind::Error) {
+                    abandon_import();
+                    error(std::format("{}:{}:{}: lexer error in imported module: {}",
+                        tok.loc.file, tok.loc.line, tok.loc.column, tok.text));
+                    return false;
+                }
+            }
+
+            Parser parser(std::move(tokens), SyntaxMode::CStyle);
+            auto mod_result = parser.parse_module(canonical);
+            if (!mod_result) {
+                abandon_import();
+                for (const auto& err : mod_result.error()) {
+                    error(std::format("error in imported module {}: {}", imp.path, err.to_string()));
+                }
+                return false;
+            }
+
+            mod_ptr = std::make_shared<ast::Module>(std::move(*mod_result));
+            imported_module_asts_[canonical] = mod_ptr;
+        }
+
+        bool metadata_already_collected = imported_module_metadata_.contains(canonical);
+        ImportedModuleExports exports;
+        if (auto it = imported_module_exports_.find(canonical); it != imported_module_exports_.end()) {
+            exports = it->second;
+        } else {
+            exports = collect_imported_module_exports(*mod_ptr);
+        }
+
+        // save current source path, set to imported file
+        auto saved_path = source_path_;
+        source_path_ = canonical;
+
+        auto fail_import = [&]() {
+            source_path_ = saved_path;
+            abandon_import();
+            return false;
+        };
+
+        if (!metadata_already_collected) {
+            // first pass: collect function signatures, structs, and globals from imported module
+            for (const auto& decl : mod_ptr->decls) {
+                if (decl->is<ast::FnDecl>()) {
+                    const auto& fn = decl->as<ast::FnDecl>();
+                    if (!claim_symbol_name(function_owners_, "function", fn.name, current_symbol_owner())) {
+                        return fail_import();
+                    }
+                    functions_[fn.name] = FunctionInfo{
+                        .name = fn.name,
+                        .code_offset = 0,
+                        .code_size = 0,
+                        .return_type = fn.return_type.clone(),
+                        .param_types = [&fn] {
+                            std::vector<Type> params;
+                            params.reserve(fn.params.size());
+                            for (const auto& param : fn.params) params.push_back(param.type.clone());
+                            return params;
+                        }()
+                    };
+                } else if (decl->is<ast::StructDecl>()) {
+                    if (!generate_struct_decl(decl->as<ast::StructDecl>())) {
+                        return fail_import();
+                    }
+                } else if (decl->is<ast::StaticDecl>()) {
+                    if (!register_static_decl(decl->as<ast::StaticDecl>())) {
+                        return fail_import();
+                    }
+                }
+            }
+        }
+
         // second pass: compile declarations
-        for (const auto& decl : mod_result->decls) {
+        for (const auto& decl : mod_ptr->decls) {
             if (!generate_decl(*decl)) {
                 return fail_import();
             }
@@ -1525,8 +1662,15 @@ private:
     // track global variables for later initialization
     bool register_static_decl(const ast::StaticDecl& sd) {
         if (!claim_symbol_name(global_owners_, "global", sd.name, current_symbol_owner(), true)) return false;
-        // skip if already registered (first pass collects them early)
-        if (globals_.contains(sd.name)) return true;
+        // imports collect globals during metadata pre-pass using a temporary parsed
+        // module. When we later compile the real imported module, refresh the
+        // initializer pointer so __opus_init never walks a dangling AST node.
+        if (auto it = globals_.find(sd.name); it != globals_.end()) {
+            it->second.type = sd.type.clone();
+            it->second.is_mut = sd.is_mut;
+            it->second.init = sd.init ? sd.init.value().get() : nullptr;
+            return true;
+        }
         
         GlobalVar gv;
         gv.name = sd.name;
@@ -2149,7 +2293,6 @@ private:
         }
 
         info.code_size = emit_.buffer().pos() - info.code_offset;
-
         current_function_saved_regs_.clear();
 
         pop_scope();
@@ -6507,8 +6650,11 @@ private:
     [[nodiscard]] bool generate_unary(const ast::UnaryExpr& un) {
         using Op = ast::UnaryExpr::Op;
 
-        // Generate operand -> RAX
-        if (!generate_expr(*un.operand)) return false;
+        // Addr-of needs the raw operand, not its loaded value.
+        if (un.op != Op::AddrOf && un.op != Op::AddrOfMut) {
+            // Generate operand -> RAX
+            if (!generate_expr(*un.operand)) return false;
+        }
 
         switch (un.op) {
             case Op::Neg:
@@ -6531,11 +6677,18 @@ private:
                 if (un.operand->is<ast::IdentExpr>()) {
                     const auto& ident = un.operand->as<ast::IdentExpr>();
                     Symbol* sym = current_scope_->lookup(ident.name);
-                    if (!sym) {
-                        error(std::format("undefined variable: {}", ident.name));
-                        return false;
+                    if (sym) {
+                        emit_.lea(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+                    } else {
+                        std::string resolved_name = resolve_function_name(ident.name);
+                        auto fn_it = functions_.find(resolved_name);
+                        if (fn_it == functions_.end()) {
+                            error(std::format("undefined variable: {}", ident.name));
+                            return false;
+                        }
+                        std::size_t fn_addr_fixup = emit_lea_rip_disp32(x64::Reg::RAX);
+                        call_fixups_.push_back({fn_addr_fixup, resolved_name});
                     }
-                    emit_.lea(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
                 } else {
                     error("cannot take address of this expression");
                     return false;
@@ -6606,9 +6759,23 @@ private:
     }
 
     [[nodiscard]] bool generate_direct_call_named(const ast::CallExpr& call, const std::string& target_fn_name) {
-        auto it = functions_.find(target_fn_name);
+        std::string resolved_target = target_fn_name;
+        if (resolved_target.empty()) {
+            if (call.callee->is<ast::IdentExpr>()) {
+                const auto& raw_name = call.callee->as<ast::IdentExpr>().name;
+                if (!raw_name.empty()) {
+                    resolved_target = resolve_function_name(raw_name);
+                }
+            } else if (call.callee->is<ast::FieldExpr>()) {
+                if (auto qualified = get_qualified_name(*call.callee)) {
+                    resolved_target = resolve_function_name(*qualified);
+                }
+            }
+        }
+
+        auto it = functions_.find(resolved_target);
         if (it == functions_.end()) {
-            error(std::format("undefined function: {}", target_fn_name));
+            error(std::format("undefined function: {}", resolved_target));
             return false;
         }
 
@@ -6640,7 +6807,7 @@ private:
 
                 call_fixups_.push_back(CallFixup{
                     .call_site = fixup_site,
-                    .target_fn = target_fn_name
+                    .target_fn = resolved_target
                 });
 
                 emit_.add_smart(x64::Reg::RSP, 32);
@@ -6666,7 +6833,7 @@ private:
 
             call_fixups_.push_back(CallFixup{
                 .call_site = fixup_site,
-                .target_fn = target_fn_name
+                .target_fn = resolved_target
             });
 
             emit_.add_smart(x64::Reg::RSP, 32);
@@ -6694,7 +6861,7 @@ private:
 
         call_fixups_.push_back(CallFixup{
             .call_site = fixup_site,
-            .target_fn = target_fn_name
+            .target_fn = resolved_target
         });
 
         emit_.add_smart(x64::Reg::RSP, static_cast<std::int32_t>(alloc + nargs * 8));
