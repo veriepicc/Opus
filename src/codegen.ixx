@@ -19,6 +19,8 @@ extern "C" {
     std::int64_t opus_ffi_call2(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2);
     std::int64_t opus_ffi_call3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3);
     std::int64_t opus_ffi_call4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4);
+    std::int64_t opus_ffi_call2_f32x3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec3_ptr);
+    std::int64_t opus_ffi_call2_f32x4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec4_ptr);
     std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text_handle, std::int64_t flags);
     std::int64_t opus_get_last_error();
     std::int64_t opus_virtual_protect(std::int64_t address, std::int64_t size, std::int64_t new_protect);
@@ -983,6 +985,8 @@ private:
             {"ffi_call2",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call2"); }},
             {"ffi_call3",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_four_arg(c, "ffi_call3"); }},
             {"ffi_call4",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_five_arg(c, "ffi_call4"); }},
+            {"ffi_call2_f32x3", [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call2_f32x3"); }},
+            {"ffi_call2_f32x4", [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call2_f32x4"); }},
             {"msgbox",          [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "msgbox"); }},
             {"get_last_error",  [this](const ast::CallExpr&) { return generate_builtin_ffi_zero_arg("get_last_error"); }},
             {"virtual_protect", [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "virtual_protect"); }},
@@ -9165,6 +9169,8 @@ private:
             {"ffi_call2",               reinterpret_cast<void*>(&opus_ffi_call2)},
             {"ffi_call3",               reinterpret_cast<void*>(&opus_ffi_call3)},
             {"ffi_call4",               reinterpret_cast<void*>(&opus_ffi_call4)},
+            {"ffi_call2_f32x3",         reinterpret_cast<void*>(&opus_ffi_call2_f32x3)},
+            {"ffi_call2_f32x4",         reinterpret_cast<void*>(&opus_ffi_call2_f32x4)},
             {"msgbox",                  reinterpret_cast<void*>(&opus_msgbox)},
             {"get_last_error",          reinterpret_cast<void*>(&opus_get_last_error)},
             {"virtual_protect",         reinterpret_cast<void*>(&opus_virtual_protect)},
