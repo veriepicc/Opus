@@ -215,6 +215,7 @@ public:
     // repl state flags: 16 bytes
     static constexpr std::size_t REPL_STATE_OFFSET_IN_DATA = REPL_BUFFER_OFFSET_IN_DATA + REPL_BUFFER_SIZE;
     static constexpr std::size_t REPL_STATE_SIZE = 16;
+    static constexpr std::size_t FREEZE_LATCH_OFFSET_IN_REPL_STATE = 2;
     static constexpr std::size_t REPL_DATA_TOTAL = BP_TABLE_SIZE + REPL_BUFFER_SIZE + REPL_STATE_SIZE;
 
     std::vector<std::uint8_t> generate(const GenerateConfig& cfg) {
@@ -287,14 +288,21 @@ public:
         constexpr std::size_t reloc_raw_size = 8;
         std::size_t reloc_file_sz = align_up(reloc_raw_size, kFileAlign);
         
-        // image size = highest section RVA + one page
-        std::size_t image_size;
+        // image size = max aligned end across all emitted sections
+        auto section_end = [&](std::size_t rva, std::size_t virtual_size) {
+            return rva + align_up(virtual_size, kSectAlign);
+        };
+
+        std::size_t image_size = 0;
+        image_size = (std::max)(image_size, section_end(text_rva, text.size()));
+        image_size = (std::max)(image_size, section_end(rdata_rva, imports.rdata.size()));
+        image_size = (std::max)(image_size, section_end(data_rva, data_raw_size));
+        image_size = (std::max)(image_size, section_end(reloc_rva, reloc_raw_size));
+        if (has_debug) {
+            image_size = (std::max)(image_size, section_end(src_rva, cfg.debug_source.size() + 1));
+        }
         if (has_linemap) {
-            image_size = srcmap_rva + kSectAlign;
-        } else if (has_debug) {
-            image_size = src_rva + kSectAlign;
-        } else {
-            image_size = reloc_rva + kSectAlign;
+            image_size = (std::max)(image_size, section_end(srcmap_rva, cfg.line_map.size() * 8 + 4));
         }
         if (image_size > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) {
             throw std::overflow_error("image size exceeds rel32-safe range");
@@ -1286,6 +1294,19 @@ private:
         code[jb_not_reentrant] = static_cast<std::uint8_t>(not_reentrant - (jb_not_reentrant + 1));
         code[jae_not_reentrant] = static_cast<std::uint8_t>(not_reentrant - (jae_not_reentrant + 1));
 
+        std::size_t jne_silent_freeze = 0;
+        if (healing_mode == ast::HealingMode::Freeze) {
+            // Atomically claim freeze ownership before printing anything.
+            // Without this, multiple crashing threads can all pass the early
+            // "latch == 0" check and each print their own crash banner.
+            emit8(code, 0xB0); emit8(code, 0x01);                                     // mov al, 1
+            emit8(code, 0x86); emit8(code, 0x83);                                     // xchg [rbx + repl_state + latch], al
+            emit32(code, static_cast<std::uint32_t>(data_rva + REPL_STATE_OFFSET_IN_DATA + FREEZE_LATCH_OFFSET_IN_REPL_STATE));
+            emit8(code, 0x84); emit8(code, 0xC0);                                     // test al, al
+            emit8(code, 0x0F); emit8(code, 0x85);                                     // jne -> silent_freeze
+            jne_silent_freeze = code.size(); emit32(code, 0);
+        }
+
         // print header
         const char hdr[] = "\n=== OPUS CRASH DETECTED ===\n\0";
         emit_print_inline(code, text_rva, print_offset, hdr, sizeof(hdr));
@@ -1559,21 +1580,20 @@ private:
         // ---- .handle_unknown: UNKNOWN_EXCEPTION (0x...) ----
         patch32(code, jmp_unknown);
         {
-            emit8(code, 0xC7); emit8(code, 0x45); emit8(code, 0xD4); emit32(code, 0);  // unhealable
-            const char unk_str[] = "  Exception: UNKNOWN_EXCEPTION (0x\0";
-            emit_print_inline(code, text_rva, print_offset, unk_str, sizeof(unk_str));
-
-            // print the exception code as hex
-            emit8(code, 0x41); emit8(code, 0x8B); emit8(code, 0x07);                    // mov eax, [r15]
-            emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xC1);                    // mov rcx, rax
-            std::size_t hex_call2 = code.size();
-            std::int32_t hex_rel2 = static_cast<std::int32_t>((text_rva + print_hex_offset) - (text_rva + hex_call2 + 5));
-            emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(hex_rel2));
-
-            const char unk_close[] = ")\n\0";
-            emit_print_inline(code, text_rva, print_offset, unk_close, sizeof(unk_close));
+            // Unknown/non-hardware exceptions often belong to the host process
+            // (for example Microsoft C++ EH 0xE06D7363). Let normal handlers see them.
+            emit8(code, 0x41); emit8(code, 0x5F);                     // pop r15
+            emit8(code, 0x41); emit8(code, 0x5E);                     // pop r14
+            emit8(code, 0x41); emit8(code, 0x5D);                     // pop r13
+            emit8(code, 0x41); emit8(code, 0x5C);                     // pop r12
+            emit8(code, 0x5F);                                        // pop rdi
+            emit8(code, 0x5E);                                        // pop rsi
+            emit8(code, 0x5B);                                        // pop rbx
+            emit8(code, 0x48); emit8(code, 0x81); emit8(code, 0xC4); emit32(code, 0xC0);  // add rsp, 0xC0
+            emit8(code, 0x5D);                                        // pop rbp
+            emit8(code, 0x31); emit8(code, 0xC0);                     // xor eax, eax (EXCEPTION_CONTINUE_SEARCH)
+            emit8(code, 0xC3);                                        // ret
         }
-        // fall through to after_exception_type
 
         // ---- .after_exception_type: all paths converge here ----
         patch32(code, jmp_after_exc_av);
@@ -1587,7 +1607,14 @@ private:
         if (srcmap_rva == 0 || src_rva == 0) {
             // no debug info compiled in - simple fallback
             const char no_dbg[] = "  (no debug info)\n  [PAUSED] attach debugger...\n\0";
+            emit8(code, 0xC6); emit8(code, 0x83);                                 // mov byte [rbx + repl_state + latch], 1
+            emit32(code, static_cast<std::uint32_t>(data_rva + REPL_STATE_OFFSET_IN_DATA + FREEZE_LATCH_OFFSET_IN_REPL_STATE));
+            emit8(code, 0x01);
             emit_print_inline(code, text_rva, print_offset, no_dbg, sizeof(no_dbg));
+            std::size_t silent_freeze = code.size();
+            if (healing_mode == ast::HealingMode::Freeze) {
+                patch32(code, jne_silent_freeze);
+            }
             emit8(code, 0xEB); emit8(code, 0xFE);  // jmp $ (freeze)
         } else {
             // ---- crash offset computation ----
@@ -2330,12 +2357,22 @@ private:
                 patch32(code, jz_freeze);
                 patch32(code, jmp_freeze_fallback);
                 const char freeze_msg[] = "  [PAUSED] attach debugger...\n\0";
+                emit8(code, 0xC6); emit8(code, 0x83);                             // mov byte [rbx + repl_state + latch], 1
+                emit32(code, static_cast<std::uint32_t>(data_rva + REPL_STATE_OFFSET_IN_DATA + FREEZE_LATCH_OFFSET_IN_REPL_STATE));
+                emit8(code, 0x01);
                 emit_print_inline(code, text_rva, print_offset, freeze_msg, sizeof(freeze_msg));
+                std::size_t silent_freeze = code.size();
+                patch32(code, jne_silent_freeze);
                 emit8(code, 0xEB); emit8(code, 0xFE);  // jmp $
             } else {
                 // non-auto mode: just freeze
                 const char freeze_msg[] = "  [PAUSED] attach debugger...\n\0";
+                emit8(code, 0xC6); emit8(code, 0x83);                             // mov byte [rbx + repl_state + latch], 1
+                emit32(code, static_cast<std::uint32_t>(data_rva + REPL_STATE_OFFSET_IN_DATA + FREEZE_LATCH_OFFSET_IN_REPL_STATE));
+                emit8(code, 0x01);
                 emit_print_inline(code, text_rva, print_offset, freeze_msg, sizeof(freeze_msg));
+                std::size_t silent_freeze = code.size();
+                patch32(code, jne_silent_freeze);
                 emit8(code, 0xEB); emit8(code, 0xFE);  // jmp $
             }
 
