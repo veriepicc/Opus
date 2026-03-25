@@ -342,6 +342,22 @@ extern "C" std::int64_t opus_ffi_call6(std::int64_t fn_ptr, std::int64_t a1, std
     return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3, a4, a5, a6);
 }
 
+extern "C" std::int64_t opus_ffi_call2_f32x3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec3_ptr) {
+    if (fn_ptr == 0 || vec3_ptr == 0) return 0;
+    const float* v = reinterpret_cast<const float*>(vec3_ptr);
+    using Fn = void(*)(std::int64_t, float, float, float);
+    reinterpret_cast<Fn>(fn_ptr)(a1, v[0], v[1], v[2]);
+    return 0;
+}
+
+extern "C" std::int64_t opus_ffi_call2_f32x4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec4_ptr) {
+    if (fn_ptr == 0 || vec4_ptr == 0) return 0;
+    const float* v = reinterpret_cast<const float*>(vec4_ptr);
+    using Fn = void(*)(std::int64_t, float, float, float, float);
+    reinterpret_cast<Fn>(fn_ptr)(a1, v[0], v[1], v[2], v[3]);
+    return 0;
+}
+
 extern "C" std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text_handle, std::int64_t flags) {
     std::string title;
     std::string text;
@@ -477,6 +493,8 @@ extern "C" std::int64_t opus_ffi_call3(std::int64_t fn_ptr, std::int64_t a1, std
 extern "C" std::int64_t opus_ffi_call4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4) { return 0; }
 extern "C" std::int64_t opus_ffi_call5(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5) { return 0; }
 extern "C" std::int64_t opus_ffi_call6(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5, std::int64_t a6) { return 0; }
+extern "C" std::int64_t opus_ffi_call2_f32x3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec3_ptr) { return 0; }
+extern "C" std::int64_t opus_ffi_call2_f32x4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec4_ptr) { return 0; }
 extern "C" std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text_handle, std::int64_t flags) { return 0; }
 extern "C" std::int64_t opus_get_last_error() { return 0; }
 extern "C" std::int64_t opus_virtual_protect(std::int64_t address, std::int64_t size, std::int64_t new_protect) { return -1; }

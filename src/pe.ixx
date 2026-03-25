@@ -1307,9 +1307,10 @@ private:
             jne_silent_freeze = code.size(); emit32(code, 0);
         }
 
-        // print header
+        // header is emitted only for exception types we actually handle.
+        // unknown host exceptions should continue searching without printing
+        // a misleading crash banner.
         const char hdr[] = "\n=== OPUS CRASH DETECTED ===\n\0";
-        emit_print_inline(code, text_rva, print_offset, hdr, sizeof(hdr));
 
         // ---- exception type detection ----
         // load ExceptionCode from EXCEPTION_RECORD (r15)
@@ -1354,6 +1355,7 @@ private:
         // ---- .handle_av: ACCESS_VIOLATION ----
         patch32(code, je_av);
         {
+            emit_print_inline(code, text_rva, print_offset, hdr, sizeof(hdr));
             const char av_str[] = "  Exception: ACCESS_VIOLATION (\0";
             emit_print_inline(code, text_rva, print_offset, av_str, sizeof(av_str));
 
@@ -1398,6 +1400,7 @@ private:
         // ---- .handle_div_zero: INTEGER_DIVIDE_BY_ZERO ----
         patch32(code, je_div);
         {
+            emit_print_inline(code, text_rva, print_offset, hdr, sizeof(hdr));
             emit8(code, 0xC7); emit8(code, 0x45); emit8(code, 0xD4); emit32(code, 3);  // mov dword [rbp-0x2C], 3 (div-zero tag)
             const char div_str[] = "  Exception: INTEGER_DIVIDE_BY_ZERO\n\0";
             emit_print_inline(code, text_rva, print_offset, div_str, sizeof(div_str));
@@ -1408,6 +1411,7 @@ private:
         // ---- .handle_stack_overflow: STACK_OVERFLOW ----
         patch32(code, je_stack);
         {
+            emit_print_inline(code, text_rva, print_offset, hdr, sizeof(hdr));
             emit8(code, 0xC7); emit8(code, 0x45); emit8(code, 0xD4); emit32(code, 4);  // mov dword [rbp-0x2C], 4 (stack overflow)
             const char so_str[] = "  Exception: STACK_OVERFLOW\n\0";
             emit_print_inline(code, text_rva, print_offset, so_str, sizeof(so_str));
@@ -1418,6 +1422,7 @@ private:
         // ---- .handle_illegal: ILLEGAL_INSTRUCTION ----
         patch32(code, je_illegal);
         {
+            emit_print_inline(code, text_rva, print_offset, hdr, sizeof(hdr));
             emit8(code, 0xC7); emit8(code, 0x45); emit8(code, 0xD4); emit32(code, 5);  // tag 5 (illegal insn)
             const char ill_str[] = "  Exception: ILLEGAL_INSTRUCTION\n\0";
             emit_print_inline(code, text_rva, print_offset, ill_str, sizeof(ill_str));
@@ -1429,6 +1434,7 @@ private:
         patch32(code, je_breakpoint);
         std::size_t jmp_after_exc_bp_static = 0;
         {
+            emit_print_inline(code, text_rva, print_offset, hdr, sizeof(hdr));
             // check_addr = CONTEXT.RIP (windows VEH points RIP at the INT3, not past it)
             emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x45); emit8(code, 0xF0);  // mov rax, [rbp-0x10] (crash RIP = INT3 addr)
             // save check_addr in r14 for bp table scan
