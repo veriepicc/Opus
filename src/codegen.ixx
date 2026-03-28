@@ -8,6 +8,7 @@ import opus.x64;
 import opus.pe;
 import opus.lexer;
 import opus.parser;
+import opus.stdlib;
 import std;
 
 extern "C" {
@@ -19,6 +20,12 @@ extern "C" {
     std::int64_t opus_ffi_call2(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2);
     std::int64_t opus_ffi_call3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3);
     std::int64_t opus_ffi_call4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4);
+    std::int64_t opus_ffi_call_this_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2);
+    std::int64_t opus_ffi_call_this_ptr(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2);
+    std::int64_t opus_ffi_call_this_i32_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3);
+    std::int64_t opus_ffi_call_this_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t flag);
+    std::int64_t opus_ffi_call_this_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t flag);
+    std::int64_t opus_ffi_call_this_i32_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3, std::int64_t flag);
     std::int64_t opus_ffi_call2_f32x3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec3_ptr);
     std::int64_t opus_ffi_call2_f32x4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec4_ptr);
     std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text_handle, std::int64_t flags);
@@ -208,6 +215,7 @@ struct FunctionInfo {
     std::size_t code_size;
     Type return_type;
     std::vector<Type> param_types;
+    bool is_extern = false;
     bool single_use_inline_safe = false;
 };
 
@@ -252,20 +260,27 @@ public:
 
         // first pass: collect function signatures, structs, and globals
         for (const auto& decl : mod.decls) {
-            if (decl->is<ast::FnDecl>()) {
+            if (decl->is<ast::TypeAliasDecl>()) {
+                if (!register_type_alias_decl(decl->as<ast::TypeAliasDecl>())) return false;
+            } else if (decl->is<ast::FnDecl>()) {
                 const auto& fn = decl->as<ast::FnDecl>();
                 if (!claim_symbol_name(function_owners_, "function", fn.name, current_symbol_owner())) return false;
+                auto resolved_ret = canonicalize_type(fn.return_type);
+                if (!resolved_ret) return false;
+                std::vector<Type> params;
+                params.reserve(fn.params.size());
+                for (const auto& param : fn.params) {
+                    auto resolved = canonicalize_type(param.type);
+                    if (!resolved) return false;
+                    params.push_back(std::move(*resolved));
+                }
                 functions_[fn.name] = FunctionInfo{
                     .name = fn.name,
                     .code_offset = 0,
                     .code_size = 0,
-                    .return_type = fn.return_type.clone(),
-                    .param_types = [&fn] {
-                        std::vector<Type> params;
-                        params.reserve(fn.params.size());
-                        for (const auto& param : fn.params) params.push_back(param.type.clone());
-                        return params;
-                    }()
+                    .return_type = std::move(*resolved_ret),
+                    .param_types = std::move(params),
+                    .is_extern = fn.is_extern
                 };
             } else if (decl->is<ast::StructDecl>()) {
                 if (!generate_struct_decl(decl->as<ast::StructDecl>())) return false;
@@ -310,6 +325,12 @@ public:
             auto it = functions_.find(fixup.target_fn);
             if (it == functions_.end()) {
                 error(std::format("undefined function in fixup: {}", fixup.target_fn));
+                continue;
+            }
+            if (it->second.is_extern) {
+                error(std::format(
+                    "extern function '{}' is declaration-only right now; use load_library/get_proc + a typed fn alias for runtime calls",
+                    fixup.target_fn));
                 continue;
             }
             // rel32 fixup: target - (call_site + 4)
@@ -505,6 +526,7 @@ private:
     std::unordered_map<std::string, std::shared_ptr<ast::Module>> imported_module_asts_;
     std::unordered_map<std::string, std::string> function_aliases_;
     std::unordered_map<std::string, std::string> type_aliases_;
+    std::unordered_map<std::string, Type> named_type_aliases_;
     std::unordered_map<std::string, std::string> enum_aliases_;
     std::unordered_map<std::string, std::string> global_aliases_;
     std::unordered_map<std::string, std::string> function_owners_;
@@ -976,6 +998,8 @@ private:
             {"mem_write_ptr",   [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i64(c); }},
             {"write_ptr",       [this](const ast::CallExpr& c) { return generate_builtin_mem_write_i64(c); }},
             // ffi - windows api
+            // ffi_call* wrappers below are compatibility-only
+            // preferred ffi is typed function pointers plus normal calls
             {"get_module",      [this](const ast::CallExpr& c) { return generate_builtin_ffi_one_arg(c, "get_module"); }},
             {"load_library",    [this](const ast::CallExpr& c) { return generate_builtin_ffi_one_arg(c, "load_library"); }},
             {"get_proc",        [this](const ast::CallExpr& c) { return generate_builtin_ffi_two_arg(c, "get_proc"); }},
@@ -985,6 +1009,13 @@ private:
             {"ffi_call2",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call2"); }},
             {"ffi_call3",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_four_arg(c, "ffi_call3"); }},
             {"ffi_call4",       [this](const ast::CallExpr& c) { return generate_builtin_ffi_five_arg(c, "ffi_call4"); }},
+            {"ffi_call_this_i32", [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call_this_i32"); }},
+            {"ffi_call_this_ptr", [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call_this_ptr"); }},
+            {"ffi_guard_dispatch_this_ptr", [this](const ast::CallExpr& c) { return generate_builtin_guard_dispatch_this_ptr(c); }},
+            {"ffi_call_this_i32_i32", [this](const ast::CallExpr& c) { return generate_builtin_ffi_four_arg(c, "ffi_call_this_i32_i32"); }},
+            {"ffi_call_this_bool", [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call_this_bool"); }},
+            {"ffi_call_this_i32_bool", [this](const ast::CallExpr& c) { return generate_builtin_ffi_four_arg(c, "ffi_call_this_i32_bool"); }},
+            {"ffi_call_this_i32_i32_bool", [this](const ast::CallExpr& c) { return generate_builtin_ffi_five_arg(c, "ffi_call_this_i32_i32_bool"); }},
             {"ffi_call2_f32x3", [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call2_f32x3"); }},
             {"ffi_call2_f32x4", [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "ffi_call2_f32x4"); }},
             {"msgbox",          [this](const ast::CallExpr& c) { return generate_builtin_ffi_three_arg(c, "msgbox"); }},
@@ -1199,6 +1230,8 @@ private:
                 exports.types.push_back(decl->as<ast::StructDecl>().name);
             } else if (decl->is<ast::ClassDecl>()) {
                 exports.types.push_back(decl->as<ast::ClassDecl>().name);
+            } else if (decl->is<ast::TypeAliasDecl>()) {
+                exports.types.push_back(decl->as<ast::TypeAliasDecl>().name);
             } else if (decl->is<ast::EnumDecl>()) {
                 exports.enums.push_back(decl->as<ast::EnumDecl>().name);
             } else if (decl->is<ast::StaticDecl>()) {
@@ -1241,6 +1274,82 @@ private:
             return it->second;
         }
         return std::string(name);
+    }
+
+    std::optional<Type> canonicalize_type_impl(const Type& type, std::unordered_set<std::string>& seen) {
+        return std::visit(overloaded{
+            [&](const PrimitiveType&) -> std::optional<Type> {
+                return type.clone();
+            },
+            [&](const ArrayType& arr) -> std::optional<Type> {
+                auto elem = canonicalize_type_impl(*arr.element, seen);
+                if (!elem) return std::nullopt;
+                Type out;
+                out.kind = ArrayType{
+                    .element = std::make_unique<Type>(std::move(*elem)),
+                    .size = arr.size
+                };
+                return out;
+            },
+            [&](const FunctionType& fn) -> std::optional<Type> {
+                FunctionType out_fn;
+                for (const auto& param : fn.params) {
+                    auto resolved = canonicalize_type_impl(*param, seen);
+                    if (!resolved) return std::nullopt;
+                    out_fn.params.push_back(std::make_unique<Type>(std::move(*resolved)));
+                }
+                auto ret = canonicalize_type_impl(*fn.ret, seen);
+                if (!ret) return std::nullopt;
+                out_fn.ret = std::make_unique<Type>(std::move(*ret));
+                out_fn.is_variadic = fn.is_variadic;
+                Type out;
+                out.kind = std::move(out_fn);
+                return out;
+            },
+            [&](const StructType& st) -> std::optional<Type> {
+                StructType out_st;
+                out_st.name = resolve_type_name(st.name);
+                for (const auto& [field_name, field_type] : st.fields) {
+                    auto resolved = canonicalize_type_impl(*field_type, seen);
+                    if (!resolved) return std::nullopt;
+                    out_st.fields.emplace_back(field_name, std::make_unique<Type>(std::move(*resolved)));
+                }
+                Type out;
+                out.kind = std::move(out_st);
+                return out;
+            },
+            [&](const PointerType& ptr) -> std::optional<Type> {
+                auto pointee = canonicalize_type_impl(*ptr.pointee, seen);
+                if (!pointee) return std::nullopt;
+                Type out;
+                out.kind = PointerType{
+                    .pointee = std::make_unique<Type>(std::move(*pointee)),
+                    .is_mut = ptr.is_mut
+                };
+                return out;
+            },
+            [&](const std::string& name) -> std::optional<Type> {
+                std::string resolved_name = resolve_type_name(name);
+                if (auto it = named_type_aliases_.find(resolved_name); it != named_type_aliases_.end()) {
+                    if (seen.contains(resolved_name)) {
+                        error(std::format("cyclic type alias detected for '{}'", resolved_name));
+                        return std::nullopt;
+                    }
+                    seen.insert(resolved_name);
+                    auto resolved = canonicalize_type_impl(it->second, seen);
+                    seen.erase(resolved_name);
+                    return resolved;
+                }
+                Type out;
+                out.kind = resolved_name;
+                return out;
+            }
+        }, type.kind);
+    }
+
+    std::optional<Type> canonicalize_type(const Type& type) {
+        std::unordered_set<std::string> seen;
+        return canonicalize_type_impl(type, seen);
     }
 
     std::string resolve_enum_name(std::string_view name) const {
@@ -1350,6 +1459,34 @@ private:
         return last_candidate;
     }
 
+    std::string import_rel_path(std::string_view module_path) const {
+        std::string rel_path(module_path);
+        for (auto& c : rel_path) {
+            if (c == '.') c = '/';
+        }
+        rel_path += ".op";
+        return rel_path;
+    }
+
+    std::string embedded_import_canonical(std::string_view module_path) const {
+        return std::format("<embedded-stdlib>/{}", import_rel_path(module_path));
+    }
+
+    std::optional<std::pair<std::string, std::string>> load_import_source(std::string_view module_path) const {
+        auto full_path = resolve_import_path(module_path);
+        if (std::ifstream file(full_path); file) {
+            std::stringstream buf;
+            buf << file.rdbuf();
+            return std::pair{full_path.string(), buf.str()};
+        }
+
+        if (auto it = embedded_stdlib_sources().find(std::string(module_path)); it != embedded_stdlib_sources().end()) {
+            return std::pair{embedded_import_canonical(module_path), it->second};
+        }
+
+        return std::nullopt;
+    }
+
     // inline strlen: rcx = string ptr on entry, rax = length on exit
     // clobbers rcx (walks past end of string)
     void emit_inline_strlen() {
@@ -1405,6 +1542,9 @@ private:
         if (decl.is<ast::StaticDecl>()) {
             return register_static_decl(decl.as<ast::StaticDecl>());
         }
+        if (decl.is<ast::TypeAliasDecl>()) {
+            return register_type_alias_decl(decl.as<ast::TypeAliasDecl>());
+        }
         if (decl.is<ast::ImportDecl>()) {
             return generate_import(decl.as<ast::ImportDecl>());
         }
@@ -1416,8 +1556,12 @@ private:
     }
 
     [[nodiscard]] bool collect_import_metadata(const ast::ImportDecl& imp) {
-        auto full_path = resolve_import_path(imp.path);
-        std::string canonical = full_path.string();
+        auto import_source = load_import_source(imp.path);
+        if (!import_source) {
+            error(std::format("cannot find module: {}", import_rel_path(imp.path)));
+            return false;
+        }
+        auto [canonical, source] = *import_source;
 
         if (imported_module_metadata_.contains(canonical)) {
             return true;
@@ -1440,17 +1584,6 @@ private:
         if (auto ast_it = imported_module_asts_.find(canonical); ast_it != imported_module_asts_.end()) {
             mod_ptr = ast_it->second;
         } else {
-            std::ifstream file(full_path);
-            if (!file) {
-                abandon_import();
-                error(std::format("cannot find module: {}", full_path.string()));
-                return false;
-            }
-
-            std::stringstream buf;
-            buf << file.rdbuf();
-            std::string source = buf.str();
-
             Lexer lexer(source, canonical);
             auto tokens = lexer.tokenize_all();
             for (const auto& tok : tokens) {
@@ -1531,8 +1664,12 @@ private:
     
     // resolve and compile an imported module
     [[nodiscard]] bool generate_import(const ast::ImportDecl& imp) {
-        auto full_path = resolve_import_path(imp.path);
-        std::string canonical = full_path.string();
+        auto import_source = load_import_source(imp.path);
+        if (!import_source) {
+            error(std::format("cannot find module: {}", import_rel_path(imp.path)));
+            return false;
+        }
+        auto [canonical, source] = *import_source;
 
         if (auto state_it = import_states_.find(canonical); state_it != import_states_.end()) {
             if (state_it->second == ImportState::InProgress) {
@@ -1559,16 +1696,6 @@ private:
         if (auto ast_it = imported_module_asts_.find(canonical); ast_it != imported_module_asts_.end()) {
             mod_ptr = ast_it->second;
         } else {
-            std::ifstream file(full_path);
-            if (!file) {
-                abandon_import();
-                error(std::format("cannot find module: {}", full_path.string()));
-                return false;
-            }
-            std::stringstream buf;
-            buf << file.rdbuf();
-            std::string source = buf.str();
-
             Lexer lexer(source, canonical);
             auto tokens = lexer.tokenize_all();
             for (const auto& tok : tokens) {
@@ -1666,11 +1793,13 @@ private:
     // track global variables for later initialization
     bool register_static_decl(const ast::StaticDecl& sd) {
         if (!claim_symbol_name(global_owners_, "global", sd.name, current_symbol_owner(), true)) return false;
+        auto resolved_type = canonicalize_type(sd.type);
+        if (!resolved_type) return false;
         // imports collect globals during metadata pre-pass using a temporary parsed
         // module. When we later compile the real imported module, refresh the
         // initializer pointer so __opus_init never walks a dangling AST node.
         if (auto it = globals_.find(sd.name); it != globals_.end()) {
-            it->second.type = sd.type.clone();
+            it->second.type = resolved_type->clone();
             it->second.is_mut = sd.is_mut;
             it->second.init = sd.init ? sd.init.value().get() : nullptr;
             return true;
@@ -1678,7 +1807,7 @@ private:
         
         GlobalVar gv;
         gv.name = sd.name;
-        gv.type = sd.type.clone();
+        gv.type = std::move(*resolved_type);
         gv.is_mut = sd.is_mut;
         gv.offset = next_global_offset_;
         next_global_offset_ += 8;
@@ -1689,6 +1818,14 @@ private:
         
         globals_[sd.name] = std::move(gv);
         global_order_.push_back(sd.name);
+        return true;
+    }
+
+    [[nodiscard]] bool register_type_alias_decl(const ast::TypeAliasDecl& alias) {
+        if (!claim_symbol_name(type_owners_, "type", alias.name, current_symbol_owner(), true)) return false;
+        auto resolved = canonicalize_type(alias.target);
+        if (!resolved) return false;
+        named_type_aliases_[alias.name] = std::move(*resolved);
         return true;
     }
     
@@ -1744,7 +1881,9 @@ private:
         StructInfo info;
         info.name = s.name;
         for (const auto& [name, type] : s.fields) {
-            info.fields.emplace_back(name, type.clone());
+            auto resolved = canonicalize_type(type);
+            if (!resolved) return false;
+            info.fields.emplace_back(name, std::move(*resolved));
         }
         info.calculate_offsets();
         structs_[s.name] = std::move(info);
@@ -1757,7 +1896,9 @@ private:
         StructInfo info;
         info.name = c.name;
         for (const auto& [name, type] : c.fields) {
-            info.fields.emplace_back(name, type.clone());
+            auto resolved = canonicalize_type(type);
+            if (!resolved) return false;
+            info.fields.emplace_back(name, std::move(*resolved));
         }
         info.calculate_offsets();
         structs_[c.name] = std::move(info);
@@ -1768,16 +1909,20 @@ private:
             if (!claim_symbol_name(function_owners_, "function", mangled_name, current_symbol_owner())) return false;
             
             // Register function info first
+            auto resolved_ret = canonicalize_type(method.return_type);
+            if (!resolved_ret) return false;
+            std::vector<Type> method_params;
+            method_params.reserve(method.params.size() + 1);
+            method_params.push_back(Type::make_primitive(PrimitiveType::Ptr));
+            for (const auto& param : method.params) {
+                auto resolved = canonicalize_type(param.type);
+                if (!resolved) return false;
+                method_params.push_back(std::move(*resolved));
+            }
             functions_[mangled_name] = FunctionInfo{
                 .name = mangled_name,
-                .return_type = method.return_type.clone(),
-                .param_types = [&method] {
-                    std::vector<Type> params;
-                    params.reserve(method.params.size() + 1);
-                    params.push_back(Type::make_primitive(PrimitiveType::Ptr));
-                    for (const auto& param : method.params) params.push_back(param.type.clone());
-                    return params;
-                }()
+                .return_type = std::move(*resolved_ret),
+                .param_types = std::move(method_params)
             };
             
             // Generate the method code
@@ -1802,7 +1947,9 @@ private:
             
             for (std::size_t i = 0; i < method.params.size(); ++i) {
                 const auto& param = method.params[i];
-                Symbol& sym = current_scope_->define(param.name, param.type.clone(), param.is_mut);
+                auto resolved = canonicalize_type(param.type);
+                if (!resolved) return false;
+                Symbol& sym = current_scope_->define(param.name, std::move(*resolved), param.is_mut);
                 sym.is_param = true;
                 if (i < 3) {
                     emit_.mov_store(x64::Reg::RBP, sym.stack_offset, param_regs[i]);
@@ -2221,7 +2368,9 @@ private:
         // windows x64: first 4 args in rcx, rdx, r8, r9
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
             const auto& param = fn.params[i];
-            auto& sym = current_scope_->define(param.name, param.type.clone(), param.is_mut);
+            auto resolved = canonicalize_type(param.type);
+            if (!resolved) return false;
+            auto& sym = current_scope_->define(param.name, std::move(*resolved), param.is_mut);
             sym.is_param = true;
 
             if (use_leaf_plan) {
@@ -2288,7 +2437,7 @@ private:
         register_bindings_.clear();
 
         // If no explicit return, add one
-        if (fn.return_type.is_void()) {
+        if (info.return_type.is_void()) {
             emit_current_epilogue();
         } else {
             // Default return 0
@@ -2583,7 +2732,9 @@ private:
 
     [[nodiscard]] bool infer_let_type(const ast::LetStmt& let, Type& type) {
         if (let.type) {
-            type = let.type->clone();
+            auto resolved = canonicalize_type(*let.type);
+            if (!resolved) return false;
+            type = std::move(*resolved);
             return true;
         }
         if (let.init) {
@@ -2716,6 +2867,11 @@ private:
                 return std::nullopt;
             },
             [&](const ast::CallExpr& e) -> std::optional<Type> {
+                if (auto callee_type = infer_expr_type(*e.callee)) {
+                    if (auto* fn = std::get_if<FunctionType>(&callee_type->kind)) {
+                        return fn->ret->clone();
+                    }
+                }
                 if (e.callee->is<ast::IdentExpr>()) {
                     std::string name = resolve_function_name(e.callee->as<ast::IdentExpr>().name);
                     if (auto it = functions_.find(name); it != functions_.end()) {
@@ -2761,6 +2917,8 @@ private:
                 return lookup_field_expr_type(e);
             },
             [&](const ast::CastExpr& e) -> std::optional<Type> {
+                auto resolved = canonicalize_type(e.target_type);
+                if (resolved) return resolved;
                 return e.target_type.clone();
             },
             [&](const ast::ArrayExpr&) -> std::optional<Type> {
@@ -2787,6 +2945,10 @@ private:
                 return std::nullopt;
             }
         }, expr.kind);
+    }
+
+    [[nodiscard]] static bool is_function_type(const Type& type) {
+        return std::holds_alternative<FunctionType>(type.kind);
     }
 
     void emit_truncate_or_extend_rax(const Type& target) {
@@ -6872,6 +7034,153 @@ private:
         return true;
     }
 
+    void emit_sse_stack_operand(std::uint8_t reg_field, std::int32_t offset) {
+        if (offset == 0) {
+            emit_.buffer().emit8(static_cast<std::uint8_t>((reg_field << 3) | 0x04));
+            emit_.buffer().emit8(0x24);
+            return;
+        }
+        if (offset >= -128 && offset <= 127) {
+            emit_.buffer().emit8(static_cast<std::uint8_t>(0x40 | (reg_field << 3) | 0x04));
+            emit_.buffer().emit8(0x24);
+            emit_.buffer().emit8(static_cast<std::uint8_t>(offset));
+            return;
+        }
+        emit_.buffer().emit8(static_cast<std::uint8_t>(0x80 | (reg_field << 3) | 0x04));
+        emit_.buffer().emit8(0x24);
+        emit_.buffer().emit32(static_cast<std::uint32_t>(offset));
+    }
+
+    void emit_xmm_load_f64_from_stack(std::uint8_t xmm_index, std::int32_t offset) {
+        emit_.buffer().emit8(0xF2);
+        emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x10);
+        emit_sse_stack_operand(xmm_index & 7, offset);
+    }
+
+    void emit_xmm_convert_f64_to_f32(std::uint8_t xmm_index) {
+        emit_.buffer().emit8(0xF2);
+        emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x5A);
+        emit_.buffer().emit8(static_cast<std::uint8_t>(0xC0 | ((xmm_index & 7) << 3) | (xmm_index & 7)));
+    }
+
+    void emit_xmm_convert_f32_to_f64(std::uint8_t xmm_index) {
+        emit_.buffer().emit8(0xF3);
+        emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x5A);
+        emit_.buffer().emit8(static_cast<std::uint8_t>(0xC0 | ((xmm_index & 7) << 3) | (xmm_index & 7)));
+    }
+
+    void emit_xmm_store_f64_to_stack(std::uint8_t xmm_index, std::int32_t offset) {
+        emit_.buffer().emit8(0xF2);
+        emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x11);
+        emit_sse_stack_operand(xmm_index & 7, offset);
+    }
+
+    void emit_xmm_store_f32_to_stack(std::uint8_t xmm_index, std::int32_t offset) {
+        emit_.buffer().emit8(0xF3);
+        emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x11);
+        emit_sse_stack_operand(xmm_index & 7, offset);
+    }
+
+    [[nodiscard]] bool emit_indirect_arg_to_abi_slot(
+        std::size_t arg_index,
+        const Type& param_type,
+        std::int32_t src_off,
+        std::int32_t dest_off,
+        bool to_stack
+    ) {
+        if (param_type.is_float()) {
+            emit_xmm_load_f64_from_stack(to_stack ? 0 : static_cast<std::uint8_t>(arg_index), src_off);
+            if (auto* prim = std::get_if<PrimitiveType>(&param_type.kind); prim && *prim == PrimitiveType::F32) {
+                emit_xmm_convert_f64_to_f32(to_stack ? 0 : static_cast<std::uint8_t>(arg_index));
+            }
+            if (to_stack) {
+                emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+                emit_.mov_store(x64::Reg::RSP, dest_off, x64::Reg::RAX);
+                if (auto* prim = std::get_if<PrimitiveType>(&param_type.kind); prim && *prim == PrimitiveType::F32) {
+                    emit_xmm_store_f32_to_stack(0, dest_off);
+                } else {
+                    emit_xmm_store_f64_to_stack(0, dest_off);
+                }
+            }
+            return true;
+        }
+
+        emit_.mov_load(to_stack ? x64::Reg::RAX : x64::ARG_REGS[arg_index], x64::Reg::RSP, src_off);
+        if (to_stack) {
+            emit_.mov_store(x64::Reg::RSP, dest_off, x64::Reg::RAX);
+        }
+        return true;
+    }
+
+    void emit_capture_indirect_float_return(const Type& ret_type) {
+        emit_.sub_imm(x64::Reg::RSP, 8);
+        if (auto* prim = std::get_if<PrimitiveType>(&ret_type.kind); prim && *prim == PrimitiveType::F32) {
+            emit_xmm_convert_f32_to_f64(0);
+        }
+        emit_xmm_store_f64_to_stack(0, 0);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 0);
+        emit_.add_smart(x64::Reg::RSP, 8);
+    }
+
+    [[nodiscard]] bool generate_indirect_call(const ast::CallExpr& call, const FunctionType& fn_type) {
+        if (fn_type.is_variadic) {
+            error("variadic function pointer calls are not supported yet");
+            return false;
+        }
+        if (call.args.size() != fn_type.params.size()) {
+            error(std::format("function pointer expected {} args but got {}", fn_type.params.size(), call.args.size()));
+            return false;
+        }
+
+        std::size_t nargs = call.args.size();
+        std::size_t reg_args = nargs < 4 ? nargs : 4;
+        std::size_t stack_args = nargs > 4 ? nargs - 4 : 0;
+
+        for (std::size_t i = 0; i < nargs; ++i) {
+            if (!generate_expr(*call.args[i])) return false;
+            if (!emit_coerce_rax_to_type(*fn_type.params[i], call.args[i].get())) return false;
+            emit_.push(x64::Reg::RAX);
+        }
+
+        if (!generate_expr(*call.callee)) return false;
+        emit_.push(x64::Reg::RAX);
+        emit_.pop(x64::Reg::R11);
+
+        std::size_t alloc = 32 + stack_args * 8;
+        alloc = (alloc + 15) & ~15;
+        emit_.sub_imm(x64::Reg::RSP, static_cast<std::int32_t>(alloc));
+
+        for (std::size_t i = 0; i < reg_args; ++i) {
+            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
+            if (!emit_indirect_arg_to_abi_slot(i, *fn_type.params[i], src_off, 0, false)) {
+                return false;
+            }
+        }
+
+        for (std::size_t i = 4; i < nargs; ++i) {
+            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
+            std::int32_t dest_off = static_cast<std::int32_t>(32 + (i - 4) * 8);
+            if (!emit_indirect_arg_to_abi_slot(i, *fn_type.params[i], src_off, dest_off, true)) {
+                return false;
+            }
+        }
+
+        emit_.call(x64::Reg::R11);
+        emit_.add_smart(x64::Reg::RSP, static_cast<std::int32_t>(alloc + nargs * 8));
+
+        if (fn_type.ret && fn_type.ret->is_float()) {
+            emit_capture_indirect_float_return(*fn_type.ret);
+        } else if (fn_type.ret && (fn_type.ret->is_integer() || is_bool_type(*fn_type.ret))) {
+            emit_truncate_or_extend_rax(*fn_type.ret);
+        }
+        return true;
+    }
+
     [[nodiscard]] bool generate_method_call(const ast::CallExpr& call) {
         // method call: player.damage(50) -> Player_damage(player, 50)
         // self is implicit first arg, so total args = 1 + call.args.size()
@@ -6957,6 +7266,12 @@ private:
     }
 
     [[nodiscard]] bool generate_call(const ast::CallExpr& call) {
+        if (auto callee_type = infer_expr_type(*call.callee)) {
+            if (auto* fn = std::get_if<FunctionType>(&callee_type->kind)) {
+                return generate_indirect_call(call, *fn);
+            }
+        }
+
         // Handle module-qualified calls before method calls: math.add(1, 2)
         if (call.callee->is<ast::FieldExpr>()) {
             const auto& field = call.callee->as<ast::FieldExpr>();
@@ -7067,7 +7382,7 @@ private:
         
         return true;
     }
-    
+
     [[nodiscard]] bool generate_dll_builtin_set_title(const ast::CallExpr& call) {
         if (call.args.empty()) {
             error("set_title requires a string argument");
@@ -7095,7 +7410,7 @@ private:
     }
     
     [[nodiscard]] bool generate_dll_builtin_print_hex(const ast::CallExpr& call) {
-        // prints value as "0x" + 8 hex digits + newline
+        // prints value as "0x" + 8 hex digits
         if (call.args.empty()) {
             error("print_int requires an argument");
             return false;
@@ -7139,9 +7454,8 @@ private:
         std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().pos() - 1);
         emit_.buffer().emit8(static_cast<std::uint8_t>(loop_offset));
         
-        // terminate and print
-        emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x02); emit_.buffer().emit8(0x0A);  // mov byte [rdx], '\n'
-        emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x42); emit_.buffer().emit8(0x01); emit_.buffer().emit8(0x00);  // mov byte [rdx+1], 0
+        // null-terminate and print
+        emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x02); emit_.buffer().emit8(0x00);  // mov byte [rdx], 0
         
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D); emit_.buffer().emit8(0x4C);
         emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x20);  // lea rcx, [rsp+0x20]
@@ -7152,7 +7466,7 @@ private:
         
         return true;
     }
-    
+
     [[nodiscard]] bool generate_dll_builtin_print_dec(const ast::CallExpr& call) {
         // signed decimal print with negative handling
         if (call.args.empty()) {
@@ -7194,8 +7508,6 @@ private:
         emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x3A);  // lea rdi, [rsp+0x3A]
         
         emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x07); emit_.buffer().emit8(0x00);  // mov byte [rdi], 0
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
-        emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x07); emit_.buffer().emit8(0x0A);  // mov byte [rdi], '\n'
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
         
         // zero check
@@ -7269,7 +7581,7 @@ private:
         
         return true;
     }
-    
+
     [[nodiscard]] bool generate_dll_crash([[maybe_unused]] const ast::CallExpr& call) {
         // write to null pointer - triggers access violation for crash handler testing
         emit_.buffer().emit8(0x48);  // REX.W
@@ -9169,6 +9481,12 @@ private:
             {"ffi_call2",               reinterpret_cast<void*>(&opus_ffi_call2)},
             {"ffi_call3",               reinterpret_cast<void*>(&opus_ffi_call3)},
             {"ffi_call4",               reinterpret_cast<void*>(&opus_ffi_call4)},
+            {"ffi_call_this_i32",       reinterpret_cast<void*>(&opus_ffi_call_this_i32)},
+            {"ffi_call_this_ptr",       reinterpret_cast<void*>(&opus_ffi_call_this_ptr)},
+            {"ffi_call_this_i32_i32",   reinterpret_cast<void*>(&opus_ffi_call_this_i32_i32)},
+            {"ffi_call_this_bool",      reinterpret_cast<void*>(&opus_ffi_call_this_bool)},
+            {"ffi_call_this_i32_bool",  reinterpret_cast<void*>(&opus_ffi_call_this_i32_bool)},
+            {"ffi_call_this_i32_i32_bool", reinterpret_cast<void*>(&opus_ffi_call_this_i32_i32_bool)},
             {"ffi_call2_f32x3",         reinterpret_cast<void*>(&opus_ffi_call2_f32x3)},
             {"ffi_call2_f32x4",         reinterpret_cast<void*>(&opus_ffi_call2_f32x4)},
             {"msgbox",                  reinterpret_cast<void*>(&opus_msgbox)},
@@ -9328,12 +9646,39 @@ private:
         emit_.pop(x64::Reg::RDX);
         emit_.pop(x64::Reg::R8);
         emit_.pop(x64::Reg::R9);
-        // 5th arg stays on stack (part of shadow space usage)
-        
-        emit_.sub_imm(x64::Reg::RSP, 48);  // shadow space + 5th arg + alignment
+        emit_.pop(x64::Reg::R10);  // 5th arg temp
+
+        emit_.sub_imm(x64::Reg::RSP, 48);  // 32 shadow + 8 stack arg + 8 alignment
+        emit_.mov_store(x64::Reg::RSP, 32, x64::Reg::R10);  // [rsp+0x20] = 5th arg
         emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(fn_ptr));
         emit_.call(x64::Reg::RAX);
-        emit_.add_smart(x64::Reg::RSP, 48);  // Clean up including pushed 5th arg
+        emit_.add_smart(x64::Reg::RSP, 48);
+        return true;
+    }
+
+    [[nodiscard]] bool generate_builtin_guard_dispatch_this_ptr(const ast::CallExpr& call) {
+        if (call.args.size() < 4) {
+            error("ffi_guard_dispatch_this_ptr requires 4 arguments");
+            return false;
+        }
+
+        if (!generate_expr(*call.args[3])) return false;
+        emit_.push(x64::Reg::RAX);
+        if (!generate_expr(*call.args[2])) return false;
+        emit_.push(x64::Reg::RAX);
+        if (!generate_expr(*call.args[1])) return false;
+        emit_.push(x64::Reg::RAX);
+        if (!generate_expr(*call.args[0])) return false;
+        emit_.push(x64::Reg::RAX);
+
+        emit_.pop(x64::Reg::R11);  // dispatch slot
+        emit_.pop(x64::Reg::RAX);  // guarded target
+        emit_.pop(x64::Reg::RCX);  // this
+        emit_.pop(x64::Reg::RDX);  // arg
+
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.call_mem(x64::Reg::R11, 0);
+        emit_.add_smart(x64::Reg::RSP, 32);
         return true;
     }
 

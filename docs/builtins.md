@@ -215,6 +215,20 @@ function void analyze(str text) {
 
 ## Memory Operations
 
+These raw builtins still exist, but for new code prefer the `mem` stdlib module:
+
+```c
+import mem
+
+let buf = mem.make_zero(64)
+mem.write(buf, 0xDEADBEEF)
+mem.write32(buf + 8, 42)
+let big = mem.read(buf)
+let small = mem.read32(buf + 8)
+```
+
+The builtin names below are now mostly the low-level layer under that nicer surface.
+
 Low-level memory access. These map directly to x86 mov instructions of the appropriate size.
 
 ### Allocation
@@ -251,12 +265,14 @@ Low-level memory access. These map directly to x86 mov instructions of the appro
 | `memset(ptr, val, len)` | Fill `len` bytes at `ptr` with `val`. |
 | `memcmp(a, b, len)` | Compare `len` bytes. Returns `0` if equal. |
 
-### PascalCase Namespace
+### Legacy Namespace Access
 
-All memory functions are also available under the `Mem` namespace:
+The raw memory builtins are also available under the `Mem` namespace. This still works, but
+the preferred public style is `import mem` with `mem.read(...)`, `mem.write32(...)`, and
+friends.
 
 ```c
-// these pairs are equivalent
+// these pairs are equivalent at the low level
 mem_read(addr)          Mem.Read(addr)
 mem_write(addr, val)    Mem.Write(addr, val)
 mem_read_i32(addr)      Mem.ReadI32(addr)
@@ -268,17 +284,15 @@ mem_write_i8(addr, v)   Mem.WriteI8(addr, v)
 ```c
 function int main() {
     alloc_console()
+    import mem
 
-    // allocate a small buffer
-    let buf = malloc(64)
+    let buf = mem.make_zero(64)
 
-    // write different sizes
-    mem_write(buf, 0xDEADBEEF)
-    mem_write_i8(buf + 8, 42)
+    mem.write(buf, 0xDEADBEEF)
+    mem.write8(buf + 8, 42)
 
-    // read them back
-    let big = mem_read(buf)
-    let small = mem_read_i8(buf + 8)
+    let big = mem.read(buf)
+    let small = mem.read8(buf + 8)
     print_hex(big)       // 0xDEADBEEF
     print_int(small)     // 42
 
@@ -407,6 +421,7 @@ function void wait_for_frame(int target_ms, int frame_start) {
 ```c
 function int main() {
     alloc_console()
+    import mem
 
     // write a file
     write_file("output.txt", "hello from opus!\n")
@@ -417,10 +432,10 @@ function int main() {
 
     // write raw bytes
     let buf = malloc(4)
-    mem_write_i8(buf, 0x48)
-    mem_write_i8(buf + 1, 0x69)
-    mem_write_i8(buf + 2, 0x21)
-    mem_write_i8(buf + 3, 0x0A)
+    mem.write8(buf, 0x48)
+    mem.write8(buf + 1, 0x69)
+    mem.write8(buf + 2, 0x21)
+    mem.write8(buf + 3, 0x0A)
     write_bytes("raw.bin", buf, 4)
     free(buf)
 
@@ -432,7 +447,8 @@ function int main() {
 
 ## Windows API (FFI)
 
-Direct access to the Windows API through dynamic loading and function pointer calls.
+Direct access to the Windows API through dynamic loading, typed function pointers, and normal
+calls.
 
 ### Module Loading
 
@@ -442,17 +458,58 @@ Direct access to the Windows API through dynamic loading and function pointer ca
 | `load_library(path)` | Load a DLL (`LoadLibraryA`). Returns module handle. |
 | `get_proc(module, name)` | Get function address from module (`GetProcAddress`). |
 
-### Function Pointer Calls
+### Preferred FFI Style
+
+Use `using` to name a native signature, cast the raw address, and call it normally:
+
+```c
+using MessageBeepFn = fn(int) -> int
+
+let user32 = load_library("user32.dll")
+let raw = get_proc(user32, "MessageBeep")
+let message_beep = raw as MessageBeepFn
+
+message_beep(0x40)
+```
+
+Imported APIs can also be declared directly:
+
+```c
+extern fn GetTickCount() -> int
+extern fn MessageBoxA(ptr hwnd, str text, str caption, int flags) -> int
+```
+
+### Compatibility FFI Helpers
+
+These helpers remain available for older code and niche low-level edges, but they are no
+longer the preferred surface for ordinary FFI.
 
 | Function | Description |
 |----------|-------------|
-| `ffi_call0(fn)` | Call function pointer with 0 arguments. |
-| `ffi_call1(fn, a)` | Call with 1 argument. |
-| `ffi_call2(fn, a, b)` | Call with 2 arguments. |
-| `ffi_call3(fn, a, b, c)` | Call with 3 arguments. |
-| `ffi_call4(fn, a, b, c, d)` | Call with 4 arguments. |
-| `ffi_call5(fn, a, b, c, d, e)` | Call with 5 arguments. |
-| `ffi_call6(fn, a, b, c, d, e, f)` | Call with 6 arguments. |
+| `ffi_call0(fn)` | Legacy helper: call function pointer with 0 arguments. |
+| `ffi_call1(fn, a)` | Legacy helper: call with 1 argument. |
+| `ffi_call2(fn, a, b)` | Legacy helper: call with 2 arguments. |
+| `ffi_call3(fn, a, b, c)` | Legacy helper: call with 3 arguments. |
+| `ffi_call4(fn, a, b, c, d)` | Legacy helper: call with 4 arguments. |
+| `ffi_call5(fn, a, b, c, d, e)` | Legacy helper: call with 5 arguments. |
+| `ffi_call6(fn, a, b, c, d, e, f)` | Legacy helper: call with 6 arguments. |
+
+### Compatibility Instance-Method Helpers
+
+These wrappers are compatibility helpers for older code and special ABI edges. Normal instance
+methods should now prefer typed aliases like `using SomeFn = fn(ptr, ...) -> ...`.
+
+| Function | Description |
+|----------|-------------|
+| `ffi_call_this_i32(fn, this, a)` | Legacy helper: call `void(this, i32)`. |
+| `ffi_call_this_ptr(fn, this, ptr)` | Legacy helper: call `ptr(this, ptr)` and return the raw pointer result. |
+| `ffi_guard_dispatch_this_ptr(slot, target, this, ptr)` | Special guarded-dispatch builtin for unusual host call sites. |
+| `ffi_call_this_i32_i32(fn, this, a, b)` | Legacy helper: call `void(this, i32, i32)`. |
+| `ffi_call_this_bool(fn, this, flag)` | Legacy helper: call `void(this, bool)`. |
+| `ffi_call_this_i32_bool(fn, this, a, flag)` | Legacy helper: call `void(this, i32, bool)`. |
+| `ffi_call_this_i32_i32_bool(fn, this, a, b, flag)` | Legacy helper: call `void(this, i32, i32, bool)`. |
+| `ffi_call2_f32x3(fn, this, vec3_ptr)` | Legacy helper: call `void(this, f32, f32, f32)` using 3 packed floats from memory. |
+| `ffi_call2_f32x4(fn, this, vec4_ptr)` | Legacy helper: call `void(this, f32, f32, f32, f32)` using 4 packed floats from memory. |
 
 ### Convenience Wrappers
 
@@ -468,13 +525,14 @@ Direct access to the Windows API through dynamic loading and function pointer ca
 function int main() {
     alloc_console()
 
-    // show a message box
-    msgbox("Opus", "Hello from Opus!", 0)
+    using MessageBeepFn = fn(int) -> int
 
-    // dynamic api call
     let user32 = load_library("user32.dll")
     let msg_beep = get_proc(user32, "MessageBeep")
-    ffi_call1(msg_beep, 0x40)    // play asterisk sound
+    let message_beep = msg_beep as MessageBeepFn
+    message_beep(0x40)
+
+    msgbox("Opus", "Hello from Opus!", 0)
 
     // get our own pid
     let pid = get_current_process_id()
@@ -647,8 +705,9 @@ function int main() {
 
 ## Namespace Syntax
 
-Most built-in categories support PascalCase namespace access as an alternative to snake_case.
-Both styles compile to the same thing.
+Most low-level builtin categories support PascalCase namespace access as an alternative to
+snake_case. Both styles compile to the same thing, but for memory specifically new code should
+prefer the `mem` stdlib module surface over either raw form.
 
 | Namespace Call | Equivalent |
 |----------------|------------|

@@ -1,0 +1,8 @@
+function int foo() {
+    return 7
+}
+
+function int main() {
+    let p = &foo
+    return 0
+}

@@ -1,0 +1,221 @@
+import mem
+import text
+
+// Manual ownership helpers.
+// These are not RAII. They provide a strong convention for "who frees what".
+
+struct OwnedPtr {
+    value: ptr,
+    owned: i64,
+}
+
+struct OwnedStr {
+    value: str,
+    owned: i64,
+}
+
+struct OwnedBlock {
+    value: ptr,
+    size: int,
+    owned: i64,
+}
+
+function OwnedPtr owned_ptr_borrow(ptr value_ptr) {
+    let owner = OwnedPtr {
+        value: value_ptr,
+        owned: 0,
+    }
+    return owner
+}
+
+function OwnedPtr owned_ptr_adopt(ptr value_ptr) {
+    let owner = OwnedPtr {
+        value: value_ptr,
+        owned: 1,
+    }
+    return owner
+}
+
+function OwnedPtr owned_ptr_alloc(int size) {
+    let value_ptr = mem_alloc_zero(size)
+    let owner = OwnedPtr {
+        value: value_ptr,
+        owned: 1,
+    }
+    return owner
+}
+
+function ptr owned_ptr_get(OwnedPtr owner) {
+    return owner.value
+}
+
+function bool owned_ptr_is_owned(OwnedPtr owner) {
+    return owner.owned != 0
+}
+
+function ptr owned_ptr_release(*OwnedPtr owner) {
+    owner.owned = 0
+    return owner.value
+}
+
+function void owned_ptr_free(*OwnedPtr owner) {
+    if owner.owned != 0 {
+        if owner.value == 0 {
+            owner.value = 0
+            owner.owned = 0
+            return
+        }
+        free(owner.value)
+    }
+    owner.value = 0
+    owner.owned = 0
+}
+
+function OwnedPtr owned_ptr_dispose(OwnedPtr owner) {
+    if owner.owned != 0 && owner.value != 0 {
+        free(owner.value)
+    }
+    owner.value = 0
+    owner.owned = 0
+    return owner
+}
+
+function void owned_ptr_reset(*OwnedPtr owner, ptr value_ptr, bool take_ownership) {
+    owned_ptr_free(owner)
+    owner.value = value_ptr
+    owner.owned = take_ownership
+}
+
+function OwnedStr owned_str_borrow(str text_value) {
+    let owner = OwnedStr {
+        value: text_value,
+        owned: 0,
+    }
+    return owner
+}
+
+function OwnedStr owned_str_adopt(str text_value) {
+    let owner = OwnedStr {
+        value: text_value,
+        owned: 1,
+    }
+    return owner
+}
+
+function OwnedStr owned_str_clone(str text_value) {
+    let cloned = text_clone(text_value)
+    let owner = OwnedStr {
+        value: cloned,
+        owned: 1,
+    }
+    return owner
+}
+
+function str owned_str_get(OwnedStr owner) {
+    return owner.value
+}
+
+function bool owned_str_is_owned(OwnedStr owner) {
+    return owner.owned != 0
+}
+
+function str owned_str_release(*OwnedStr owner) {
+    owner.owned = 0
+    return owner.value
+}
+
+function void owned_str_free(*OwnedStr owner) {
+    if owner.owned != 0 {
+        if owner.value == 0 {
+            owner.value = ""
+            owner.owned = 0
+            return
+        }
+        free(owner.value)
+    }
+    owner.value = ""
+    owner.owned = 0
+}
+
+function OwnedStr owned_str_dispose(OwnedStr owner) {
+    if owner.owned != 0 && owner.value != 0 {
+        free(owner.value)
+    }
+    owner.value = ""
+    owner.owned = 0
+    return owner
+}
+
+function void owned_str_reset(*OwnedStr owner, str text_value, bool take_ownership) {
+    owned_str_free(owner)
+    owner.value = text_value
+    owner.owned = take_ownership
+}
+
+function OwnedBlock owned_block_alloc(int size) {
+    let value_ptr = mem_alloc_zero(size)
+    let block = OwnedBlock {
+        value: value_ptr,
+        size: size,
+        owned: 1,
+    }
+    return block
+}
+
+function OwnedBlock owned_block_borrow(ptr value_ptr, int size) {
+    let block = OwnedBlock {
+        value: value_ptr,
+        size: size,
+        owned: 0,
+    }
+    return block
+}
+
+function ptr owned_block_get(OwnedBlock block) {
+    return block.value
+}
+
+function int owned_block_size(OwnedBlock block) {
+    return block.size
+}
+
+function bool owned_block_is_owned(OwnedBlock block) {
+    return block.owned != 0
+}
+
+function ptr owned_block_release(*OwnedBlock block) {
+    block.owned = 0
+    return block.value
+}
+
+function void owned_block_free(*OwnedBlock block) {
+    if block.owned != 0 {
+        if block.value == 0 {
+            block.value = 0
+            block.size = 0
+            block.owned = 0
+            return
+        }
+        free(block.value)
+    }
+    block.value = 0
+    block.size = 0
+    block.owned = 0
+}
+
+function OwnedBlock owned_block_dispose(OwnedBlock block) {
+    if block.owned != 0 && block.value != 0 {
+        free(block.value)
+    }
+    block.value = 0
+    block.size = 0
+    block.owned = 0
+    return block
+}
+
+function void owned_block_reset(*OwnedBlock block, ptr value_ptr, int size, bool take_ownership) {
+    owned_block_free(block)
+    block.value = value_ptr
+    block.size = size
+    block.owned = take_ownership
+}

@@ -1,0 +1,24 @@
+import mem
+
+function address keep(pointer item_ptr) {
+    return item_ptr
+}
+
+function int main() {
+    let block = mem.make_zero(16)
+    if block == 0 {
+        return 1
+    }
+
+    let kept = keep(block)
+    if kept == 0 {
+        return 2
+    }
+
+    mem.write32(kept, 123)
+    if mem.read32(kept) != 123 {
+        return 3
+    }
+
+    return 0
+}

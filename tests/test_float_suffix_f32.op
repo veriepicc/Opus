@@ -1,0 +1,14 @@
+function void takes_f32(f32 x) {
+}
+
+function int main() {
+    let zero = 0.0f
+    let one = 1.0f
+    let sample = 44.5f
+
+    takes_f32(zero)
+    takes_f32(one)
+    takes_f32(sample)
+
+    return 0
+}

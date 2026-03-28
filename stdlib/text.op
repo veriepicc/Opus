@@ -1,0 +1,252 @@
+// Text helpers layered over the builtin string primitives.
+
+function int text_len(str text) {
+    return string_length(text)
+}
+
+function bool text_is_empty(str text) {
+    return string_length(text) == 0
+}
+
+function bool text_eq(str a, str b) {
+    return string_equals(a, b) != 0
+}
+
+function str text_clone(str text) {
+    return string_substring(text, 0, string_length(text))
+}
+
+function str text_slice(str text, int start, int length) {
+    return string_substring(text, start, length)
+}
+
+function str text_prefix(str text, int length) {
+    return string_substring(text, 0, length)
+}
+
+function str text_suffix(str text, int length) {
+    let total = string_length(text)
+    if length >= total {
+        return text_clone(text)
+    }
+    return string_substring(text, total - length, length)
+}
+
+function int text_char_at(str text, int index) {
+    return char_at(text, index)
+}
+
+function bool text_starts_with(str text, str prefix) {
+    let text_len_val = string_length(text)
+    let prefix_len = string_length(prefix)
+    if prefix_len > text_len_val {
+        return false
+    }
+
+    var i = 0
+    while i < prefix_len {
+        if char_at(text, i) != char_at(prefix, i) {
+            return false
+        }
+        i++
+    }
+
+    return true
+}
+
+function bool text_ends_with(str text, str suffix) {
+    let text_len_val = string_length(text)
+    let suffix_len = string_length(suffix)
+    if suffix_len > text_len_val {
+        return false
+    }
+
+    let start = text_len_val - suffix_len
+    var i = 0
+    while i < suffix_len {
+        if char_at(text, start + i) != char_at(suffix, i) {
+            return false
+        }
+        i++
+    }
+
+    return true
+}
+
+function int text_find_char(str text, int ch) {
+    let len = string_length(text)
+    var i = 0
+    while i < len {
+        if char_at(text, i) == ch {
+            return i
+        }
+        i++
+    }
+    return -1
+}
+
+function int text_rfind_char(str text, int ch) {
+    var i = string_length(text) - 1
+    while i >= 0 {
+        if char_at(text, i) == ch {
+            return i
+        }
+        i--
+    }
+    return -1
+}
+
+function int text_count_char(str text, int ch) {
+    let len = string_length(text)
+    var count = 0
+    var i = 0
+    while i < len {
+        if char_at(text, i) == ch {
+            count++
+        }
+        i++
+    }
+    return count
+}
+
+function bool text_contains_char(str text, int ch) {
+    return text_find_char(text, ch) >= 0
+}
+
+function int text_find(str text, str needle) {
+    let text_len_val = string_length(text)
+    let needle_len = string_length(needle)
+    if needle_len == 0 {
+        return 0
+    }
+    if needle_len > text_len_val {
+        return -1
+    }
+
+    var i = 0
+    while i <= text_len_val - needle_len {
+        var j = 0
+        var matched = true
+        while j < needle_len {
+            if char_at(text, i + j) != char_at(needle, j) {
+                matched = false
+                break
+            }
+            j++
+        }
+        if matched {
+            return i
+        }
+        i++
+    }
+
+    return -1
+}
+
+function bool text_contains(str text, str needle) {
+    return text_find(text, needle) >= 0
+}
+
+function bool text_is_blank(str text) {
+    let len = string_length(text)
+    var i = 0
+    while i < len {
+        if !is_whitespace(char_at(text, i)) {
+            return false
+        }
+        i++
+    }
+    return true
+}
+
+function str text_trim_left(str text) {
+    let len = string_length(text)
+    var start = 0
+    while start < len {
+        if !is_whitespace(char_at(text, start)) {
+            break
+        }
+        start++
+    }
+    return string_substring(text, start, len - start)
+}
+
+function str text_trim_right(str text) {
+    var stop = string_length(text)
+    while stop > 0 {
+        if !is_whitespace(char_at(text, stop - 1)) {
+            break
+        }
+        stop--
+    }
+    return string_substring(text, 0, stop)
+}
+
+function str text_trim(str text) {
+    return text_trim_right(text_trim_left(text))
+}
+
+function str text_join2(str left, str right) {
+    return string_append(left, right)
+}
+
+function str text_join3(str a, str b, str c) {
+    let ab = string_append(a, b)
+    let abc = string_append(ab, c)
+    free(ab)
+    return abc
+}
+
+function str text_join4(str a, str b, str c, str d) {
+    let abc = text_join3(a, b, c)
+    let abcd = string_append(abc, d)
+    free(abc)
+    return abcd
+}
+
+function str text_repeat(str text, int count) {
+    if count <= 0 {
+        return string_substring(text, 0, 0)
+    }
+
+    var out = text_clone(text)
+    var i = 1
+    while i < count {
+        let next = string_append(out, text)
+        free(out)
+        out = next
+        i++
+    }
+    return out
+}
+
+function str text_pad_left(str text, int width, str fill) {
+    let len = string_length(text)
+    if len >= width {
+        return text_clone(text)
+    }
+
+    let pad = text_repeat(fill, width - len)
+    let out = string_append(pad, text)
+    free(pad)
+    return out
+}
+
+function str text_pad_right(str text, int width, str fill) {
+    let len = string_length(text)
+    if len >= width {
+        return text_clone(text)
+    }
+
+    let pad = text_repeat(fill, width - len)
+    let out = string_append(text, pad)
+    free(pad)
+    return out
+}
+
+function str text_surround(str text, str left, str right) {
+    let inner = string_append(left, text)
+    let out = string_append(inner, right)
+    free(inner)
+    return out
+}

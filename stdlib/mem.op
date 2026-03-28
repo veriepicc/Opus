@@ -1,0 +1,158 @@
+// Memory convenience wrappers built on top of the compiler builtins.
+
+function ptr make(int size) {
+    return malloc(size)
+}
+
+function ptr make_zero(int size) {
+    let block = malloc(size)
+    memset(block, 0, size)
+    return block
+}
+
+function ptr make_copy(ptr src, int size) {
+    let block = malloc(size)
+    memcpy(block, src, size)
+    return block
+}
+
+function void free_ptr(ptr p) {
+    if p == 0 {
+        return
+    }
+    free(p)
+}
+
+function i64 read(ptr location) {
+    return mem_read(location)
+}
+
+function i64 read8(ptr location) {
+    return mem_read_i8(location)
+}
+
+function i64 read16(ptr location) {
+    return mem_read_i16(location)
+}
+
+function i64 read32(ptr location) {
+    return mem_read_i32(location)
+}
+
+function i64 read64(ptr location) {
+    return mem_read(location)
+}
+
+function void write(ptr location, i64 cell) {
+    mem_write(location, cell)
+}
+
+function void write8(ptr location, int byte_value) {
+    mem_write_i8(location, byte_value)
+}
+
+function void write16(ptr location, int short_value) {
+    mem_write_i16(location, short_value)
+}
+
+function void write32(ptr location, int int_value) {
+    mem_write_i32(location, int_value)
+}
+
+function void write64(ptr location, i64 cell) {
+    mem_write(location, cell)
+}
+
+function void text(ptr dst, str text_value) {
+    let len = string_length(text_value)
+    var i = 0
+    while i < len {
+        write8(dst + i, char_at(text_value, i))
+        i++
+    }
+}
+
+function void textz(ptr dst, str text_value) {
+    text(dst, text_value)
+    write8(dst + string_length(text_value), 0)
+}
+
+function void zero(ptr dst, int size) {
+    memset(dst, 0, size)
+}
+
+function void fill(ptr dst, int byte_value, int size) {
+    memset(dst, byte_value, size)
+}
+
+function void copy(ptr dst, ptr src, int size) {
+    memcpy(dst, src, size)
+}
+
+function void copy_cells(ptr dst, ptr src, int cells) {
+    memcpy(dst, src, cells * 8)
+}
+
+function int compare(ptr a, ptr b, int size) {
+    return memcmp(a, b, size)
+}
+
+function ptr dup(ptr src, int size) {
+    return make_copy(src, size)
+}
+
+function ptr offset(ptr base, int delta) {
+    return base + delta
+}
+
+function ptr after(ptr base, int delta) {
+    return base + delta
+}
+
+function ptr mem_alloc_bytes(int size) {
+    return make(size)
+}
+
+function ptr mem_alloc_zero(int size) {
+    return make_zero(size)
+}
+
+function ptr mem_alloc_copy(ptr src, int size) {
+    return make_copy(src, size)
+}
+
+function void mem_free_ptr(ptr p) {
+    free_ptr(p)
+}
+
+function void mem_zero(ptr dst, int size) {
+    zero(dst, size)
+}
+
+function void mem_fill(ptr dst, int byte_value, int size) {
+    fill(dst, byte_value, size)
+}
+
+function void mem_copy(ptr dst, ptr src, int size) {
+    copy(dst, src, size)
+}
+
+function void mem_copy_cells(ptr dst, ptr src, int cells) {
+    copy_cells(dst, src, cells)
+}
+
+function int mem_compare(ptr a, ptr b, int size) {
+    return compare(a, b, size)
+}
+
+function ptr mem_dup(ptr src, int size) {
+    return dup(src, size)
+}
+
+function ptr mem_offset(ptr base, int offset) {
+    return offset(base, offset)
+}
+
+function ptr mem_end(ptr base, int offset) {
+    return after(base, offset)
+}

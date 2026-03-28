@@ -11,9 +11,11 @@ $tests = @(
     "test_dll_strings",
     "test_else_if",
     "test_enum_values",
+    "test_float_suffix_f32",
     "test_globals_simple",
     "test_globals",
     "test_import_basic",
+    "test_auto_stdlib_ptr_aliases",
     "test_index_expr_array",
     "test_method_args",
     "test_multi_return",
@@ -25,6 +27,7 @@ $tests = @(
     "test_str_arg_helper",
     "test_str_return_branch",
     "test_struct_ptr_params",
+    "test_using_fn_alias",
     "test_unary_complex"
 )
 

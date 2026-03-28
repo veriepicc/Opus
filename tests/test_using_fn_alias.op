@@ -1,0 +1,23 @@
+using BinaryFn = fn(int, int) -> int
+
+function int add(int left, int right) {
+    return left + right
+}
+
+function int apply(BinaryFn op, int a, int b) {
+    return op(a, b)
+}
+
+function int main() {
+    let op = (&add) as BinaryFn
+
+    if op(20, 2) != 22 {
+        return 1
+    }
+
+    if apply(op, 20, 22) != 42 {
+        return 2
+    }
+
+    return 0
+}
