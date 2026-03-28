@@ -56,6 +56,9 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\generate-stdlib-module.ps1" -StdlibDir "$(ProjectDir)stdlib" -OutputPath "$(ProjectDir)src\stdlib.ixx"</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -78,11 +81,15 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\generate-stdlib-module.ps1" -StdlibDir "$(ProjectDir)stdlib" -OutputPath "$(ProjectDir)src\stdlib.ixx"</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <!-- Module Interface Units (.ixx) -->
   <ItemGroup>
     <ClCompile Include="src\main.ixx" />
     <ClCompile Include="src\opus.ixx" />
+    <ClCompile Include="src\stdlib.ixx" />
     <ClCompile Include="src\lexer.ixx" />
     <ClCompile Include="src\parser.ixx" />
     <ClCompile Include="src\ast.ixx" />

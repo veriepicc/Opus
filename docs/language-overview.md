@@ -10,7 +10,7 @@ Opus is a compiled systems programming language targeting Windows x64. It compil
 - Flexible syntax: C-style, Rust-style, and English can coexist in one file
 - Semicolons are optional
 - Manual memory management (`malloc`/`free`), no garbage collector
-- Direct Windows API access through FFI
+- Direct native interop through typed function pointers and `extern fn`
 - ~7ms compile times
 
 ## Entry Point
@@ -389,7 +389,7 @@ free(p)
 
 Each field is 8 bytes. Methods compile to global functions (`Player_takeDamage`, `Player_getHealth`) with the instance pointer passed implicitly via `self`.
 
-See [Classes & Structs](CLASSES.md) for the full reference.
+See [Classes & Structs](classes.md) for the full reference.
 
 ## Enums
 
@@ -417,6 +417,23 @@ function int main() {
 
 Values auto-increment from 0. Explicit values are supported, and subsequent variants continue from the last explicit value.
 
+## Type Aliases and Function Types
+
+Opus supports named type aliases through `using`, including function signatures. This is the
+preferred way to describe native call targets cleanly.
+
+```c
+using VertexFn = fn(ptr, f32, f32, f32) -> void
+using MessageBeepFn = fn(int) -> int
+
+function void demo(ptr sig_vertex, ptr tess) {
+    let add_vertex = sig_vertex as VertexFn
+    add_vertex(tess, 44.0f, 20.0f, 0.0f)
+}
+```
+
+This style replaces the older wrapper-heavy `ffi_call*` approach for normal native calls.
+
 ## Memory Model
 
 Opus uses manual memory management. There is no garbage collector (planned for future versions with configurable modes).
@@ -424,20 +441,24 @@ Opus uses manual memory management. There is no garbage collector (planned for f
 ### Allocation
 
 ```c
+import mem
+
 // allocate raw bytes
-let ptr = malloc(64)
+let ptr = mem.make_zero(64)
 
-// write and read 8-byte values
-mem_write(ptr, 0xDEADBEEF)
-let val = mem_read(ptr)
+// write and read pointer-sized cells
+mem.write(ptr, 0xDEADBEEF)
+let val = mem.read(ptr)
 
-// sized reads/writes
-mem_write_i32(ptr, 42)
-let small = mem_read_i32(ptr)
+// width-specific reads/writes when width matters
+mem.write32(ptr + 8, 42)
+let small = mem.read32(ptr + 8)
 
 // free when done
 free(ptr)
 ```
+
+For new code, prefer the `mem` module surface over raw builtin names like `mem_write_i32`.
 
 ### Arrays
 
@@ -484,39 +505,49 @@ Split loop iterations across CPU cores automatically:
 ```c
 // allocate shared memory
 let sum_ptr = malloc(8)
-mem_write(sum_ptr, 0)
+mem.write(sum_ptr, 0)
 
 parallel for i in range(0, 100) {
-    let val = mem_read(arr + i * 8)
+    let val = mem.read(arr + i * 8)
     atomic_add(sum_ptr, val)
 }
 
-let total = mem_read(sum_ptr)
+let total = mem.read(sum_ptr)
 ```
 
 Use `atomic_add` for safe concurrent writes to shared memory.
 
 ## FFI (Windows API)
 
-Opus can call Windows API functions directly:
+Opus can call Windows API functions directly. The preferred style is:
+
+- resolve a symbol
+- cast it to a named function type
+- call it normally
 
 ```c
-// get a module handle
+using GetPidFn = fn() -> int
+
 let kernel32 = get_module("kernel32.dll")
+let raw = get_proc(kernel32, "GetCurrentProcessId")
+let get_pid = raw as GetPidFn
 
-// resolve a function
-let proc = get_proc(kernel32, "GetCurrentProcessId")
-
-// call it
-let pid = ffi_call0(proc)
+let pid = get_pid()
 print_dec(pid)
 print("\n")
-
-// or use the built-in shortcut
-let pid2 = get_current_process_id()
 ```
 
-Higher-level builtins like `msgbox`, `virtual_protect`, and `load_library` wrap common Win32 calls. See [Built-in Functions](BUILTINS.md) for the full list.
+Imported APIs can also be declared directly:
+
+```c
+extern fn GetTickCount() -> int
+```
+
+The older `ffi_call*` helpers still exist for compatibility, but they are no longer the
+intended public FFI surface for normal native calls.
+
+Higher-level builtins like `msgbox`, `virtual_protect`, and `load_library` still wrap common
+Win32 calls. See [Built-in Functions](builtins.md) for the full list.
 
 ## Hex String Literals
 
@@ -594,8 +625,8 @@ Opus is flexible about keywords. Many have short forms or alternative spellings:
 
 ## What's Next
 
-- [Language Reference](REFERENCE.md) - complete syntax details
-- [Built-in Functions](BUILTINS.md) - the full standard library
-- [Classes & Structs](CLASSES.md) - OOP features
-- [DLL Mode](DLL.md) - generating injectable DLLs
-- [Debugger](DEBUGGER.md) - crash handler and self-healing runtime
+- [Language Reference](reference.md) - complete syntax details
+- [Built-in Functions](builtins.md) - the full standard library
+- [Classes & Structs](classes.md) - OOP features
+- [DLL Mode](dll.md) - generating injectable DLLs
+- [Debugger](debugger.md) - crash handler and self-healing runtime

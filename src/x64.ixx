@@ -724,6 +724,12 @@ public:
         buf_.emit8(modrm(0b11, Reg(EXT_CALL), target));
     }
 
+    void call_mem(Reg base, std::int32_t offset = 0) {
+        buf_.emit8(rex(true, Reg(EXT_CALL), base));
+        buf_.emit8(0xFF);
+        emit_mem_operand(Reg(EXT_CALL), base, offset);
+    }
+
     void ret() {
         buf_.emit8(0xC3);
     }

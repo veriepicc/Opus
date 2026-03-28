@@ -311,8 +311,10 @@ function int main() {
     print_int(pid)
     
     // read PE header to get image size
-    let e_lfanew = mem_read_i32(base + 0x3C)
-    let image_size = mem_read_i32(base + e_lfanew + 0x50)
+    import mem
+
+    let e_lfanew = mem.read32(base + 0x3C)
+    let image_size = mem.read32(base + e_lfanew + 0x50)
     print("image size: ")
     print_hex(image_size)
     
@@ -371,12 +373,13 @@ function int main() {
     alloc_console()
     set_title("FFI Demo")
     
-    // load user32.dll and call MessageBoxA
+    using MessageBoxAFn = fn(ptr, str, str, int) -> int
+
     let user32 = load_library("user32.dll")
-    let msgbox_fn = get_proc(user32, "MessageBoxA")
-    
-    // MessageBoxA(hwnd, text, caption, flags)
-    ffi_call4(msgbox_fn, 0, "Hello from Opus DLL!", "Opus", 0x40)
+    let raw = get_proc(user32, "MessageBoxA")
+    let message_box = raw as MessageBoxAFn
+
+    message_box(0, "Hello from Opus DLL!", "Opus", 0x40)
     
     // get a function from ntdll
     let ntdll = get_module("ntdll.dll")
@@ -414,7 +417,9 @@ function int main() {
     
     // if this crashes, youll see the exact source line
     let base = get_module(0)
-    let data = mem_read(base + 0x1000)
+    import mem
+
+    let data = mem.read(base + 0x1000)
     print_hex(data)
     
     return 0

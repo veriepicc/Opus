@@ -1,0 +1,162 @@
+import mem
+import text
+import vec
+import cpp_vector
+import option
+import result
+import owner
+import algo
+
+// Headless smoke test for the standalone stdlib.
+// Returns 0 on success so it can be used in automated host-compiler checks.
+
+function int main() {
+    let raw = mem_alloc_zero(32)
+    if raw == 0 {
+        return 1
+    } else {
+        mem_fill(raw, 0x41, 8)
+        mem_write(raw + 8, 1234)
+        if mem_read(raw + 8) != 1234 {
+            return 2
+        }
+    }
+
+    let greeting = text_join3("hello", " ", "stdlib")
+    let padded = text_pad_right(greeting, 14, ".")
+    if text_eq(greeting, "hello stdlib") == 0 {
+        return 3
+    }
+    if text_eq(padded, "hello stdlib..") == 0 {
+        return 4
+    }
+
+    var numbers = vec_new(4)
+    numbers = vec_push(numbers, 30)
+    numbers = vec_push(numbers, 10)
+    numbers = vec_push(numbers, 20)
+    if vec_len(numbers) != 3 {
+        return 5
+    }
+    algo_sort_i64(vec_data(numbers), vec_len(numbers))
+    if vec_first(numbers) != 10 {
+        return 6
+    }
+    if vec_last(numbers) != 30 {
+        return 7
+    }
+    numbers = vec_set(numbers, 1, 25)
+    if vec_get(numbers, 1) != 25 {
+        return 8
+    }
+    if vec_pop_value(numbers) != 30 {
+        return 9
+    }
+    numbers = vec_pop(numbers)
+    if vec_len(numbers) != 2 {
+        return 10
+    }
+    if array_len(vec_data(numbers)) != vec_len(numbers) {
+        return 29
+    }
+    if vec_contains(numbers, 25) == 0 {
+        return 11
+    }
+    if vec_index_of(numbers, 25) != 1 {
+        return 12
+    }
+
+    let maybe_total = opt_i64_some(vec_len(numbers))
+    if opt_i64_is_some(maybe_total) == 0 {
+        return 13
+    }
+    if opt_i64_unwrap(maybe_total) != 2 {
+        return 14
+    }
+    opt_i64_free(maybe_total)
+
+    let parsed = res_i64_ok(vec_first(numbers))
+    if res_i64_is_ok(parsed) == 0 {
+        return 15
+    }
+    if res_i64_unwrap(parsed) != 10 {
+        return 16
+    }
+    res_i64_free(parsed)
+
+    let foreign_cells = array_new(3)
+    array_set(foreign_cells, 0, 7)
+    array_set(foreign_cells, 1, 9)
+    array_set(foreign_cells, 2, 11)
+    let foreign_view = cpp_vector_from_array(foreign_cells)
+    if cpp_vector_size(foreign_view) != 3 {
+        return 17
+    }
+    if cpp_vector_back_i64(foreign_view) != 11 {
+        return 18
+    }
+
+    var copied = cpp_vector_copy_view_i64(foreign_view)
+    if vec_len(copied) != 3 {
+        return 19
+    }
+    if vec_first(copied) != 7 {
+        return 20
+    }
+    copied = vec_append(copied, numbers)
+    if vec_len(copied) != 5 {
+        return 21
+    }
+    copied = vec_remove_at(copied, 1)
+    if vec_len(copied) != 4 {
+        return 22
+    }
+    if array_len(vec_data(copied)) != vec_len(copied) {
+        return 30
+    }
+    copied = vec_swap_remove(copied, 0)
+    if vec_len(copied) != 3 {
+        return 23
+    }
+    if array_len(vec_data(copied)) != vec_len(copied) {
+        return 31
+    }
+    copied = vec_shrink_to_fit(copied)
+    if vec_cap(copied) < vec_len(copied) {
+        return 24
+    }
+
+    let copied_array = vec_to_array_copy(numbers)
+    var wrapped_copy = vec_from_array_copy(copied_array)
+    if vec_len(wrapped_copy) != vec_len(numbers) {
+        return 25
+    }
+    if vec_first(wrapped_copy) != vec_first(numbers) {
+        return 26
+    }
+    wrapped_copy = vec_clear(wrapped_copy)
+    if array_len(vec_data(wrapped_copy)) != 0 {
+        return 32
+    }
+
+    var owned_copy = owned_str_clone(padded)
+    if owned_str_is_owned(owned_copy) == 0 {
+        return 27
+    }
+    if text_eq(owned_str_get(owned_copy), padded) == 0 {
+        return 28
+    }
+
+    cpp_vector_free(foreign_view)
+    copied = vec_free(copied)
+    wrapped_copy = vec_free(wrapped_copy)
+    numbers = vec_free(numbers)
+    owned_copy = owned_str_dispose(owned_copy)
+    array_free(copied_array)
+    array_free(foreign_cells)
+    free(greeting)
+    free(padded)
+    mem_free_ptr(raw)
+
+    return 0
+}

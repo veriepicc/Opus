@@ -1,0 +1,245 @@
+// Result wrappers with a small error record.
+// These are intentionally specialized instead of generic.
+
+struct ResI64 {
+    ok: i64,
+    item: i64,
+    error_code: i64,
+    error: str,
+}
+
+struct ResPtr {
+    ok: i64,
+    item: ptr,
+    error_code: i64,
+    error: str,
+}
+
+struct ResStr {
+    ok: i64,
+    item: str,
+    error_code: i64,
+    error: str,
+}
+
+struct ResVoid {
+    ok: i64,
+    error_code: i64,
+    error: str,
+}
+
+function ResI64 res_i64_ok(i64 item) {
+    var result: ResI64 = malloc(32)
+    if result == 0 {
+        return 0
+    }
+    result.ok = 1
+    result.item = item
+    result.error_code = 0
+    result.error = ""
+    return result
+}
+
+function ResI64 res_i64_err(i64 code, str message) {
+    var result: ResI64 = malloc(32)
+    if result == 0 {
+        return 0
+    }
+    result.ok = 0
+    result.item = 0
+    result.error_code = code
+    result.error = message
+    return result
+}
+
+function bool res_i64_is_ok(ResI64 result) {
+    return result.ok != 0
+}
+
+function bool res_i64_is_err(ResI64 result) {
+    return result.ok == 0
+}
+
+function i64 res_i64_unwrap(ResI64 result) {
+    if result.ok != 0 {
+        return result.item
+    }
+    return 0
+}
+
+function i64 res_i64_unwrap_or(ResI64 result, i64 fallback) {
+    if result.ok != 0 {
+        return result.item
+    }
+    return fallback
+}
+
+function i64 res_i64_error_code(ResI64 result) {
+    return result.error_code
+}
+
+function str res_i64_error(ResI64 result) {
+    return result.error
+}
+
+function void res_i64_free(ResI64 result) {
+    if result != 0 {
+        free(result)
+    }
+}
+
+function ResPtr res_ptr_ok(ptr item_ptr) {
+    var result: ResPtr = malloc(32)
+    if result == 0 {
+        return 0
+    }
+    result.ok = 1
+    result.item = item_ptr
+    result.error_code = 0
+    result.error = ""
+    return result
+}
+
+function ResPtr res_ptr_err(i64 code, str message) {
+    var result: ResPtr = malloc(32)
+    if result == 0 {
+        return 0
+    }
+    result.ok = 0
+    result.item = 0
+    result.error_code = code
+    result.error = message
+    return result
+}
+
+function bool res_ptr_is_ok(ResPtr result) {
+    return result.ok != 0
+}
+
+function ptr res_ptr_unwrap(ResPtr result) {
+    if result.ok != 0 {
+        return result.item
+    }
+    return 0
+}
+
+function ptr res_ptr_unwrap_or(ResPtr result, ptr fallback) {
+    if result.ok != 0 {
+        return result.item
+    }
+    return fallback
+}
+
+function i64 res_ptr_error_code(ResPtr result) {
+    return result.error_code
+}
+
+function str res_ptr_error(ResPtr result) {
+    return result.error
+}
+
+function void res_ptr_free(ResPtr result) {
+    if result != 0 {
+        free(result)
+    }
+}
+
+function ResStr res_str_ok(str text_value) {
+    var result: ResStr = malloc(32)
+    if result == 0 {
+        return 0
+    }
+    result.ok = 1
+    result.item = text_value
+    result.error_code = 0
+    result.error = ""
+    return result
+}
+
+function ResStr res_str_err(i64 code, str message) {
+    var result: ResStr = malloc(32)
+    if result == 0 {
+        return 0
+    }
+    result.ok = 0
+    result.item = ""
+    result.error_code = code
+    result.error = message
+    return result
+}
+
+function bool res_str_is_ok(ResStr result) {
+    return result.ok != 0
+}
+
+function str res_str_unwrap(ResStr result) {
+    if result.ok != 0 {
+        return result.item
+    }
+    return ""
+}
+
+function str res_str_unwrap_or(ResStr result, str fallback) {
+    if result.ok != 0 {
+        return result.item
+    }
+    return fallback
+}
+
+function i64 res_str_error_code(ResStr result) {
+    return result.error_code
+}
+
+function str res_str_error(ResStr result) {
+    return result.error
+}
+
+function void res_str_free(ResStr result) {
+    if result != 0 {
+        free(result)
+    }
+}
+
+function ResVoid res_void_ok() {
+    var result: ResVoid = malloc(24)
+    if result == 0 {
+        return 0
+    }
+    result.ok = 1
+    result.error_code = 0
+    result.error = ""
+    return result
+}
+
+function ResVoid res_void_err(i64 code, str message) {
+    var result: ResVoid = malloc(24)
+    if result == 0 {
+        return 0
+    }
+    result.ok = 0
+    result.error_code = code
+    result.error = message
+    return result
+}
+
+function bool res_void_is_ok(ResVoid result) {
+    return result.ok != 0
+}
+
+function bool res_void_is_err(ResVoid result) {
+    return result.ok == 0
+}
+
+function i64 res_void_error_code(ResVoid result) {
+    return result.error_code
+}
+
+function str res_void_error(ResVoid result) {
+    return result.error
+}
+
+function void res_void_free(ResVoid result) {
+    if result != 0 {
+        free(result)
+    }
+}

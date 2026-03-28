@@ -428,7 +428,13 @@ let big = 1000000
 ```c
 let pi = 3.14
 let half = 0.5
+let x = 44.0f
+let alpha = 1.0f
 ```
+
+Bare float literals default to `f64`.
+
+Use the `f` suffix when you want an `f32` literal without writing `as f32`.
 
 ### Strings
 
@@ -756,6 +762,25 @@ at load time.
 
 ---
 
+## Type Aliases
+
+Use `using` to name types cleanly, including function signatures:
+
+```c
+using VertexFn = fn(ptr, f32, f32, f32) -> void
+using MessageBoxAFn = fn(ptr, str, str, int) -> int
+```
+
+This is especially useful for FFI:
+
+```c
+let raw = get_proc(get_module("user32.dll"), "MessageBoxA")
+let message_box = raw as MessageBoxAFn
+message_box(0, "Hello", "Opus", 0x40)
+```
+
+---
+
 ## Casting
 
 Use the `as` keyword to cast between types:
@@ -772,9 +797,11 @@ Casts are unchecked — you are responsible for making sure the conversion makes
 
 ```c
 function void example() {
+    import mem
+
     let p = malloc(8)
-    mem_write(p, 42)
-    let val = mem_read(p) as int
+    mem.write(p, 42)
+    let val = mem.read(p) as int
     print_int(val)
     free(p)
 }

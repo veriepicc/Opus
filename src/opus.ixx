@@ -300,6 +300,8 @@ extern "C" std::int64_t opus_get_proc(std::int64_t module, std::int64_t name_han
     return reinterpret_cast<std::int64_t>(proc);
 }
 
+// legacy ffi wrappers kept for compatibility while code migrates to typed function pointers
+// preferred style is: using Fn = fn(...)->...; let f = addr as Fn; f(...)
 extern "C" std::int64_t opus_ffi_call0(std::int64_t fn_ptr) {
     if (fn_ptr == 0) return 0;
     using Fn = std::int64_t(*)();
@@ -328,6 +330,52 @@ extern "C" std::int64_t opus_ffi_call4(std::int64_t fn_ptr, std::int64_t a1, std
     if (fn_ptr == 0) return 0;
     using Fn = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t);
     return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3, a4);
+}
+
+extern "C" std::int64_t opus_ffi_call_this_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2) {
+    if (fn_ptr == 0) return 0;
+    using Fn = void(*)(std::int64_t, std::int32_t);
+    reinterpret_cast<Fn>(fn_ptr)(this_ptr, static_cast<std::int32_t>(a2));
+    return 0;
+}
+
+extern "C" std::int64_t opus_ffi_call_this_ptr(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2) {
+    if (fn_ptr == 0) return 0;
+    using Fn = void*(*)(void*, void*);
+    return reinterpret_cast<std::int64_t>(
+        reinterpret_cast<Fn>(fn_ptr)(
+            reinterpret_cast<void*>(this_ptr),
+            reinterpret_cast<void*>(a2)
+        )
+    );
+}
+
+extern "C" std::int64_t opus_ffi_call_this_i32_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3) {
+    if (fn_ptr == 0) return 0;
+    using Fn = void(*)(std::int64_t, std::int32_t, std::int32_t);
+    reinterpret_cast<Fn>(fn_ptr)(this_ptr, static_cast<std::int32_t>(a2), static_cast<std::int32_t>(a3));
+    return 0;
+}
+
+extern "C" std::int64_t opus_ffi_call_this_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t flag) {
+    if (fn_ptr == 0) return 0;
+    using Fn = void(*)(std::int64_t, bool);
+    reinterpret_cast<Fn>(fn_ptr)(this_ptr, flag != 0);
+    return 0;
+}
+
+extern "C" std::int64_t opus_ffi_call_this_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t flag) {
+    if (fn_ptr == 0) return 0;
+    using Fn = void(*)(std::int64_t, std::int32_t, bool);
+    reinterpret_cast<Fn>(fn_ptr)(this_ptr, static_cast<std::int32_t>(a2), flag != 0);
+    return 0;
+}
+
+extern "C" std::int64_t opus_ffi_call_this_i32_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3, std::int64_t flag) {
+    if (fn_ptr == 0) return 0;
+    using Fn = void(*)(std::int64_t, std::int32_t, std::int32_t, bool);
+    reinterpret_cast<Fn>(fn_ptr)(this_ptr, static_cast<std::int32_t>(a2), static_cast<std::int32_t>(a3), flag != 0);
+    return 0;
 }
 
 extern "C" std::int64_t opus_ffi_call5(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5) {
@@ -493,6 +541,12 @@ extern "C" std::int64_t opus_ffi_call3(std::int64_t fn_ptr, std::int64_t a1, std
 extern "C" std::int64_t opus_ffi_call4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4) { return 0; }
 extern "C" std::int64_t opus_ffi_call5(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5) { return 0; }
 extern "C" std::int64_t opus_ffi_call6(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5, std::int64_t a6) { return 0; }
+extern "C" std::int64_t opus_ffi_call_this_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2) { return 0; }
+extern "C" std::int64_t opus_ffi_call_this_ptr(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2) { return 0; }
+extern "C" std::int64_t opus_ffi_call_this_i32_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3) { return 0; }
+extern "C" std::int64_t opus_ffi_call_this_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t flag) { return 0; }
+extern "C" std::int64_t opus_ffi_call_this_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t flag) { return 0; }
+extern "C" std::int64_t opus_ffi_call_this_i32_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3, std::int64_t flag) { return 0; }
 extern "C" std::int64_t opus_ffi_call2_f32x3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec3_ptr) { return 0; }
 extern "C" std::int64_t opus_ffi_call2_f32x4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec4_ptr) { return 0; }
 extern "C" std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text_handle, std::int64_t flags) { return 0; }
@@ -962,9 +1016,9 @@ public:
         return result;
     }
 
-    std::expected<std::int64_t, std::string> compile_and_run(std::string_view source) {
+    std::expected<std::int64_t, std::string> compile_and_run(const CompileOptions& opts) {
         reset_runtime_state();
-        auto result = compile({.source = source});
+        auto result = compile(opts);
         
         if (!result.success) {
             std::string errors;
@@ -1004,6 +1058,10 @@ public:
         #else
         return std::unexpected("execution not supported on this platform");
         #endif
+    }
+
+    std::expected<std::int64_t, std::string> compile_and_run(std::string_view source) {
+        return compile_and_run({.source = source});
     }
 };
 

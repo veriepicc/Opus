@@ -378,18 +378,19 @@ function int main() {
 ```c
 function int main() {
     alloc_console()
+    import mem
 
-    let buf = malloc(64)
+    let buf = mem.make_zero(64)
 
-    mem_write(buf, 0xDEADBEEFCAFEBABE)
-    mem_write_i32(buf + 8, 0x1337)
-    mem_write_i16(buf + 12, 0xFF)
-    mem_write_i8(buf + 14, 42)
+    mem.write(buf, 0xDEADBEEFCAFEBABE)
+    mem.write32(buf + 8, 0x1337)
+    mem.write16(buf + 12, 0xFF)
+    mem.write8(buf + 14, 42)
 
-    print("64-bit: ") print_hex(mem_read(buf))
-    print("32-bit: ") print_hex(mem_read_i32(buf + 8))
-    print("16-bit: ") print_int(mem_read_i16(buf + 12))
-    print("8-bit:  ") print_int(mem_read_i8(buf + 14))
+    print("64-bit: ") print_hex(mem.read(buf))
+    print("32-bit: ") print_hex(mem.read32(buf + 8))
+    print("16-bit: ") print_int(mem.read16(buf + 12))
+    print("8-bit:  ") print_int(mem.read8(buf + 14))
 
     let copy = malloc(64)
     memcpy(copy, buf, 64)
@@ -417,6 +418,7 @@ function int compute(int x) {
 
 function int main() {
     alloc_console()
+    import mem
 
     // spawn individual threads
     print("--- spawn/await ---\n")
@@ -435,14 +437,14 @@ function int main() {
     // parallel sum with atomics
     print("\n--- parallel for ---\n")
     let sum = malloc(8)
-    mem_write(sum, 0)
+    mem.write(sum, 0)
 
     parallel for i in range(1, 101) {
         atomic_add(sum, i)
     }
 
     print("sum 1..100 = ")
-    print_int(mem_read(sum))
+    print_int(mem.read(sum))
 
     free(sum)
     return 0
@@ -502,19 +504,21 @@ function int main() {
 ```c
 function int main() {
     alloc_console()
+    using GetPidFn = fn() -> int
+    using MessageBoxAFn = fn(ptr, str, str, int) -> int
 
     let kernel32 = get_module("kernel32.dll")
     print("kernel32: ")
     print_hex(kernel32)
 
-    let get_pid = get_proc(kernel32, "GetCurrentProcessId")
-    let pid = ffi_call0(get_pid)
+    let get_pid = (get_proc(kernel32, "GetCurrentProcessId")) as GetPidFn
+    let pid = get_pid()
     print("pid: ")
     print_int(pid)
 
     let user32 = load_library("user32.dll")
-    let msgbox_fn = get_proc(user32, "MessageBoxA")
-    ffi_call4(msgbox_fn, 0, "Hello from Opus!", "FFI Demo", 0x40)
+    let message_box = (get_proc(user32, "MessageBoxA")) as MessageBoxAFn
+    message_box(0, "Hello from Opus!", "FFI Demo", 0x40)
 
     print("done\n")
     return 0
@@ -533,6 +537,7 @@ A DLL that scans the host process memory for byte patterns:
 function int main() {
     alloc_console()
     set_title("Opus Scanner")
+    import mem
 
     let base = get_module(0)
     print("module base: ")
@@ -542,8 +547,8 @@ function int main() {
     print("process id: ")
     print_int(pid)
 
-    let e_lfanew = mem_read_i32(base + 0x3C)
-    let image_size = mem_read_i32(base + e_lfanew + 0x50)
+    let e_lfanew = mem.read32(base + 0x3C)
+    let image_size = mem.read32(base + e_lfanew + 0x50)
     print("image size: ")
     print_hex(image_size)
 

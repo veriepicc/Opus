@@ -329,6 +329,11 @@ struct ImportDecl {
     std::optional<std::string> alias;
 };
 
+struct TypeAliasDecl {
+    std::string name;
+    Type target;
+};
+
 // healing mode for crash recovery
 enum class HealingMode { Auto, Freeze, Off };
 
@@ -352,6 +357,7 @@ struct Decl {
         ConstDecl,
         StaticDecl,
         ImportDecl,
+        TypeAliasDecl,
         ProjectDecl
     > kind;
 
@@ -476,4 +482,3 @@ template<typename T>
 }
 
 } // namespace opus::ast
-

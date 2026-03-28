@@ -1019,8 +1019,7 @@ private:
         emit8(code, 0x48); emit8(code, 0xC7); emit8(code, 0x44); emit8(code, 0x24); emit8(code, 0x20);
         emit32(code, 0);
         emit_call_iat(code, text_rva, imports.iat_write_console);
-        // Newline is now embedded in the string itself
-        
+
         // add rsp, 0x30; pop rbp; ret
         emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xC4); emit8(code, 0x30);
         emit8(code, 0x5D);
@@ -1617,7 +1616,6 @@ private:
             emit32(code, static_cast<std::uint32_t>(data_rva + REPL_STATE_OFFSET_IN_DATA + FREEZE_LATCH_OFFSET_IN_REPL_STATE));
             emit8(code, 0x01);
             emit_print_inline(code, text_rva, print_offset, no_dbg, sizeof(no_dbg));
-            std::size_t silent_freeze = code.size();
             if (healing_mode == ast::HealingMode::Freeze) {
                 patch32(code, jne_silent_freeze);
             }
@@ -2367,8 +2365,6 @@ private:
                 emit32(code, static_cast<std::uint32_t>(data_rva + REPL_STATE_OFFSET_IN_DATA + FREEZE_LATCH_OFFSET_IN_REPL_STATE));
                 emit8(code, 0x01);
                 emit_print_inline(code, text_rva, print_offset, freeze_msg, sizeof(freeze_msg));
-                std::size_t silent_freeze = code.size();
-                patch32(code, jne_silent_freeze);
                 emit8(code, 0xEB); emit8(code, 0xFE);  // jmp $
             } else {
                 // non-auto mode: just freeze
@@ -2377,8 +2373,9 @@ private:
                 emit32(code, static_cast<std::uint32_t>(data_rva + REPL_STATE_OFFSET_IN_DATA + FREEZE_LATCH_OFFSET_IN_REPL_STATE));
                 emit8(code, 0x01);
                 emit_print_inline(code, text_rva, print_offset, freeze_msg, sizeof(freeze_msg));
-                std::size_t silent_freeze = code.size();
-                patch32(code, jne_silent_freeze);
+                if (healing_mode == ast::HealingMode::Freeze) {
+                    patch32(code, jne_silent_freeze);
+                }
                 emit8(code, 0xEB); emit8(code, 0xFE);  // jmp $
             }
 

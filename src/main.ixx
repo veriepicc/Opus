@@ -68,6 +68,46 @@ A Simple Programming Language
     return {};
 }
 
+[[nodiscard]] static std::filesystem::path normalize_path(const std::filesystem::path& path) {
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(path, ec);
+    if (!ec) {
+        return canonical;
+    }
+    auto absolute = std::filesystem::absolute(path, ec);
+    if (!ec) {
+        return absolute;
+    }
+    return path;
+}
+
+static void push_unique_path(std::vector<std::string>& paths, const std::filesystem::path& path) {
+    auto normalized = normalize_path(path).generic_string();
+    if (normalized.empty()) {
+        return;
+    }
+    if (std::find(paths.begin(), paths.end(), normalized) == paths.end()) {
+        paths.push_back(std::move(normalized));
+    }
+}
+
+[[nodiscard]] static std::vector<std::string> default_import_search_paths(const std::filesystem::path& compiler_exe) {
+    std::vector<std::string> paths;
+    auto dir = normalize_path(compiler_exe).parent_path();
+    for (int i = 0; i < 8 && !dir.empty(); ++i) {
+        auto candidate = dir / "stdlib";
+        if (std::filesystem::exists(candidate / "mem.op")) {
+            push_unique_path(paths, candidate);
+        }
+        auto parent = dir.parent_path();
+        if (parent == dir) {
+            break;
+        }
+        dir = parent;
+    }
+    return paths;
+}
+
 [[nodiscard]] static std::optional<std::size_t> require_main_offset(
     const opus::Compiler::Result& result
 ) {
@@ -77,7 +117,7 @@ A Simple Programming Language
     return std::nullopt;
 }
 
-[[nodiscard]] int run_file(const std::string& filename, bool run_immediately, bool as_dll) {
+[[nodiscard]] int run_file(const std::string& filename, bool run_immediately, bool as_dll, const std::filesystem::path& compiler_exe) {
     std::ifstream file(filename);
     if (!file) {
         std::print(std::cerr, "\033[1;91merror\033[0m: cannot open file: \033[1m{}\033[0m\n", filename);
@@ -89,9 +129,17 @@ A Simple Programming Language
     std::string source = buffer.str();
 
     opus::Compiler compiler;
+    auto import_search_paths = default_import_search_paths(compiler_exe);
+    auto source_path = normalize_path(filename);
+    auto source_root = source_path.has_parent_path() ? source_path.parent_path().generic_string() : std::string{};
 
     if (run_immediately) {
-        auto result = compiler.compile_and_run(source);
+        auto result = compiler.compile_and_run({
+            .source = source,
+            .filename = filename,
+            .project_root = source_root,
+            .import_search_paths = import_search_paths,
+        });
         if (result) {
             std::println("Program returned: {}", *result);
             return 0;
@@ -104,6 +152,8 @@ A Simple Programming Language
         auto result = compiler.compile({
             .source = source,
             .filename = filename,
+            .project_root = source_root,
+            .import_search_paths = import_search_paths,
             .dll_mode = as_dll,
             .healing_mode = opus::ast::HealingMode::Off,
             .exe_mode = !as_dll,
@@ -223,7 +273,7 @@ A Simple Programming Language
     }
 }
 
-[[nodiscard]] int build_project(std::optional<std::string> project_path_arg) {
+[[nodiscard]] int build_project(std::optional<std::string> project_path_arg, const std::filesystem::path& compiler_exe) {
     std::filesystem::path project_file;
     
     if (project_path_arg) {
@@ -265,7 +315,10 @@ A Simple Programming Language
     std::stringstream buffer;
     buffer << in.rdbuf();
     std::string source = buffer.str();
-    std::vector<std::string> import_search_paths = config.includes;
+    std::vector<std::string> import_search_paths = default_import_search_paths(compiler_exe);
+    for (const auto& include_path : config.includes) {
+        import_search_paths.push_back(include_path);
+    }
     std::string project_root = std::filesystem::weakly_canonical(config.project_dir).string();
     
     opus::Compiler compiler;
@@ -376,6 +429,8 @@ export int main(int argc, char* argv[]) {
 
     std::string command = argv[1];
 
+    auto compiler_exe = normalize_path(argv[0]);
+
     if (command == "--help" || command == "-h") {
         print_usage();
         return 0;
@@ -393,7 +448,7 @@ export int main(int argc, char* argv[]) {
         if (argc > 2) {
             project_path = argv[2];
         }
-        return build_project(project_path);
+        return build_project(project_path, compiler_exe);
     }
 
     bool run = false;
@@ -416,5 +471,5 @@ export int main(int argc, char* argv[]) {
         return 1;
     }
 
-    return run_file(filename, run, dll);
+    return run_file(filename, run, dll, compiler_exe);
 }

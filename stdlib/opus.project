@@ -1,0 +1,10 @@
+project OpusStdlib {
+    entry: "demo.op"
+    output: "stdlib_demo.exe"
+    mode: exe
+    debug: false
+    healing: "off"
+    include: [
+        "./"
+    ]
+}

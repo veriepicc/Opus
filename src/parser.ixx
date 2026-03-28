@@ -255,6 +255,9 @@ private:
         if (match(TokenKind::Import)) {
             return parse_import_decl();
         }
+        if (match(TokenKind::Using)) {
+            return parse_type_alias_decl();
+        }
         if (match(TokenKind::Extern)) {
             return parse_extern_decl();
         }
@@ -1020,6 +1023,22 @@ private:
         return decl;
     }
 
+    std::optional<ast::DeclPtr> parse_type_alias_decl() {
+        Token name_tok = consume_name("expected type alias name");
+        consume(TokenKind::Assign, "expected '=' after type alias name");
+        auto target = parse_type();
+        if (!target) return std::nullopt;
+
+        match(TokenKind::Semicolon);
+
+        auto decl = std::make_unique<ast::Decl>();
+        decl->kind = ast::TypeAliasDecl{
+            .name = std::string(name_tok.text),
+            .target = std::move(*target)
+        };
+        return decl;
+    }
+
     std::optional<ast::DeclPtr> parse_project_decl() {
         Token name_tok = consume_name("expected project name");
         consume(TokenKind::LBrace, "expected '{' after project name");
@@ -1158,6 +1177,26 @@ private:
                 if (t) ret_type = std::move(*t);
             }
 
+            match(TokenKind::Semicolon);
+
+            auto decl = std::make_unique<ast::Decl>();
+            decl->kind = ast::FnDecl{
+                .name = std::string(name_tok.text),
+                .params = std::move(params),
+                .return_type = std::move(ret_type),
+                .body = {},
+                .is_extern = true
+            };
+            return decl;
+        }
+        if (match(TokenKind::Function)) {
+            auto ret_type_opt = parse_type();
+            Type ret_type = ret_type_opt ? std::move(*ret_type_opt) : Type::make_primitive(PrimitiveType::Void);
+
+            Token name_tok = consume_name("expected function name");
+            consume(TokenKind::LParen, "expected '(' after function name");
+            auto params = parse_param_list_v2();
+            consume(TokenKind::RParen, "expected ')' after parameters");
             match(TokenKind::Semicolon);
 
             auto decl = std::make_unique<ast::Decl>();
@@ -1538,7 +1577,34 @@ private:
 
         std::optional<Type> base;
 
-        if (match(TokenKind::LBracket)) {
+        if (match(TokenKind::Fn)) {
+            consume(TokenKind::LParen, "expected '(' after fn in function type");
+
+            std::vector<std::unique_ptr<Type>> params;
+            if (!check(TokenKind::RParen)) {
+                do {
+                    auto param = parse_type();
+                    if (!param) return std::nullopt;
+                    params.push_back(std::make_unique<Type>(std::move(*param)));
+                } while (match(TokenKind::Comma));
+            }
+            consume(TokenKind::RParen, "expected ')' after function type params");
+
+            Type ret = Type::make_primitive(PrimitiveType::Void);
+            if (match(TokenKind::Arrow) || match(TokenKind::Colon)) {
+                auto ret_type = parse_type();
+                if (!ret_type) return std::nullopt;
+                ret = std::move(*ret_type);
+            }
+
+            Type t;
+            t.kind = FunctionType{
+                .params = std::move(params),
+                .ret = std::make_unique<Type>(std::move(ret)),
+                .is_variadic = false
+            };
+            base = std::move(t);
+        } else if (match(TokenKind::LBracket)) {
             auto elem = parse_type();
             if (!elem) return std::nullopt;
 
@@ -2031,9 +2097,11 @@ private:
         if (match(TokenKind::FloatLit)) {
             auto expr = std::make_unique<ast::Expr>();
             double val = std::get<double>(previous().value);
+            bool is_f32 = !previous().text.empty() &&
+                          (previous().text.back() == 'f' || previous().text.back() == 'F');
             expr->kind = ast::LiteralExpr{
                 .value = val,
-                .type = Type::make_primitive(PrimitiveType::F64)
+                .type = Type::make_primitive(is_f32 ? PrimitiveType::F32 : PrimitiveType::F64)
             };
             return expr;
         }

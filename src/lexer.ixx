@@ -32,6 +32,7 @@ enum class TokenKind : std::uint8_t {
     If, Else, While, For, In, Loop,
     Return, Break, Continue,
     Import, Export, Extern,
+    Using,
     True, False,
     As, And, Or, Not,
     
@@ -298,6 +299,7 @@ private:
         bool is_float = false;
         bool is_hex = false;
         bool is_bin = false;
+        bool is_f32_suffix = false;
 
         if (peek() == '0') {
             if (peek(1) == 'x' || peek(1) == 'X') {
@@ -328,6 +330,11 @@ private:
                 if (peek() == '+' || peek() == '-') advance();
                 while (is_digit_char(peek())) advance();
             }
+
+            if (is_float && (peek() == 'f' || peek() == 'F')) {
+                is_f32_suffix = true;
+                advance();
+            }
         }
 
         std::string_view text = source_.substr(start_pos, pos_ - start_pos);
@@ -339,8 +346,12 @@ private:
         // parse numeric value with from_chars (no locale, no alloc)
         if (is_float) {
             double dval = 0.0;
-            auto parsed = std::from_chars(text.data(), text.data() + text.size(), dval);
-            if (consumed_all(text.data(), text.data() + text.size(), parsed)) {
+            std::string_view parse_text = text;
+            if (is_f32_suffix && !parse_text.empty()) {
+                parse_text = parse_text.substr(0, parse_text.size() - 1);
+            }
+            auto parsed = std::from_chars(parse_text.data(), parse_text.data() + parse_text.size(), dval);
+            if (consumed_all(parse_text.data(), parse_text.data() + parse_text.size(), parsed)) {
                 tok.value = dval;
             } else {
                 tok.kind = TokenKind::Error;
@@ -635,6 +646,7 @@ private:
             {"export", TokenKind::Export},
             {"extern", TokenKind::Extern},
             {"external", TokenKind::Extern},    // Alias: verbose
+            {"using", TokenKind::Using},
             
             // Literals - ALL ALIASES WORK
             {"true", TokenKind::True},
@@ -706,6 +718,9 @@ private:
             {"uint", TokenKind::TypeUint},
             {"str", TokenKind::TypeStr},
             {"ptr", TokenKind::TypePtr},
+            {"addr", TokenKind::TypePtr},
+            {"address", TokenKind::TypePtr},
+            {"pointer", TokenKind::TypePtr},
             
             // Rust-style explicit types (preferred - clear and unambiguous)
             {"i8", TokenKind::TypeI8},

@@ -1,0 +1,250 @@
+// semantic scanner prototype using only documented Opus syntax
+
+let CLASS_LOAD: int = 1
+let CLASS_STORE: int = 2
+let CLASS_TEST: int = 4
+let CLASS_JCC: int = 5
+let CLASS_CALL: int = 6
+let CLASS_RET: int = 7
+let CLASS_OTHER: int = 0
+
+function int classify_insn(long ip) {
+    var current = ip
+    var b0 = mem_read_i8(current) & 0xFF
+
+    if (b0 & 0xF0) == 0x40 {
+        current = current + 1
+        b0 = mem_read_i8(current) & 0xFF
+    }
+
+    if b0 == 0x8B {
+        return CLASS_LOAD
+    }
+    if b0 == 0x89 {
+        return CLASS_STORE
+    }
+    if b0 == 0x85 {
+        return CLASS_TEST
+    }
+    if b0 == 0xE8 {
+        return CLASS_CALL
+    }
+    if b0 == 0xC3 {
+        return CLASS_RET
+    }
+    if b0 == 0x0F {
+        current = current + 1
+        var b1 = mem_read_i8(current) & 0xFF
+        if (b1 >= 0x80) && (b1 <= 0x8F) {
+            return CLASS_JCC
+        }
+    }
+
+    return CLASS_OTHER
+}
+
+function int decode_insn_length(long ip) {
+    var current = ip
+    var b0 = mem_read_i8(current) & 0xFF
+    var has_modrm = 0
+    var has_disp32 = 0
+    var has_imm32 = 0
+
+    if (b0 & 0xF0) == 0x40 {
+        current = current + 1
+        b0 = mem_read_i8(current) & 0xFF
+    }
+
+    if b0 == 0x8B {
+        has_modrm = 1
+        current = current + 1
+    } else if b0 == 0x89 {
+        has_modrm = 1
+        current = current + 1
+    } else if b0 == 0x85 {
+        has_modrm = 1
+        current = current + 1
+    } else if b0 == 0xE8 {
+        has_imm32 = 1
+        current = current + 1
+    } else if b0 == 0xC3 {
+        current = current + 1
+    } else if b0 == 0x0F {
+        current = current + 1
+        current = current + 1
+        has_imm32 = 1
+    } else {
+        current = current + 1
+    }
+
+    if has_modrm == 1 {
+        var modrm = mem_read_i8(current) & 0xFF
+        current = current + 1
+        var mod = (modrm >> 6) & 3
+        var rm = modrm & 7
+
+        if rm == 4 && mod != 3 {
+            var sib = mem_read_i8(current) & 0xFF
+            current = current + 1
+            var base = sib & 7
+            if mod == 0 && base == 5 {
+                has_disp32 = 1
+            }
+        }
+
+        if mod == 1 {
+            current = current + 1
+        } else if mod == 2 {
+            has_disp32 = 1
+        } else if mod == 0 && rm == 5 {
+            has_disp32 = 1
+        }
+    }
+
+    if has_disp32 == 1 {
+        current = current + 4
+    }
+    if has_imm32 == 1 {
+        current = current + 4
+    }
+
+    var length = current - ip
+    if length == 0 {
+        return 1
+    }
+    return length
+}
+
+function long match_semantic(long start, int size, long pattern, int pat_len) {
+    var current = start
+    let limit = start + size
+
+    while current < limit {
+        var scan_ptr = current
+        var pat_idx = 0
+        var matched = 1
+
+        while pat_idx < pat_len {
+            if scan_ptr >= limit {
+                matched = 0
+                break
+            }
+
+            let op_class = classify_insn(scan_ptr)
+            let expected_class = array_get(pattern, pat_idx)
+            if op_class != expected_class {
+                matched = 0
+                break
+            }
+
+            let step_len = decode_insn_length(scan_ptr)
+            scan_ptr = scan_ptr + step_len
+            pat_idx = pat_idx + 1
+        }
+
+        if matched == 1 {
+            return current
+        }
+
+        let outer_step_len = decode_insn_length(current)
+        current = current + outer_step_len
+    }
+
+    return 0
+}
+
+function int main() {
+    alloc_console()
+
+    let mem = malloc(4096)
+
+    let v1 = mem
+    mem_write_i8(v1 + 0, 0x48)
+    mem_write_i8(v1 + 1, 0x8B)
+    mem_write_i8(v1 + 2, 0x05)
+    mem_write_i32(v1 + 3, 100)
+    mem_write_i8(v1 + 7, 0x48)
+    mem_write_i8(v1 + 8, 0x85)
+    mem_write_i8(v1 + 9, 0xC0)
+    mem_write_i8(v1 + 10, 0x0F)
+    mem_write_i8(v1 + 11, 0x84)
+    mem_write_i32(v1 + 12, 20)
+    mem_write_i8(v1 + 16, 0xE8)
+    mem_write_i32(v1 + 17, 0xDDCCBBAA)
+    mem_write_i8(v1 + 21, 0xC3)
+
+    let v2 = mem + 64
+    mem_write_i8(v2 + 0, 0x48)
+    mem_write_i8(v2 + 1, 0x8B)
+    mem_write_i8(v2 + 2, 0x1D)
+    mem_write_i32(v2 + 3, 999)
+    mem_write_i8(v2 + 7, 0x48)
+    mem_write_i8(v2 + 8, 0x85)
+    mem_write_i8(v2 + 9, 0xDB)
+    mem_write_i8(v2 + 10, 0x0F)
+    mem_write_i8(v2 + 11, 0x84)
+    mem_write_i32(v2 + 12, 40)
+    mem_write_i8(v2 + 16, 0xE8)
+    mem_write_i32(v2 + 17, 0x44332211)
+    mem_write_i8(v2 + 21, 0xC3)
+
+    var i = 22
+    while i < 64 {
+        mem_write_i8(v1 + i, 0x90)
+        i = i + 1
+    }
+
+    let pattern = array_new(5)
+    array_set(pattern, 0, CLASS_LOAD)
+    array_set(pattern, 1, CLASS_TEST)
+    array_set(pattern, 2, CLASS_JCC)
+    array_set(pattern, 3, CLASS_CALL)
+    array_set(pattern, 4, CLASS_RET)
+
+    print("Scanning for behavioral pattern: [LOAD, TEST, JCC, CALL, RET]\n")
+    print("v1 classify/len @0: ")
+    print_dec(classify_insn(v1))
+    print(" / ")
+    print_dec(decode_insn_length(v1))
+    print("\n")
+    print("v1 classify/len @7: ")
+    print_dec(classify_insn(v1 + 7))
+    print(" / ")
+    print_dec(decode_insn_length(v1 + 7))
+    print("\n")
+    print("v1 classify/len @10: ")
+    print_dec(classify_insn(v1 + 10))
+    print(" / ")
+    print_dec(decode_insn_length(v1 + 10))
+    print("\n")
+    print("v1 classify/len @16: ")
+    print_dec(classify_insn(v1 + 16))
+    print(" / ")
+    print_dec(decode_insn_length(v1 + 16))
+    print("\n")
+    print("v1 classify/len @21: ")
+    print_dec(classify_insn(v1 + 21))
+    print(" / ")
+    print_dec(decode_insn_length(v1 + 21))
+    print("\n")
+
+    let found1 = match_semantic(mem, 64, pattern, 5)
+    print("Found v1 at offset: ")
+    print_dec(found1 - mem)
+    print("\n")
+
+    let found2 = match_semantic(mem + 64, 64, pattern, 5)
+    print("Found v2 at offset: ")
+    print_dec(found2 - (mem + 64))
+    print("\n")
+
+    if (found1 == mem) && (found2 == (mem + 64)) {
+        print("SUCCESS: Semantic scanner found both variations despite different bytes!\n")
+        free(mem)
+        return 0
+    }
+
+    print("FAIL\n")
+    free(mem)
+    return 1
+}

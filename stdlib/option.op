@@ -1,0 +1,214 @@
+// Specialized optional value wrappers.
+// Opus does not have generics yet, so we keep the most useful payload shapes.
+
+struct OptI64 {
+    has_value: i64,
+    item: i64,
+}
+
+struct OptPtr {
+    has_value: i64,
+    item: ptr,
+}
+
+struct OptStr {
+    has_value: i64,
+    item: str,
+}
+
+struct OptBool {
+    has_value: i64,
+    item: i64,
+}
+
+function OptI64 opt_i64_some(i64 item) {
+    var opt: OptI64 = malloc(16)
+    if opt == 0 {
+        return 0
+    }
+    opt.has_value = 1
+    opt.item = item
+    return opt
+}
+
+function OptI64 opt_i64_none() {
+    var opt: OptI64 = malloc(16)
+    if opt == 0 {
+        return 0
+    }
+    opt.has_value = 0
+    opt.item = 0
+    return opt
+}
+
+function bool opt_i64_is_some(OptI64 opt) {
+    return opt.has_value != 0
+}
+
+function bool opt_i64_is_none(OptI64 opt) {
+    return opt.has_value == 0
+}
+
+function i64 opt_i64_unwrap(OptI64 opt) {
+    if opt.has_value != 0 {
+        return opt.item
+    }
+    return 0
+}
+
+function i64 opt_i64_unwrap_or(OptI64 opt, i64 fallback) {
+    if opt.has_value != 0 {
+        return opt.item
+    }
+    return fallback
+}
+
+function void opt_i64_free(OptI64 opt) {
+    if opt != 0 {
+        free(opt)
+    }
+}
+
+function OptPtr opt_ptr_some(ptr item_ptr) {
+    var opt: OptPtr = malloc(16)
+    if opt == 0 {
+        return 0
+    }
+    opt.has_value = 1
+    opt.item = item_ptr
+    return opt
+}
+
+function OptPtr opt_ptr_none() {
+    var opt: OptPtr = malloc(16)
+    if opt == 0 {
+        return 0
+    }
+    opt.has_value = 0
+    opt.item = 0
+    return opt
+}
+
+function bool opt_ptr_is_some(OptPtr opt) {
+    return opt.has_value != 0
+}
+
+function bool opt_ptr_is_none(OptPtr opt) {
+    return opt.has_value == 0
+}
+
+function ptr opt_ptr_unwrap(OptPtr opt) {
+    if opt.has_value != 0 {
+        return opt.item
+    }
+    return 0
+}
+
+function ptr opt_ptr_unwrap_or(OptPtr opt, ptr fallback) {
+    if opt.has_value != 0 {
+        return opt.item
+    }
+    return fallback
+}
+
+function void opt_ptr_free(OptPtr opt) {
+    if opt != 0 {
+        free(opt)
+    }
+}
+
+function OptStr opt_str_some(str text_value) {
+    var opt: OptStr = malloc(16)
+    if opt == 0 {
+        return 0
+    }
+    opt.has_value = 1
+    opt.item = text_value
+    return opt
+}
+
+function OptStr opt_str_none() {
+    var opt: OptStr = malloc(16)
+    if opt == 0 {
+        return 0
+    }
+    opt.has_value = 0
+    opt.item = ""
+    return opt
+}
+
+function bool opt_str_is_some(OptStr opt) {
+    return opt.has_value != 0
+}
+
+function bool opt_str_is_none(OptStr opt) {
+    return opt.has_value == 0
+}
+
+function str opt_str_unwrap(OptStr opt) {
+    if opt.has_value != 0 {
+        return opt.item
+    }
+    return ""
+}
+
+function str opt_str_unwrap_or(OptStr opt, str fallback) {
+    if opt.has_value != 0 {
+        return opt.item
+    }
+    return fallback
+}
+
+function void opt_str_free(OptStr opt) {
+    if opt != 0 {
+        free(opt)
+    }
+}
+
+function OptBool opt_bool_some(bool flag) {
+    var opt: OptBool = malloc(16)
+    if opt == 0 {
+        return 0
+    }
+    opt.has_value = 1
+    opt.item = flag
+    return opt
+}
+
+function OptBool opt_bool_none() {
+    var opt: OptBool = malloc(16)
+    if opt == 0 {
+        return 0
+    }
+    opt.has_value = 0
+    opt.item = 0
+    return opt
+}
+
+function bool opt_bool_is_some(OptBool opt) {
+    return opt.has_value != 0
+}
+
+function bool opt_bool_is_none(OptBool opt) {
+    return opt.has_value == 0
+}
+
+function bool opt_bool_unwrap(OptBool opt) {
+    if opt.has_value != 0 {
+        return opt.item != 0
+    }
+    return false
+}
+
+function bool opt_bool_unwrap_or(OptBool opt, bool fallback) {
+    if opt.has_value != 0 {
+        return opt.item != 0
+    }
+    return fallback
+}
+
+function void opt_bool_free(OptBool opt) {
+    if opt != 0 {
+        free(opt)
+    }
+}
