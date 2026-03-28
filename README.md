@@ -39,8 +39,40 @@ Generated EXE: hello.exe
 - Typed FFI with normal callable function aliases
 - Built-in memory helpers, pattern scanning, and low-level utilities
 - Classes, structs, enums, methods, and multiple syntax styles
+- Built-in threading and parallel work primitives
 - Debug mode with source mapping and crash context
+- Embedded crash handling / self-healing runtime support
 - Embedded stdlib fallback in the compiler
+
+## Why Opus?
+
+| Feature | Typical MSVC Workflow | Opus |
+|------|------|------|
+| Compile Time | **~995-1646ms** | **~7-26ms** |
+| Binary Size | Often larger with toolchain/runtime baggage | **Small standalone outputs** |
+| Dependencies | Toolchain + CRT expectations | **Direct native output** |
+| Crash Context | Usually external debugger first | **Embedded debug/crash context** |
+
+Opus is built for low-level native development where iteration speed and control matter:
+
+- fast compile times make tight edit-build-run loops practical
+- direct machine-code generation keeps the output small and understandable
+- embedded crash handling helps when a debugger is not the first tool you want to reach for
+- built-in threading and parallel features make it usable beyond tiny toy programs
+- typed FFI and low-level memory utilities make native interop straightforward
+
+Current benchmark results against MSVC show:
+
+- Opus compile times on the tested suite landed between **7.307ms and 26.298ms**
+- MSVC compile times on the same suite landed between **994.662ms and 1645.524ms**
+- Opus won runtime on `benchmark_math`, `benchmark_state`, and `benchmark_branch`
+- Measured trimmed averages:
+  - `benchmark_math`: **2.659ms** vs **7.676ms**
+  - `benchmark_state`: **2.459ms** vs **6.758ms**
+  - `benchmark_branch`: **2.220ms** vs **10.673ms**
+- On broader workloads, Opus remained competitive:
+  - `benchmark_general`: **35.157ms** vs **31.553ms**
+  - `benchmark_text`: **16.821ms** vs **14.018ms**
 
 ## Quick Start
 
