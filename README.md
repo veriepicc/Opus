@@ -1,6 +1,22 @@
 # Opus
 
-A systems programming language that compiles directly to native x64 machine code. No LLVM, no VM, no runtime — just raw machine code in standalone Windows executables and injectable DLLs.
+Opus is a systems programming language that compiles directly to native Windows x64 machine code.
+
+No LLVM, no VM, no bytecode, and no dependency on a giant external toolchain at compile time. Opus emits PE executables and DLLs directly.
+
+## Status
+
+This is `v1.0`.
+
+Opus is real, usable, and already capable of native EXE and DLL output, but it is still early. It is not meant for serious production use yet. Expect rough edges, changing internals, and missing polish in some parts of the language and toolchain.
+
+Current target:
+- Windows only
+- x64 only
+
+If you want to experiment with it, improve it, or clean things up, contributions are welcome.
+
+## Example
 
 ```c
 function int main() {
@@ -10,79 +26,84 @@ function int main() {
 }
 ```
 
-```
+```text
 > opus hello.op
-Generated EXE: hello.exe (3072 bytes)
+Generated EXE: hello.exe
 ```
 
-## Features
+## Highlights
 
-- Compiles to native x64 — no intermediate bytecode, no interpreter
-- Standalone EXE or injectable DLL output, one flag to switch
-- JIT mode (`--run`) for instant compile-and-execute
-- Flexible syntax — C-style, Rust-style, and English can coexist in one file
-- Classes with methods, structs, enums
-- `spawn`/`await` threading and `parallel for` with automatic core splitting
-- Direct Windows API access through FFI
-- Built-in pattern scanner, memory operations, atomics
-- Self-healing crash handler with source context
-- ~7ms compile times
-- REPL for interactive experimentation
+- Native Windows x64 code generation
+- Direct EXE and DLL output
+- `--run` mode for compile-and-execute
+- Typed FFI with normal callable function aliases
+- Built-in memory helpers, pattern scanning, and low-level utilities
+- Classes, structs, enums, methods, and multiple syntax styles
+- Debug mode with source mapping and crash context
+- Embedded stdlib fallback in the compiler
 
 ## Quick Start
 
-```
-> opus hello.op              # compile to EXE
-> opus --dll scanner.op      # compile to DLL
-> opus --run fibonacci.op    # compile and run immediately
+```text
+> opus hello.op
+> opus --dll client.op
+> opus --run test.op
 ```
 
 ## Building
 
-Requires Visual Studio 2022 (v17.12+) with C++23 support.
+Requirements:
+- Windows
+- Visual Studio 2022
+- MSVC with modern C++ support
 
-```
+Build:
+
+```text
 MSBuild.exe Opus.sln /p:Configuration=Release /p:Platform=x64
 ```
 
-Output: `bin/Release/opus.exe`
+Output:
 
-## Project Structure
-
+```text
+bin/Release/opus.exe
 ```
+
+## Project Layout
+
+```text
 Opus/
-├── src/                # compiler source (C++20 modules)
-│   ├── main.ixx        # entry point and CLI
-│   ├── opus.ixx        # compiler API and runtime builtins
-│   ├── lexer.ixx       # tokenizer
-│   ├── parser.ixx      # recursive descent parser
-│   ├── ast.ixx         # abstract syntax tree
-│   ├── codegen.ixx     # x64 code generator
-│   ├── x64.ixx         # x64 instruction emitter
-│   ├── pe.ixx          # PE executable/DLL builder
-│   ├── project.ixx     # opus.project build system
-│   ├── types.ixx       # type system
-│   └── errors.ixx      # error reporting
-├── examples/           # example programs
-├── tests/              # regression tests
-├── selfhost/           # self-hosting compiler (written in Opus)
-├── docs/               # documentation
-└── vscode-extension/   # syntax highlighting
+|-- src/                compiler source
+|-- stdlib/             bundled standard library source
+|-- docs/               language and toolchain docs
+|-- examples/           small example programs
+|-- tests/              regression tests
+|-- selfhost/           self-hosting compiler work
+`-- vscode-extension/   syntax highlighting
 ```
 
 ## Documentation
 
-| Page | Description |
-|------|-------------|
-| [Getting Started](docs/getting-started.md) | Build the compiler, first program, CLI reference |
-| [Language Overview](docs/language-overview.md) | Syntax styles, type system, memory model |
-| [Language Reference](docs/reference.md) | Complete syntax reference |
-| [Built-in Functions](docs/builtins.md) | Standard library — I/O, strings, arrays, memory, math, FFI |
-| [Classes & Structs](docs/classes.md) | Classes, structs, methods, enums |
-| [DLL Mode](docs/dll.md) | Generating injectable Windows DLLs |
-| [Concurrency](docs/concurrency.md) | Threading, parallel for, atomics |
-| [Debugger](docs/debugger.md) | Crash handler and self-healing runtime |
-| [Examples](docs/examples.md) | Code examples by topic |
+- [Getting Started](docs/getting-started.md)
+- [Language Overview](docs/language-overview.md)
+- [Language Reference](docs/reference.md)
+- [Built-in Functions](docs/builtins.md)
+- [Classes](docs/classes.md)
+- [DLL Mode](docs/dll.md)
+- [Concurrency](docs/concurrency.md)
+- [Debugger](docs/debugger.md)
+- [Examples](docs/examples.md)
+
+## Contributing
+
+PRs, issues, and cleanup are welcome.
+
+If you want to contribute, the most useful things right now are:
+- bug fixes
+- diagnostics improvements
+- language polish
+- stdlib cleanup
+- docs improvements
 
 ## License
 
