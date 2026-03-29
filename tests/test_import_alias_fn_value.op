@@ -1,0 +1,8 @@
+import text as strings
+
+using LenFn = fn(str) -> int
+
+function int main() {
+    let lenf = strings.text_len as LenFn
+    return lenf("opus")
+}

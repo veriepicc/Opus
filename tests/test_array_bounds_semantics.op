@@ -1,0 +1,34 @@
+function int main() {
+    let arr = array_new(4)
+    array_set(arr, 0, 10)
+    array_set(arr, 1, 20)
+
+    let neg_read = array_get(arr, -1)
+    let far_read = array_get(arr, 100)
+
+    array_set(arr, -1, 99)
+    array_set(arr, 100, 88)
+
+    let keep0 = array_get(arr, 0)
+    let keep1 = array_get(arr, 1)
+    let len = array_len(arr)
+
+    if neg_read != 0 {
+        return 1
+    }
+    if far_read != 0 {
+        return 2
+    }
+    if keep0 != 10 {
+        return 3
+    }
+    if keep1 != 20 {
+        return 4
+    }
+    if len != 2 {
+        return 5
+    }
+
+    array_free(arr)
+    return 0
+}

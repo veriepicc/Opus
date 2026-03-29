@@ -215,6 +215,7 @@ struct FunctionInfo {
     std::size_t code_size;
     Type return_type;
     std::vector<Type> param_types;
+    const ast::FnDecl* decl = nullptr;
     bool is_extern = false;
     bool single_use_inline_safe = false;
 };
@@ -280,6 +281,7 @@ public:
                     .code_size = 0,
                     .return_type = std::move(*resolved_ret),
                     .param_types = std::move(params),
+                    .decl = &fn,
                     .is_extern = fn.is_extern
                 };
             } else if (decl->is<ast::StructDecl>()) {
@@ -541,7 +543,10 @@ private:
     std::vector<std::unique_ptr<Scope>> scopes_;
     std::unordered_map<const Symbol*, x64::Reg> register_bindings_;
     std::unordered_map<std::string, x64::Reg> pending_named_register_bindings_;
+    std::vector<std::unordered_set<std::string>> bound_stack_elision_names_;
     std::vector<x64::Reg> current_function_saved_regs_;
+    Type current_function_return_type_;
+    bool has_current_function_return_type_ = false;
     struct InductionBinding {
         x64::Reg term_reg = x64::Reg::RDX;
         std::int64_t step = 0;
@@ -615,13 +620,14 @@ private:
 
     [[nodiscard]] bool emit_runtime_free_reg(x64::Reg ptr_reg) {
         if (dll_mode_) {
+            emit_.push(ptr_reg);
             emit_.sub_imm(x64::Reg::RSP, 32);
-            emit_.mov(x64::Reg::R8, ptr_reg);
             emit_iat_call_raw(pe::iat::GetProcessHeap);
             emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
             emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
+            emit_.mov_load(x64::Reg::R8, x64::Reg::RSP, 32);
             emit_iat_call_raw(pe::iat::HeapFree);
-            emit_.add_smart(x64::Reg::RSP, 32);
+            emit_.add_smart(x64::Reg::RSP, 40);
             return true;
         }
 
@@ -944,8 +950,8 @@ private:
             {"read_file",       [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.read_file)); }},
             {"string_length",   [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.string_length)); }},
             {"strlen",          [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.string_length)); }},
-            {"string_get_char", [this](const ast::CallExpr& c) { return generate_builtin_string_get_char(c); }},
-            {"char_at",         [this](const ast::CallExpr& c) { return generate_builtin_string_get_char(c); }},
+            {"string_get_char", [this](const ast::CallExpr& c) { return generate_dll_string_get_char(c); }},
+            {"char_at",         [this](const ast::CallExpr& c) { return generate_dll_string_get_char(c); }},
             {"print_string",    [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.print_string)); }},
             {"puts",            [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.print_string)); }},
             {"write_file",      [this](const ast::CallExpr& c) { return generate_builtin_two_arg(c, as_void(rt_.write_file)); }},
@@ -1064,6 +1070,18 @@ private:
             return it->second;
         }
         return std::nullopt;
+    }
+
+    [[nodiscard]] bool should_elide_bound_stack_slot(const Symbol* sym) const {
+        if (!sym || !lookup_bound_reg(sym)) {
+            return false;
+        }
+        for (auto it = bound_stack_elision_names_.rbegin(); it != bound_stack_elision_names_.rend(); ++it) {
+            if (it->contains(sym->name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     [[nodiscard]] bool reg_is_bound(x64::Reg reg) const {
@@ -1366,6 +1384,30 @@ private:
         return std::nullopt;
     }
 
+    std::optional<std::string> resolve_function_alias_name(std::string_view name) const {
+        std::string resolved = resolve_function_name(name);
+        if (functions_.contains(resolved)) {
+            return resolved;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<Type> make_function_value_type(std::string_view resolved_name) const {
+        auto it = functions_.find(std::string(resolved_name));
+        if (it == functions_.end()) {
+            return std::nullopt;
+        }
+        FunctionType fn_type;
+        fn_type.params.reserve(it->second.param_types.size());
+        for (const auto& param : it->second.param_types) {
+            fn_type.params.push_back(std::make_unique<Type>(param.clone()));
+        }
+        fn_type.ret = std::make_unique<Type>(it->second.return_type.clone());
+        Type out;
+        out.kind = std::move(fn_type);
+        return out;
+    }
+
     std::string current_symbol_owner() const {
         if (!source_path_.empty()) {
             return source_path_;
@@ -1642,7 +1684,8 @@ private:
                         params.reserve(fn.params.size());
                         for (const auto& param : fn.params) params.push_back(param.type.clone());
                         return params;
-                    }()
+                    }(),
+                    .decl = &fn
                 };
             } else if (decl->is<ast::StructDecl>()) {
                 if (!generate_struct_decl(decl->as<ast::StructDecl>())) {
@@ -1757,7 +1800,8 @@ private:
                             params.reserve(fn.params.size());
                             for (const auto& param : fn.params) params.push_back(param.type.clone());
                             return params;
-                        }()
+                        }(),
+                        .decl = &fn
                     };
                 } else if (decl->is<ast::StructDecl>()) {
                     if (!generate_struct_decl(decl->as<ast::StructDecl>())) {
@@ -2332,9 +2376,23 @@ private:
         auto& info = functions_[fn.name];
         info.code_offset = emit_.buffer().pos();
         info.single_use_inline_safe = is_single_use_inline_safe_fn(fn);
+        current_function_return_type_ = info.return_type.clone();
+        has_current_function_return_type_ = true;
 
         FunctionLeafRegisterPlan leaf_plan;
         bool use_leaf_plan = try_make_function_leaf_register_plan(fn, leaf_plan);
+        bool has_fp_reg_params = false;
+        for (std::size_t i = 0; i < fn.params.size() && i < 4; ++i) {
+            auto resolved = canonicalize_type(fn.params[i].type);
+            if (!resolved) return false;
+            if (resolved->is_float()) {
+                has_fp_reg_params = true;
+                break;
+            }
+        }
+        if (has_fp_reg_params) {
+            use_leaf_plan = false;
+        }
         FunctionSavedLocalPlan saved_local_plan;
         bool use_saved_local_plan = !use_leaf_plan && try_make_function_saved_local_plan(fn, saved_local_plan);
 
@@ -2385,19 +2443,31 @@ private:
             
             // spill param register to stack slot
             if (i < 4) {
-                x64::Reg param_reg = x64::ARG_REGS[i];
-                emit_.mov(x64::Reg::RAX, param_reg);
-                if (!emit_coerce_rax_to_type(sym.type)) {
-                    return false;
+                if (sym.type.is_float()) {
+                    if (!emit_capture_float_param_to_rax(i, sym.type)) {
+                        return false;
+                    }
+                } else {
+                    x64::Reg param_reg = x64::ARG_REGS[i];
+                    emit_.mov(x64::Reg::RAX, param_reg);
+                    if (!emit_coerce_rax_to_type(sym.type)) {
+                        return false;
+                    }
                 }
                 emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
             } else {
                 // stack params: caller puts them at [RSP+32+(i-4)*8] before call
                 // after push rbp + mov rbp,rsp thats [RBP+16+i*8]
                 std::int32_t src_offset = 16 + static_cast<std::int32_t>(i) * 8;
-                emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, src_offset);
-                if (!emit_coerce_rax_to_type(sym.type)) {
-                    return false;
+                if (sym.type.is_float()) {
+                    if (!emit_capture_stack_float_param_to_rax(src_offset, sym.type)) {
+                        return false;
+                    }
+                } else {
+                    emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, src_offset);
+                    if (!emit_coerce_rax_to_type(sym.type)) {
+                        return false;
+                    }
                 }
                 emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
             }
@@ -2427,6 +2497,7 @@ private:
             pending_named_register_bindings_.clear();
             register_bindings_.clear();
             current_function_saved_regs_.clear();
+            has_current_function_return_type_ = false;
             pop_scope();
             return false;
         }
@@ -2447,6 +2518,7 @@ private:
 
         info.code_size = emit_.buffer().pos() - info.code_offset;
         current_function_saved_regs_.clear();
+        has_current_function_return_type_ = false;
 
         pop_scope();
         return true;
@@ -2703,6 +2775,241 @@ private:
         return total;
     }
 
+    [[nodiscard]] static bool expr_uses_ident_in_call_arg_context(
+        const std::string& name,
+        const ast::Expr& expr,
+        bool in_call_arg = false
+    ) {
+        return std::visit(overloaded{
+            [&](const ast::LiteralExpr&) -> bool { return false; },
+            [&](const ast::IdentExpr& e) -> bool { return in_call_arg && e.name == name; },
+            [&](const ast::BinaryExpr& e) -> bool {
+                return expr_uses_ident_in_call_arg_context(name, *e.lhs, in_call_arg) ||
+                       expr_uses_ident_in_call_arg_context(name, *e.rhs, in_call_arg);
+            },
+            [&](const ast::UnaryExpr& e) -> bool {
+                return expr_uses_ident_in_call_arg_context(name, *e.operand, in_call_arg);
+            },
+            [&](const ast::CallExpr& e) -> bool {
+                if (expr_uses_ident_in_call_arg_context(name, *e.callee, in_call_arg)) {
+                    return true;
+                }
+                for (const auto& arg : e.args) {
+                    if (expr_uses_ident_in_call_arg_context(name, *arg, true)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::IndexExpr& e) -> bool {
+                return expr_uses_ident_in_call_arg_context(name, *e.base, in_call_arg) ||
+                       expr_uses_ident_in_call_arg_context(name, *e.index, in_call_arg);
+            },
+            [&](const ast::FieldExpr& e) -> bool {
+                return expr_uses_ident_in_call_arg_context(name, *e.base, in_call_arg);
+            },
+            [&](const ast::CastExpr& e) -> bool {
+                return expr_uses_ident_in_call_arg_context(name, *e.expr, in_call_arg);
+            },
+            [&](const ast::ArrayExpr& e) -> bool {
+                for (const auto& elem : e.elements) {
+                    if (expr_uses_ident_in_call_arg_context(name, *elem, in_call_arg)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::StructExpr& e) -> bool {
+                for (const auto& [_, value] : e.fields) {
+                    if (expr_uses_ident_in_call_arg_context(name, *value, in_call_arg)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::IfExpr& e) -> bool {
+                if (expr_uses_ident_in_call_arg_context(name, *e.condition, in_call_arg)) {
+                    return true;
+                }
+                for (const auto& stmt : e.then_block) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *stmt)) {
+                        return true;
+                    }
+                }
+                for (const auto& stmt : e.else_block) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *stmt)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::BlockExpr& e) -> bool {
+                for (const auto& stmt : e.stmts) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *stmt)) {
+                        return true;
+                    }
+                }
+                return e.result &&
+                       expr_uses_ident_in_call_arg_context(name, *e.result.value(), in_call_arg);
+            },
+            [&](const ast::SpawnExpr& e) -> bool {
+                if (expr_uses_ident_in_call_arg_context(name, *e.callee, in_call_arg)) {
+                    return true;
+                }
+                for (const auto& arg : e.args) {
+                    if (expr_uses_ident_in_call_arg_context(name, *arg, true)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::AwaitExpr& e) -> bool {
+                return expr_uses_ident_in_call_arg_context(name, *e.handle, in_call_arg);
+            },
+            [&](const ast::AtomicOpExpr& e) -> bool {
+                if (expr_uses_ident_in_call_arg_context(name, *e.ptr, in_call_arg)) {
+                    return true;
+                }
+                for (const auto& arg : e.args) {
+                    if (expr_uses_ident_in_call_arg_context(name, *arg, true)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+        }, expr.kind);
+    }
+
+    [[nodiscard]] static bool stmt_uses_ident_in_call_arg_context(const std::string& name, const ast::Stmt& stmt) {
+        return std::visit(overloaded{
+            [&](const ast::LetStmt& s) -> bool {
+                return s.init && expr_uses_ident_in_call_arg_context(name, *s.init.value());
+            },
+            [&](const ast::ExprStmt& s) -> bool {
+                return expr_uses_ident_in_call_arg_context(name, *s.expr);
+            },
+            [&](const ast::ReturnStmt& s) -> bool {
+                return s.value && expr_uses_ident_in_call_arg_context(name, *s.value.value());
+            },
+            [&](const ast::IfStmt& s) -> bool {
+                if (expr_uses_ident_in_call_arg_context(name, *s.condition)) {
+                    return true;
+                }
+                for (const auto& inner : s.then_block) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
+                        return true;
+                    }
+                }
+                for (const auto& inner : s.else_block) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::WhileStmt& s) -> bool {
+                if (expr_uses_ident_in_call_arg_context(name, *s.condition)) {
+                    return true;
+                }
+                for (const auto& inner : s.body) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::ForStmt& s) -> bool {
+                if (expr_uses_ident_in_call_arg_context(name, *s.iterable)) {
+                    return true;
+                }
+                for (const auto& inner : s.body) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::LoopStmt& s) -> bool {
+                for (const auto& inner : s.body) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::BlockStmt& s) -> bool {
+                for (const auto& inner : s.stmts) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::ParallelForStmt& s) -> bool {
+                if (expr_uses_ident_in_call_arg_context(name, *s.start) ||
+                    expr_uses_ident_in_call_arg_context(name, *s.end)) {
+                    return true;
+                }
+                for (const auto& inner : s.body) {
+                    if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const auto&) -> bool { return false; },
+        }, stmt.kind);
+    }
+
+    [[nodiscard]] static bool uses_ident_in_call_arg_context_in_range(
+        const std::string& name,
+        const std::vector<ast::StmtPtr>& stmts,
+        std::size_t start
+    ) {
+        for (std::size_t i = start; i < stmts.size(); ++i) {
+            if (stmts[i]->is<ast::LetStmt>() && stmts[i]->as<ast::LetStmt>().name == name) {
+                break;
+            }
+            if (stmt_uses_ident_in_call_arg_context(name, *stmts[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] static bool uses_ident_multiple_times_in_single_stmt_in_range(
+        const std::string& name,
+        const std::vector<ast::StmtPtr>& stmts,
+        std::size_t start
+    ) {
+        for (std::size_t i = start; i < stmts.size(); ++i) {
+            if (stmts[i]->is<ast::LetStmt>() && stmts[i]->as<ast::LetStmt>().name == name) {
+                break;
+            }
+            if (count_ident_uses_in_stmt(name, *stmts[i]) > 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] static std::optional<std::size_t> find_last_ident_use_in_range(
+        const std::string& name,
+        const std::vector<ast::StmtPtr>& stmts,
+        std::size_t start
+    ) {
+        std::optional<std::size_t> last_use;
+        for (std::size_t i = start; i < stmts.size(); ++i) {
+            if (stmts[i]->is<ast::LetStmt>() && stmts[i]->as<ast::LetStmt>().name == name) {
+                break;
+            }
+            if (count_ident_uses_in_stmt(name, *stmts[i]) != 0) {
+                last_use = i;
+            }
+        }
+        return last_use;
+    }
+
     [[nodiscard]] static bool stmt_can_consume_inline(const ast::Stmt& stmt) {
         return stmt.is<ast::LetStmt>() ||
                stmt.is<ast::ExprStmt>() ||
@@ -2782,6 +3089,12 @@ private:
     }
 
     [[nodiscard]] std::optional<Type> lookup_field_expr_type(const ast::FieldExpr& field) {
+        if (auto qualified = get_qualified_name(field)) {
+            if (auto resolved_fn = resolve_function_alias_name(*qualified)) {
+                return make_function_value_type(*resolved_fn);
+            }
+        }
+
         std::optional<Type> base_type;
 
         if (field.base->is<ast::IdentExpr>()) {
@@ -2966,16 +3279,21 @@ private:
 
         switch (*p) {
             case PrimitiveType::I8:
-                emit_.shl_imm(x64::Reg::RAX, 56);
-                emit_.sar_imm(x64::Reg::RAX, 56);
+                emit_.buffer().emit8(0x48);
+                emit_.buffer().emit8(0x0F);
+                emit_.buffer().emit8(0xBE);
+                emit_.buffer().emit8(0xC0); // movsx rax, al
                 return;
             case PrimitiveType::I16:
-                emit_.shl_imm(x64::Reg::RAX, 48);
-                emit_.sar_imm(x64::Reg::RAX, 48);
+                emit_.buffer().emit8(0x48);
+                emit_.buffer().emit8(0x0F);
+                emit_.buffer().emit8(0xBF);
+                emit_.buffer().emit8(0xC0); // movsx rax, ax
                 return;
             case PrimitiveType::I32:
-                emit_.shl_imm(x64::Reg::RAX, 32);
-                emit_.sar_imm(x64::Reg::RAX, 32);
+                emit_.buffer().emit8(0x48);
+                emit_.buffer().emit8(0x63);
+                emit_.buffer().emit8(0xC0); // movsxd rax, eax
                 return;
             case PrimitiveType::U8:
                 emit_.and_imm(x64::Reg::RAX, 0xFF);
@@ -3147,7 +3465,10 @@ private:
             if (!emit_coerce_rax_to_type(sym.type, let.init.value().get())) {
                 return false;
             }
-            emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
+            bool just_bound_immutable_pure_let = !sym.is_mut && pending_named_register_bindings_.contains(sym.name);
+            if (!should_elide_bound_stack_slot(&sym) && !just_bound_immutable_pure_let) {
+                emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
+            }
             if (*bound != x64::Reg::RAX) {
                 emit_.mov(*bound, x64::Reg::RAX);
             }
@@ -3356,6 +3677,9 @@ private:
         }
 
         std::unordered_map<std::size_t, std::vector<std::string>> expirations;
+        std::unordered_map<std::size_t, std::vector<const Symbol*>> reg_expirations;
+        std::unordered_map<std::size_t, std::vector<std::string>> inline_call_reg_expirations;
+        std::unordered_set<std::string> active_inline_safe_call_reg_lets;
         for (std::size_t i = start_index; i < stmts.size(); ++i) {
             if (can_skip_stmt(stmts, i)) {
                 continue;
@@ -3436,11 +3760,74 @@ private:
                 }
             }
 
+            if (stmts[i]->is<ast::LetStmt>()) {
+                const auto& let = stmts[i]->as<ast::LetStmt>();
+                bool inline_safe_call_init =
+                    !let.is_mut && let.init && is_inline_safe_direct_call_expr(*let.init.value());
+                bool later_call_arg_uses =
+                    inline_safe_call_init && uses_ident_in_call_arg_context_in_range(let.name, stmts, i + 1);
+                bool later_multi_use_stmt =
+                    inline_safe_call_init && uses_ident_multiple_times_in_single_stmt_in_range(let.name, stmts, i + 1);
+                bool registerizable_immutable_init =
+                    !let.is_mut && let.init && can_registerize_immutable_let_init(*let.init.value());
+                if (registerizable_immutable_init &&
+                    !later_call_arg_uses &&
+                    !later_multi_use_stmt &&
+                    !(inline_safe_call_init && !active_inline_safe_call_reg_lets.empty())) {
+                    std::size_t remaining_uses = count_ident_uses_in_range(let.name, stmts, i + 1);
+                    if (remaining_uses >= 2) {
+                        if (auto reg = pick_scratch_reg()) {
+                            pending_named_register_bindings_[let.name] = *reg;
+                            if (!generate_stmt(*stmts[i])) {
+                                pending_named_register_bindings_.erase(let.name);
+                                return false;
+                            }
+                            pending_named_register_bindings_.erase(let.name);
+                            if (Symbol* sym = current_scope_->lookup(let.name)) {
+                                if (auto last_use = find_last_ident_use_in_range(let.name, stmts, i + 1)) {
+                                    reg_expirations[*last_use].push_back(sym);
+                                    if (inline_safe_call_init) {
+                                        active_inline_safe_call_reg_lets.insert(let.name);
+                                        inline_call_reg_expirations[*last_use].push_back(let.name);
+                                    }
+                                }
+                            }
+                            if (auto it = expirations.find(i); it != expirations.end()) {
+                                for (const auto& name : it->second) {
+                                    current_scope_->pop_inline(name);
+                                }
+                            }
+                            if (auto it = reg_expirations.find(i); it != reg_expirations.end()) {
+                                for (const Symbol* sym : it->second) {
+                                    register_bindings_.erase(sym);
+                                }
+                            }
+                            if (auto it = inline_call_reg_expirations.find(i); it != inline_call_reg_expirations.end()) {
+                                for (const auto& name : it->second) {
+                                    active_inline_safe_call_reg_lets.erase(name);
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
+
             if (!generate_stmt(*stmts[i])) return false;
 
             if (auto it = expirations.find(i); it != expirations.end()) {
                 for (const auto& name : it->second) {
                     current_scope_->pop_inline(name);
+                }
+            }
+            if (auto it = reg_expirations.find(i); it != reg_expirations.end()) {
+                for (const Symbol* sym : it->second) {
+                    register_bindings_.erase(sym);
+                }
+            }
+            if (auto it = inline_call_reg_expirations.find(i); it != inline_call_reg_expirations.end()) {
+                for (const auto& name : it->second) {
+                    active_inline_safe_call_reg_lets.erase(name);
                 }
             }
         }
@@ -3495,6 +3882,9 @@ private:
             if (!generate_expr(*ret.value.value())) return false;
         } else {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        }
+        if (has_current_function_return_type_ && current_function_return_type_.is_float()) {
+            emit_return_float_rax_to_xmm0(current_function_return_type_);
         }
         emit_current_epilogue();
         return true;
@@ -5744,6 +6134,11 @@ private:
 
     [[nodiscard]] bool generate_pure_field_into(const ast::FieldExpr& field, x64::Reg dst) {
         if (auto qualified = get_qualified_name(field)) {
+            if (auto resolved_fn = resolve_function_alias_name(*qualified)) {
+                std::size_t fn_addr_fixup = emit_lea_rip_disp32(dst);
+                call_fixups_.push_back({fn_addr_fixup, *resolved_fn});
+                return true;
+            }
             if (auto global_name = resolve_global_alias(*qualified)) {
                 ast::IdentExpr ident{.name = *global_name};
                 return generate_bound_ident_into(ident, dst);
@@ -6013,6 +6408,11 @@ private:
 
     [[nodiscard]] bool generate_field(const ast::FieldExpr& field) {
         if (auto qualified = get_qualified_name(field)) {
+            if (auto resolved_fn = resolve_function_alias_name(*qualified)) {
+                std::size_t fn_addr_fixup = emit_lea_rip_disp32(x64::Reg::RAX);
+                call_fixups_.push_back({fn_addr_fixup, *resolved_fn});
+                return true;
+            }
             if (auto global_name = resolve_global_alias(*qualified)) {
                 ast::IdentExpr ident{.name = *global_name};
                 return generate_ident(ident);
@@ -6583,7 +6983,9 @@ private:
                 if (!emit_coerce_rax_to_type(sym->type, bin.rhs.get())) {
                     return false;
                 }
-                emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                if (!should_elide_bound_stack_slot(sym)) {
+                    emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                }
                 if (*bound != x64::Reg::RAX) {
                     emit_.mov(*bound, x64::Reg::RAX);
                 }
@@ -6742,7 +7144,9 @@ private:
             if (auto bound = lookup_bound_reg(sym)) {
                 emit_.add_smart(*bound, delta);
                 emit_.mov(x64::Reg::RAX, *bound);
-                emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                if (!should_elide_bound_stack_slot(sym)) {
+                    emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                }
                 return true;
             }
 
@@ -6803,7 +7207,9 @@ private:
         
         // Store result
         if (bound) {
-            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+            if (!should_elide_bound_stack_slot(sym)) {
+                emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+            }
             if (*bound != x64::Reg::RAX) {
                 emit_.mov(*bound, x64::Reg::RAX);
             }
@@ -6945,80 +7351,39 @@ private:
             return false;
         }
 
+        if (should_inline_direct_call(call, it->second)) {
+            return generate_inlined_safe_call(call, it->second);
+        }
+
         std::size_t nargs = call.args.size();
         std::size_t reg_args = nargs < 4 ? nargs : 4;
         std::size_t stack_args = nargs > 4 ? nargs - 4 : 0;
 
-        if (stack_args == 0) {
-            bool all_pure = true;
-            for (const auto& arg : call.args) {
-                if (!can_generate_pure_expr(*arg)) {
-                    all_pure = false;
-                    break;
-                }
-            }
-
-            if (all_pure) {
-                for (std::size_t i = 0; i < reg_args; ++i) {
-                    if (!generate_pure_expr_into(*call.args[i], x64::ARG_REGS[i])) {
-                        return false;
-                    }
-                }
-
-                emit_.sub_imm(x64::Reg::RSP, 32);
-
-                emit_.buffer().emit8(0xE8);
-                std::size_t fixup_site = emit_.buffer().pos();
-                emit_.buffer().emit32(0);
-
-                call_fixups_.push_back(CallFixup{
-                    .call_site = fixup_site,
-                    .target_fn = resolved_target
-                });
-
-                emit_.add_smart(x64::Reg::RSP, 32);
-                return true;
-            }
-        }
-
         for (std::size_t i = 0; i < call.args.size(); ++i) {
             if (!generate_expr(*call.args[i])) return false;
+            if (!emit_coerce_rax_to_type(it->second.param_types[i], call.args[i].get())) return false;
             emit_.push(x64::Reg::RAX);
         }
 
-        if (stack_args == 0) {
-            for (std::size_t i = reg_args; i-- > 0;) {
-                emit_.pop(x64::ARG_REGS[i]);
-            }
-
-            emit_.sub_imm(x64::Reg::RSP, 32);
-
-            emit_.buffer().emit8(0xE8);
-            std::size_t fixup_site = emit_.buffer().pos();
-            emit_.buffer().emit32(0);
-
-            call_fixups_.push_back(CallFixup{
-                .call_site = fixup_site,
-                .target_fn = resolved_target
-            });
-
-            emit_.add_smart(x64::Reg::RSP, 32);
-            return true;
-        }
-
         std::size_t alloc = 32 + stack_args * 8;
-        alloc = (alloc + 15) & ~15;
+        if (stack_args == 0 && (nargs & 1) != 0) {
+            alloc += 8;
+        }
         emit_.sub_imm(x64::Reg::RSP, static_cast<std::int32_t>(alloc));
 
         for (std::size_t i = 0; i < reg_args; ++i) {
-            std::int32_t off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
-            emit_.mov_load(x64::ARG_REGS[i], x64::Reg::RSP, off);
+            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
+            if (!emit_indirect_arg_to_abi_slot(i, it->second.param_types[i], src_off, 0, false)) {
+                return false;
+            }
         }
 
         for (std::size_t i = 4; i < nargs; ++i) {
             std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
-            emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, src_off);
-            emit_.mov_store(x64::Reg::RSP, static_cast<std::int32_t>(32 + (i - 4) * 8), x64::Reg::RAX);
+            std::int32_t dest_off = static_cast<std::int32_t>(32 + (i - 4) * 8);
+            if (!emit_indirect_arg_to_abi_slot(i, it->second.param_types[i], src_off, dest_off, true)) {
+                return false;
+            }
         }
 
         emit_.buffer().emit8(0xE8);
@@ -7031,6 +7396,305 @@ private:
         });
 
         emit_.add_smart(x64::Reg::RSP, static_cast<std::int32_t>(alloc + nargs * 8));
+
+        if (it->second.return_type.is_float()) {
+            emit_capture_indirect_float_return(it->second.return_type);
+        } else if (it->second.return_type.is_integer() || is_bool_type(it->second.return_type)) {
+            emit_truncate_or_extend_rax(it->second.return_type);
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool should_inline_direct_call(const ast::CallExpr& call, const FunctionInfo& info) const {
+        if (info.is_extern || !info.decl || !info.single_use_inline_safe) {
+            return false;
+        }
+        if (call.args.size() != info.param_types.size()) {
+            return false;
+        }
+        if (info.decl->body.size() > 8) {
+            return false;
+        }
+        for (const auto& arg : call.args) {
+            if (!expr_is_side_effect_free(*arg)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool can_registerize_immutable_let_init(const ast::Expr& expr) const {
+        if (expr_is_side_effect_free(expr) && can_generate_pure_expr(expr)) {
+            return true;
+        }
+
+        auto* call = std::get_if<ast::CallExpr>(&expr.kind);
+        if (!call) {
+            return false;
+        }
+
+        std::string resolved_target;
+        if (call->callee->is<ast::IdentExpr>()) {
+            resolved_target = resolve_function_name(call->callee->as<ast::IdentExpr>().name);
+        } else if (call->callee->is<ast::FieldExpr>()) {
+            if (auto qualified = get_qualified_name(*call->callee)) {
+                resolved_target = resolve_function_name(*qualified);
+            }
+        }
+
+        if (resolved_target.empty()) {
+            return false;
+        }
+
+        auto it = functions_.find(resolved_target);
+        if (it == functions_.end()) {
+            return false;
+        }
+
+        return should_inline_direct_call(*call, it->second);
+    }
+
+    [[nodiscard]] bool is_inline_safe_direct_call_expr(const ast::Expr& expr) const {
+        auto* call = std::get_if<ast::CallExpr>(&expr.kind);
+        if (!call) {
+            return false;
+        }
+
+        std::string resolved_target;
+        if (call->callee->is<ast::IdentExpr>()) {
+            resolved_target = resolve_function_name(call->callee->as<ast::IdentExpr>().name);
+        } else if (call->callee->is<ast::FieldExpr>()) {
+            if (auto qualified = get_qualified_name(*call->callee)) {
+                resolved_target = resolve_function_name(*qualified);
+            }
+        }
+
+        if (resolved_target.empty()) {
+            return false;
+        }
+
+        auto it = functions_.find(resolved_target);
+        if (it == functions_.end()) {
+            return false;
+        }
+
+        return should_inline_direct_call(*call, it->second);
+    }
+
+    [[nodiscard]] bool generate_inline_stmt_list(
+        const std::vector<ast::StmtPtr>& stmts,
+        std::vector<std::size_t>& return_patches
+    ) {
+        for (const auto& stmt : stmts) {
+            if (!generate_inline_stmt(*stmt, return_patches)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool generate_inline_stmt(const ast::Stmt& stmt, std::vector<std::size_t>& return_patches) {
+        if (stmt.span.start.line > 0) {
+            line_map_.push_back({
+                static_cast<std::uint32_t>(emit_.buffer().pos()),
+                stmt.span.start.line
+            });
+        }
+
+        return std::visit(overloaded{
+            [&](const ast::LetStmt& s) {
+                return generate_let(s);
+            },
+            [&](const ast::ExprStmt& s) {
+                return generate_expr_stmt(s);
+            },
+            [&](const ast::ReturnStmt& s) {
+                if (s.value) {
+                    if (!generate_expr(*s.value.value())) return false;
+                } else {
+                    emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+                }
+                return_patches.push_back(emit_.jmp_rel32_placeholder());
+                return true;
+            },
+            [&](const ast::IfStmt& s) {
+                std::size_t else_patch = 0;
+                if (!emit_condition_false_jump(*s.condition, else_patch)) return false;
+
+                push_scope();
+                if (!generate_inline_stmt_list(s.then_block, return_patches)) {
+                    pop_scope();
+                    return false;
+                }
+                pop_scope();
+
+                if (!s.else_block.empty()) {
+                    std::size_t done_patch = emit_.jmp_rel32_placeholder();
+                    emit_.patch_jump(else_patch);
+
+                    push_scope();
+                    if (!generate_inline_stmt_list(s.else_block, return_patches)) {
+                        pop_scope();
+                        return false;
+                    }
+                    pop_scope();
+
+                    emit_.patch_jump(done_patch);
+                } else {
+                    emit_.patch_jump(else_patch);
+                }
+                return true;
+            },
+            [&](const ast::BlockStmt& s) {
+                push_scope();
+                if (!generate_inline_stmt_list(s.stmts, return_patches)) {
+                    pop_scope();
+                    return false;
+                }
+                pop_scope();
+                return true;
+            },
+            [&](const auto&) {
+                error("unsupported statement in inline-safe function");
+                return false;
+            }
+        }, stmt.kind);
+    }
+
+    [[nodiscard]] bool generate_inlined_safe_call(const ast::CallExpr& call, const FunctionInfo& info) {
+        if (!info.decl) {
+            return false;
+        }
+
+        std::unordered_map<std::string, x64::Reg> inline_named_regs;
+        FunctionLeafRegisterPlan inline_plan;
+        if (try_make_function_leaf_register_plan(*info.decl, inline_plan)) {
+            constexpr std::array<x64::Reg, 6> inline_candidates = {
+                x64::Reg::R11,
+                x64::Reg::R10,
+                x64::Reg::R9,
+                x64::Reg::R8,
+                x64::Reg::RDX,
+                x64::Reg::RCX,
+            };
+
+            std::unordered_set<x64::Reg> used_regs;
+            auto try_bind_name = [&](const std::string& name) -> bool {
+                for (x64::Reg reg : inline_candidates) {
+                    if (used_regs.contains(reg) || reg_is_bound(reg)) {
+                        continue;
+                    }
+                    inline_named_regs[name] = reg;
+                    used_regs.insert(reg);
+                    return true;
+                }
+                return false;
+            };
+
+            bool binding_ok = true;
+            for (const auto& param : info.decl->params) {
+                if (!try_bind_name(param.name)) {
+                    binding_ok = false;
+                    break;
+                }
+            }
+            if (binding_ok) {
+                for (const auto& [name, _] : inline_plan.local_regs) {
+                    if (inline_named_regs.contains(name)) {
+                        continue;
+                    }
+                    if (!try_bind_name(name)) {
+                        binding_ok = false;
+                        break;
+                    }
+                }
+            }
+            if (!binding_ok) {
+                inline_named_regs.clear();
+            }
+        }
+
+        push_scope();
+
+        std::vector<std::string> inline_local_names;
+        inline_local_names.reserve(inline_named_regs.size());
+        for (const auto& [name, reg] : inline_named_regs) {
+            if (std::none_of(info.decl->params.begin(), info.decl->params.end(), [&](const ast::Param& p) { return p.name == name; })) {
+                pending_named_register_bindings_[name] = reg;
+                inline_local_names.push_back(name);
+            }
+        }
+        bound_stack_elision_names_.push_back({});
+        for (const auto& name : inline_local_names) {
+            bound_stack_elision_names_.back().insert(name);
+        }
+
+        std::vector<std::string> param_binding_names;
+        param_binding_names.reserve(info.decl->params.size());
+        std::vector<ast::Expr> param_binding_exprs;
+        param_binding_exprs.reserve(info.decl->params.size());
+        std::vector<Symbol*> hidden_arg_symbols;
+        hidden_arg_symbols.reserve(info.decl->params.size());
+        auto cleanup_inline_scope = [&]() {
+            for (const auto& name : param_binding_names) {
+                current_scope_->pop_inline(name);
+            }
+            for (const auto& name : inline_local_names) {
+                pending_named_register_bindings_.erase(name);
+            }
+            for (Symbol* sym : hidden_arg_symbols) {
+                register_bindings_.erase(sym);
+            }
+            bound_stack_elision_names_.pop_back();
+            pop_scope();
+        };
+        for (std::size_t i = 0; i < info.decl->params.size(); ++i) {
+            std::string hidden_name = std::format("__opus_inline_arg_{}_{}", emit_.buffer().pos(), i);
+            Symbol& sym = current_scope_->define(hidden_name, info.param_types[i].clone(), false);
+            if (auto reg_it = inline_named_regs.find(info.decl->params[i].name); reg_it != inline_named_regs.end()) {
+                register_bindings_[&sym] = reg_it->second;
+                bound_stack_elision_names_.back().insert(hidden_name);
+            }
+            if (!generate_expr(*call.args[i])) {
+                cleanup_inline_scope();
+                return false;
+            }
+            if (!emit_coerce_rax_to_type(info.param_types[i], call.args[i].get())) {
+                cleanup_inline_scope();
+                return false;
+            }
+            if (!should_elide_bound_stack_slot(&sym)) {
+                emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
+            }
+            if (auto reg_it = inline_named_regs.find(info.decl->params[i].name); reg_it != inline_named_regs.end() &&
+                reg_it->second != x64::Reg::RAX) {
+                emit_.mov(reg_it->second, x64::Reg::RAX);
+            }
+
+            ast::Expr alias_expr;
+            alias_expr.kind = ast::IdentExpr{hidden_name};
+            param_binding_exprs.push_back(std::move(alias_expr));
+            current_scope_->push_inline(info.decl->params[i].name, &param_binding_exprs.back());
+            param_binding_names.push_back(info.decl->params[i].name);
+            hidden_arg_symbols.push_back(&sym);
+        }
+
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        std::vector<std::size_t> return_patches;
+        if (!generate_inline_stmt_list(info.decl->body, return_patches)) {
+            cleanup_inline_scope();
+            return false;
+        }
+
+        std::size_t done = emit_.buffer().pos();
+        for (std::size_t patch : return_patches) {
+            emit_.buffer().patch32(
+                patch,
+                static_cast<std::uint32_t>(static_cast<std::int32_t>(done) - static_cast<std::int32_t>(patch + 4))
+            );
+        }
+
+        cleanup_inline_scope();
         return true;
     }
 
@@ -7086,6 +7750,58 @@ private:
         emit_sse_stack_operand(xmm_index & 7, offset);
     }
 
+    void emit_xmm_load_f64_from_rbp(std::uint8_t xmm_index, std::int32_t offset) {
+        emit_.buffer().emit8(0xF2);
+        emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x10);
+        if (offset >= -128 && offset <= 127) {
+            emit_.buffer().emit8(static_cast<std::uint8_t>(0x40 | ((xmm_index & 7) << 3) | 0x05));
+            emit_.buffer().emit8(static_cast<std::uint8_t>(offset));
+            return;
+        }
+        emit_.buffer().emit8(static_cast<std::uint8_t>(0x80 | ((xmm_index & 7) << 3) | 0x05));
+        emit_.buffer().emit32(static_cast<std::uint32_t>(offset));
+    }
+
+    void emit_xmm_load_f32_from_rbp(std::uint8_t xmm_index, std::int32_t offset) {
+        emit_.buffer().emit8(0xF3);
+        emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x10);
+        if (offset >= -128 && offset <= 127) {
+            emit_.buffer().emit8(static_cast<std::uint8_t>(0x40 | ((xmm_index & 7) << 3) | 0x05));
+            emit_.buffer().emit8(static_cast<std::uint8_t>(offset));
+            return;
+        }
+        emit_.buffer().emit8(static_cast<std::uint8_t>(0x80 | ((xmm_index & 7) << 3) | 0x05));
+        emit_.buffer().emit32(static_cast<std::uint32_t>(offset));
+    }
+
+    [[nodiscard]] bool emit_capture_float_param_to_rax(std::size_t arg_index, const Type& target_type) {
+        emit_.sub_imm(x64::Reg::RSP, 8);
+        std::uint8_t xmm_index = static_cast<std::uint8_t>(arg_index & 7);
+        if (auto* prim = std::get_if<PrimitiveType>(&target_type.kind); prim && *prim == PrimitiveType::F32) {
+            emit_xmm_convert_f32_to_f64(xmm_index);
+        }
+        emit_xmm_store_f64_to_stack(xmm_index, 0);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 0);
+        emit_.add_smart(x64::Reg::RSP, 8);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_capture_stack_float_param_to_rax(std::int32_t src_offset, const Type& target_type) {
+        emit_.sub_imm(x64::Reg::RSP, 8);
+        if (auto* prim = std::get_if<PrimitiveType>(&target_type.kind); prim && *prim == PrimitiveType::F32) {
+            emit_xmm_load_f32_from_rbp(0, src_offset);
+            emit_xmm_convert_f32_to_f64(0);
+        } else {
+            emit_xmm_load_f64_from_rbp(0, src_offset);
+        }
+        emit_xmm_store_f64_to_stack(0, 0);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 0);
+        emit_.add_smart(x64::Reg::RSP, 8);
+        return true;
+    }
+
     [[nodiscard]] bool emit_indirect_arg_to_abi_slot(
         std::size_t arg_index,
         const Type& param_type,
@@ -7127,6 +7843,17 @@ private:
         emit_.add_smart(x64::Reg::RSP, 8);
     }
 
+    void emit_return_float_rax_to_xmm0(const Type& ret_type) {
+        emit_.buffer().emit8(0x66);
+        emit_.buffer().emit8(0x48);
+        emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x6E);
+        emit_.buffer().emit8(0xC0);  // movq xmm0, rax
+        if (auto* prim = std::get_if<PrimitiveType>(&ret_type.kind); prim && *prim == PrimitiveType::F32) {
+            emit_xmm_convert_f64_to_f32(0);
+        }
+    }
+
     [[nodiscard]] bool generate_indirect_call(const ast::CallExpr& call, const FunctionType& fn_type) {
         if (fn_type.is_variadic) {
             error("variadic function pointer calls are not supported yet");
@@ -7152,7 +7879,9 @@ private:
         emit_.pop(x64::Reg::R11);
 
         std::size_t alloc = 32 + stack_args * 8;
-        alloc = (alloc + 15) & ~15;
+        if (stack_args == 0 && (nargs & 1) != 0) {
+            alloc += 8;
+        }
         emit_.sub_imm(x64::Reg::RSP, static_cast<std::int32_t>(alloc));
 
         for (std::size_t i = 0; i < reg_args; ++i) {
@@ -8100,7 +8829,7 @@ private:
     }
 
     [[nodiscard]] bool generate_dll_array_get(const ast::CallExpr& call) {
-        // array_get(arr, index) -> load 64-bit value at arr + index*8
+        // array_get(arr, index) -> return 0 for null/negative/oob, otherwise load arr[index]
         if (call.args.size() < 2) {
             error("array_get requires arr and index arguments");
             return false;
@@ -8113,25 +8842,38 @@ private:
         // eval index into rax
         if (!generate_expr(*call.args[1])) return false;
 
-        // rax = index, pop arr into rcx
+        // rdx = index, pop arr into rcx
+        emit_.mov(x64::Reg::RDX, x64::Reg::RAX);
         emit_.pop(x64::Reg::RCX);
 
-        // index * 8
-        // shl rax, 3
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);  // default result = 0
+
+        emit_.test(x64::Reg::RCX, x64::Reg::RCX);
+        std::size_t null_done = emit_.jcc_rel32(x64::Emitter::CC_E);
+
+        emit_.cmp_imm(x64::Reg::RDX, 0);
+        std::size_t neg_done = emit_.jcc_rel32(x64::Emitter::CC_L);
+
+        // length header lives at arr - 16
+        emit_.mov_load(x64::Reg::R8, x64::Reg::RCX, -16);
+        emit_.cmp(x64::Reg::RDX, x64::Reg::R8);
+        std::size_t oob_done = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        emit_.mov(x64::Reg::RAX, x64::Reg::RDX);
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xC1);
-        emit_.buffer().emit8(0xE0); emit_.buffer().emit8(0x03);
-
-        // arr + index*8
+        emit_.buffer().emit8(0xE0); emit_.buffer().emit8(0x03); // shl rax, 3
         emit_.add(x64::Reg::RAX, x64::Reg::RCX);
-
-        // load value at that address
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);
+
+        emit_.patch_jump(null_done);
+        emit_.patch_jump(neg_done);
+        emit_.patch_jump(oob_done);
 
         return true;
     }
 
     [[nodiscard]] bool generate_dll_array_set(const ast::CallExpr& call) {
-        // array_set(arr, index, value) -> store value at arr + index*8, update length
+        // array_set(arr, index, value) -> ignore null/negative/oob writes, update length on success
         if (call.args.size() < 3) {
             error("array_set requires arr, index, and value arguments");
             return false;
@@ -8150,25 +8892,38 @@ private:
         emit_.pop(x64::Reg::RCX);  // rcx = index
         emit_.pop(x64::Reg::RDX);  // rdx = arr
 
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);  // default return = 0
+
+        emit_.test(x64::Reg::RDX, x64::Reg::RDX);
+        std::size_t null_done = emit_.jcc_rel32(x64::Emitter::CC_E);
+
+        emit_.cmp_imm(x64::Reg::RCX, 0);
+        std::size_t neg_done = emit_.jcc_rel32(x64::Emitter::CC_L);
+
+        // capacity header lives at arr - 8
+        emit_.mov_load(x64::Reg::R9, x64::Reg::RDX, -8);
+        emit_.cmp(x64::Reg::RCX, x64::Reg::R9);
+        std::size_t oob_done = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
         // store value at arr + index*8
-        emit_.push(x64::Reg::RDX);  // save arr
-        emit_.push(x64::Reg::RCX);  // save index
         emit_.mov(x64::Reg::RAX, x64::Reg::RCX);
-        // shl rax, 3
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xC1);
-        emit_.buffer().emit8(0xE0); emit_.buffer().emit8(0x03);
+        emit_.buffer().emit8(0xE0); emit_.buffer().emit8(0x03); // shl rax, 3
         emit_.add(x64::Reg::RAX, x64::Reg::RDX);  // rax = arr + index*8
         emit_.mov_store(x64::Reg::RAX, 0, x64::Reg::R8);  // [arr + index*8] = value
 
         // update length = max(current_length, index + 1)
-        emit_.pop(x64::Reg::RCX);  // rcx = index
-        emit_.pop(x64::Reg::RDX);  // rdx = arr
-        emit_.add_smart(x64::Reg::RCX, 1);  // rcx = index + 1
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RDX, -16);  // rax = current length
-        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
+        emit_.mov(x64::Reg::RAX, x64::Reg::RCX);
+        emit_.add_smart(x64::Reg::RAX, 1);  // rax = index + 1
+        emit_.mov_load(x64::Reg::R9, x64::Reg::RDX, -16);  // r9 = current length
+        emit_.cmp(x64::Reg::R9, x64::Reg::RAX);
         std::size_t skip_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);  // if current >= index+1, skip
-        emit_.mov_store(x64::Reg::RDX, -16, x64::Reg::RCX);  // update length
+        emit_.mov_store(x64::Reg::RDX, -16, x64::Reg::RAX);  // update length
+
         emit_.patch_jump(skip_patch);
+        emit_.patch_jump(null_done);
+        emit_.patch_jump(neg_done);
+        emit_.patch_jump(oob_done);
 
         return true;
     }
@@ -8230,6 +8985,47 @@ private:
         // loop top
         emit_inline_strlen();
 
+        return true;
+    }
+
+    [[nodiscard]] bool generate_dll_string_get_char(const ast::CallExpr& call) {
+        if (call.args.size() < 2) {
+            error("string_get_char requires str and index arguments");
+            return false;
+        }
+
+        if (!generate_expr(*call.args[1])) return false;
+        emit_.push(x64::Reg::RAX);  // save index
+
+        if (!generate_expr(*call.args[0])) return false;
+        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // rcx = str ptr
+        emit_.pop(x64::Reg::RDX);                 // rdx = index
+
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);  // default result = 0
+        emit_.test(x64::Reg::RCX, x64::Reg::RCX);
+        std::size_t null_done = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_.cmp_imm(x64::Reg::RDX, 0);
+        std::size_t neg_done = emit_.jcc_rel32(x64::Emitter::CC_L);
+
+        std::size_t loop_top = emit_.buffer().pos();
+        emit_.cmp_imm(x64::Reg::RDX, 0);
+        std::size_t read_char = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x39); emit_.buffer().emit8(0x00); // cmp byte [rcx], 0
+        std::size_t done = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1); // inc rcx
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCA); // dec rdx
+        emit_.jmp_rel32(static_cast<std::int32_t>(loop_top - emit_.buffer().pos() - 5));
+
+        emit_.patch_jump(read_char);
+        emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x39); emit_.buffer().emit8(0x00); // cmp byte [rcx], 0
+        std::size_t done_after_read_cmp = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0xB6); emit_.buffer().emit8(0x01); // movzx rax, byte [rcx]
+
+        emit_.patch_jump(done_after_read_cmp);
+        emit_.patch_jump(done);
+        emit_.patch_jump(neg_done);
+        emit_.patch_jump(null_done);
         return true;
     }
 

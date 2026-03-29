@@ -2004,7 +2004,7 @@ private:
     }
 
     std::optional<ast::ExprPtr> parse_await_expr() {
-        auto handle = parse_expr();
+        auto handle = parse_unary();
         if (!handle) return std::nullopt;
         
         auto expr = std::make_unique<ast::Expr>();

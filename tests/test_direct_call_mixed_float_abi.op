@@ -1,0 +1,28 @@
+function int probe(i64 a, i64 b, i64 c, f32 x, f32 y, f32 z, f32 w) {
+    if a != 1 {
+        return 10
+    }
+    if b != 2 {
+        return 11
+    }
+    if c != 3 {
+        return 12
+    }
+    if x != 1.5f {
+        return 13
+    }
+    if y != 2.5f {
+        return 14
+    }
+    if z != 3.5f {
+        return 15
+    }
+    if w != 4.5f {
+        return 16
+    }
+    return 77
+}
+
+function int main() {
+    return probe(1, 2, 3, 1.5f, 2.5f, 3.5f, 4.5f)
+}

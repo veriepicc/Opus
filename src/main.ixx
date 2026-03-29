@@ -56,9 +56,18 @@ A Simple Programming Language
 
 // returns empty string on success, error message on failure
 [[nodiscard]] static std::string write_binary_file(const std::string& path, const std::uint8_t* data, std::size_t size) {
+    auto output_path = std::filesystem::path(path);
+    if (output_path.has_parent_path()) {
+        std::error_code ec;
+        std::filesystem::create_directories(output_path.parent_path(), ec);
+        if (ec) {
+            return std::format("cannot create output directory for '{}': {}", path, ec.message());
+        }
+    }
+
     std::ofstream out(path, std::ios::binary);
     if (!out) {
-        return std::format("cannot write to '{}' (file locked by another process?)", path);
+        return std::format("cannot write to '{}'", path);
     }
     out.write(reinterpret_cast<const char*>(data), size);
     out.close();
@@ -132,6 +141,20 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
     auto import_search_paths = default_import_search_paths(compiler_exe);
     auto source_path = normalize_path(filename);
     auto source_root = source_path.has_parent_path() ? source_path.parent_path().generic_string() : std::string{};
+
+    if (source_path.has_parent_path()) {
+        if (auto project_file = opus::find_project_file(source_path.parent_path())) {
+            if (auto config_result = opus::load_project(*project_file)) {
+                const auto& config = *config_result;
+                source_root = std::filesystem::weakly_canonical(config.project_dir).string();
+                for (const auto& include_path : config.includes) {
+                    if (std::find(import_search_paths.begin(), import_search_paths.end(), include_path) == import_search_paths.end()) {
+                        import_search_paths.push_back(include_path);
+                    }
+                }
+            }
+        }
+    }
 
     if (run_immediately) {
         auto result = compiler.compile_and_run({
