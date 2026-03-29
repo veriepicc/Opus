@@ -1,0 +1,13 @@
+function int child(int x) {
+    return x + 1
+}
+
+function int middle(int x) {
+    let h = spawn child(x)
+    return await h + 10
+}
+
+function int main() {
+    let h = spawn middle(41)
+    return await h
+}
