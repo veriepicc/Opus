@@ -1,0 +1,16 @@
+import http
+
+function int main() {
+    let response = http_fetch("https://example.com")
+    if response == 0 {
+        return 1
+    }
+
+    if http_ok(response) and response.status < 200 {
+        http_response_free(response)
+        return 2
+    }
+
+    http_response_free(response)
+    return 0
+}

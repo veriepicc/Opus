@@ -1,0 +1,4 @@
+define function main returning i64
+    set count too 1
+    return 0
+end function

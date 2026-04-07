@@ -1,0 +1,39 @@
+import http
+import process
+
+let ACCESS_NO_PROXY: int = 1
+let FLAG_SECURE: int = 8388608
+
+function int main() {
+    let module_handle = process_load_library("winhttp.dll")
+    if module_handle == 0 {
+        return 1
+    }
+
+    let open_fn = process_get_symbol(module_handle, "WinHttpOpen")
+    let connect_fn = process_get_symbol(module_handle, "WinHttpConnect")
+    let open_request_fn = process_get_symbol(module_handle, "WinHttpOpenRequest")
+    let send_request_fn = process_get_symbol(module_handle, "WinHttpSendRequest")
+    let receive_response_fn = process_get_symbol(module_handle, "WinHttpReceiveResponse")
+    let set_timeouts_fn = process_get_symbol(module_handle, "WinHttpSetTimeouts")
+    let close_handle_fn = process_get_symbol(module_handle, "WinHttpCloseHandle")
+    if open_fn == 0 or connect_fn == 0 or open_request_fn == 0 or send_request_fn == 0 or receive_response_fn == 0 or set_timeouts_fn == 0 or close_handle_fn == 0 {
+        return 2
+    }
+
+    let agent = http_utf16z("Opus/WinHTTP")
+    let host = http_utf16z("example.com")
+    let method = http_utf16z("GET")
+    let path = http_utf16z("/")
+    if agent == 0 or host == 0 or method == 0 or path == 0 {
+        return 3
+    }
+
+    let session = ffi_call5(open_fn, agent, ACCESS_NO_PROXY, 0, 0, 0)
+    if session == 0 {
+        return 10
+    }
+
+    process_exit(100)
+    return 101
+}

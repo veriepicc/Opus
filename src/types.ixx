@@ -22,6 +22,24 @@ enum class PrimitiveType : std::uint8_t {
     Char,       // UTF-8 codepoint
 };
 
+enum class OutputKind : std::uint8_t {
+    Raw,
+    Exe,
+    Dll,
+};
+
+constexpr bool output_is_native_image(OutputKind kind) {
+    return kind != OutputKind::Raw;
+}
+
+constexpr bool output_is_exe(OutputKind kind) {
+    return kind == OutputKind::Exe;
+}
+
+constexpr bool output_is_dll(OutputKind kind) {
+    return kind == OutputKind::Dll;
+}
+
 constexpr std::string_view primitive_name(PrimitiveType t) {
     using enum PrimitiveType;
     switch (t) {
@@ -337,6 +355,7 @@ struct CompilerOptions {
 // ============================================================================
 constexpr std::optional<PrimitiveType> friendly_type_to_primitive(std::string_view name) {
     if (name == "int" || name == "Int")       return PrimitiveType::I32;
+    if (name == "integer" || name == "Integer") return PrimitiveType::I32;
     if (name == "long" || name == "Long")     return PrimitiveType::I64;
     if (name == "short" || name == "Short")   return PrimitiveType::I16;
     if (name == "byte" || name == "Byte")     return PrimitiveType::I8;
@@ -344,8 +363,11 @@ constexpr std::optional<PrimitiveType> friendly_type_to_primitive(std::string_vi
     if (name == "ulong")                      return PrimitiveType::U64;
     if (name == "ushort")                     return PrimitiveType::U16;
     if (name == "ubyte")                      return PrimitiveType::U8;
+    if (name == "isize")                      return PrimitiveType::I64;
+    if (name == "usize")                      return PrimitiveType::U64;
     if (name == "float" || name == "Float")   return PrimitiveType::F32;
     if (name == "double" || name == "Double") return PrimitiveType::F64;
+    if (name == "real" || name == "Real")     return PrimitiveType::F64;
     if (name == "bool" || name == "Bool")     return PrimitiveType::Bool;
     if (name == "void" || name == "Void")     return PrimitiveType::Void;
     if (name == "string" || name == "String") return PrimitiveType::Str;

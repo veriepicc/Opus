@@ -1,0 +1,19 @@
+function int main() {
+    let module_handle = load_library("advapi32.dll")
+    if module_handle == 0 {
+        return 1
+    }
+
+    let open_key_fn = get_proc(module_handle, "RegOpenKeyExW")
+    if open_key_fn == 0 {
+        return 2
+    }
+
+    let out_handle = malloc(8)
+    if out_handle == 0 {
+        return 3
+    }
+    memset(out_handle, 0, 8)
+
+    return ffi_call5(open_key_fn, -2147483647, 0, 0, 131097, out_handle)
+}

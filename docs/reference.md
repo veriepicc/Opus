@@ -1,857 +1,286 @@
-# Opus Language Reference
+# Language Reference
 
-The definitive syntax reference for the Opus programming language (v2.0).
+This is the concise syntax reference for the current parser and compiler surface.
 
-Opus is a multi-paradigm systems language that compiles to x86-64 machine code. It supports
-multiple syntax styles — C-like, Rust-like, and even English-like — that can be mixed freely
-within the same file.
-
----
-
-## Table of Contents
-
-- [Types](#types)
-- [Variables](#variables)
-- [Functions](#functions)
-- [Control Flow](#control-flow)
-- [Operators](#operators)
-- [Literals](#literals)
-- [Comments](#comments)
-- [Structs](#structs)
-- [Classes](#classes)
-- [Enums](#enums)
-- [Imports](#imports)
-- [Extern Declarations](#extern-declarations)
-- [Casting](#casting)
-
----
-
-## Types
-
-### Primitive Types
-
-| Type | Size (bytes) | Description |
-|------|:------------:|-------------|
-| `void` | 0 | No value / nothing |
-| `bool` | 1 | Boolean (`true` or `false`) |
-| `i8` | 1 | Signed 8-bit integer |
-| `u8` | 1 | Unsigned 8-bit integer |
-| `i16` | 2 | Signed 16-bit integer |
-| `u16` | 2 | Unsigned 16-bit integer |
-| `i32` | 4 | Signed 32-bit integer |
-| `u32` | 4 | Unsigned 32-bit integer |
-| `i64` | 8 | Signed 64-bit integer |
-| `u64` | 8 | Unsigned 64-bit integer |
-| `i128` | 16 | Signed 128-bit integer |
-| `u128` | 16 | Unsigned 128-bit integer |
-| `f32` | 4 | 32-bit floating point |
-| `f64` | 8 | 64-bit floating point |
-| `ptr` | 8 | Raw pointer |
-| `str` | 8+ | String (pointer to null-terminated bytes) |
-| `char` | 4 | Unicode character |
-
-### Friendly Aliases
-
-Opus provides familiar aliases so you can write in whatever style feels natural:
-
-| Alias | Resolves To |
-|-------|:-----------:|
-| `int` / `integer` | `i32` |
-| `long` | `i64` |
-| `short` | `i16` |
-| `byte` | `i8` |
-| `uint` | `u32` |
-| `ulong` | `u64` |
-| `ushort` | `u16` |
-| `ubyte` | `u8` |
-| `float` | `f32` |
-| `double` / `real` | `f64` |
-| `string` / `String` | `str` |
-| `pointer` / `addr` / `address` | `ptr` |
-| `bool` / `boolean` | `bool` |
+## Programs
 
 ```c
-// all of these are the same type
-int x = 42
-i32 y = 42
-integer z = 42
+function int main() {
+    return 0
+}
 ```
 
-### Implementation Note
-
-Internally, the code generator uses 64-bit `mov` instructions everywhere. Struct fields are
-forced to 8 bytes each regardless of declared type. This simplifies codegen at the cost of
-some memory density.
-
----
-
-## Variables
-
-### Declaration Keywords
-
-| Keyword | Mutability | Type Inference |
-|---------|:----------:|:--------------:|
-| `let` | Immutable | Yes |
-| `var` | Mutable | Yes |
-| `const` | Immutable (constant) | Yes |
-| `auto` | Mutable | Yes |
-| `mut` | Mutable | Yes |
-
-### Syntax Styles
-
-```c
-// with optional type annotation
-let x: int = 42
-let name: str = "opus"
-
-// type-inferred
-let x = 42
-var counter = 0
-
-// c++ style — type first, mutable by default
-int x = 42
-float speed = 3.14
-str greeting = "hello"
-
-// auto keyword — mutable with inference
-auto result = compute()
-
-// mut keyword — explicitly mutable
-mut counter = 0
-counter = counter + 1
-```
-
-### Global Variables
-
-Both `let` and `var` work at the top level with literal initializers:
-
-```c
-let MAX_HEALTH = 100
-let TITLE = "My Game"
-var global_counter = 0
-```
-
-> **Note:** Global initializers must be literals (numbers, strings). Function calls or
-> expressions in global initializers are not yet supported.
-
-### Semicolons
-
-Semicolons are optional. Both styles work and can be mixed:
-
-```c
-let x = 42
-let y = 100;
-var z = x + y
-```
-
----
+`main` is the entry point for normal EXE and DLL-native-image output.
 
 ## Functions
 
-Opus supports several function declaration styles. They all compile to the same thing.
-
-### Primary Style (v2.0)
+### `function`
 
 ```c
-function int add(int a, int b) {
-    return a + b
-}
-
-function void greet(str name) {
-    print("hello ")
-    print(name)
-    print("\n")
-}
-
-function int main() {
-    alloc_console()
-    greet("world")
-    return 0
+function int add(int left, int right) {
+    return left + right
 }
 ```
 
-### Keyword Aliases
-
-`func` and `fn` are aliases for `function`. `ret` is an alias for `return`.
+### `fn`
 
 ```c
-// all equivalent
-function int square(int x) { return x * x }
-func int square(int x) { ret x * x }
-fn int square(int x) { return x * x }
-```
-
-### Type-First (No Keyword)
-
-If you omit the keyword entirely, Opus treats the return type as the start of the declaration:
-
-```c
-int add(int a, int b) {
-    return a + b
-}
-
-void do_stuff() {
-    print("doing stuff\n")
+fn add(left: int, right: int) -> int {
+    return left + right
 }
 ```
 
-### Legacy Rust-Style
-
-For those coming from Rust, the arrow-return syntax works too:
+### Type-first
 
 ```c
-fn add(a: i32, b: i32) -> i32 {
-    return a + b
-}
-
-fn greet(name: str) -> void {
-    print(name)
-    print("\n")
+int add(int left, int right) {
+    return left + right
 }
 ```
 
-### English Style
-
-Yes, really:
+### English
 
 ```c
-define function add with parameter a as i32 and parameter b as i32 returning i32
-    return a + b
+define function add with left as i64, right as i64 returning i64
+    return left + right
 end function
 ```
 
-### Parameter Mutability
-
-In v2.0 style (`function`/`func`/`fn` with type-first params), parameters are mutable by
-default. You can reassign them freely:
+### Expression body
 
 ```c
-function int clamp(int val, int lo, int hi) {
-    if val < lo { val = lo }
-    if val > hi { val = hi }
-    return val
+function int add(int left, int right) => left + right
+fn add(left: int, right: int) -> int => left + right
+int add(int left, int right) => left + right
+```
+
+## Parameters
+
+Supported parameter forms:
+
+```c
+function int add(int left, int right) { ... }
+function int add(left: int, right: int) { ... }
+fn add(left: int, right: int) -> int { ... }
+```
+
+Trailing commas are accepted in high-touch places such as parameter lists and call arguments.
+
+## Variables
+
+```c
+let x = 1
+var y = 2
+auto z = x + y
+int copy = z
+```
+
+## Statements
+
+### Return
+
+```c
+return
+return value
+```
+
+### If / else
+
+```c
+if x > 0 {
+    return 1
+} else {
+    return 0
 }
 ```
 
-### Stack Space
-
-Every function gets 1024 bytes of stack space. This is a fixed allocation — keep large
-buffers on the heap.
-
----
-
-## Control Flow
-
-### if / else if / else
-
-No parentheses needed around the condition. Braces are required.
+Single-statement bodies also work in the v2-style surface:
 
 ```c
-function void classify(int x) {
-    if x > 0 {
-        print("positive\n")
-    } else if x < 0 {
-        print("negative\n")
-    } else {
-        print("zero\n")
-    }
+if x > 0
+    return 1
+```
+
+English:
+
+```c
+if x > 0 then
+    return 1
+else if x < 0 then
+    return -1
+end if
+```
+
+### While
+
+```c
+while x < 10 {
+    x = x + 1
 }
 ```
 
-### while
+or:
 
 ```c
-function void countdown(int n) {
-    while n > 0 {
-        print_int(n)
-        n = n - 1
-    }
-    print("liftoff!\n")
-}
+while x < 10
+    x = x + 1
 ```
 
-### for ... in range
-
-Iterates from `start` to `end - 1` (exclusive upper bound):
+English:
 
 ```c
-// prints 0 through 9
-for i in range(0, 10) {
+while x < 10 do
+    x = x + 1
+end while
+```
+
+### For
+
+```c
+for i in values {
     print_int(i)
 }
 ```
 
-### loop
-
-Infinite loop. Use `break` to exit:
+### Loop
 
 ```c
 loop {
-    let input = read_input()
-    if input == 0 {
-        break
-    }
-    process(input)
+    break
 }
 ```
 
-### break and continue
+### Parallel for
 
 ```c
-for i in range(0, 100) {
-    if i % 2 == 0 {
-        continue       // skip even numbers
-    }
-    if i > 50 {
-        break          // stop after 50
-    }
-    print_int(i)
+parallel for i in range(0, 100) {
+    // thread-safe work only
 }
 ```
 
-`cont` is an alias for `continue`.
+## Expressions
 
-### parallel for
-
-Splits loop iterations across CPU cores:
+### Calls and indexing
 
 ```c
-// each iteration may run on a different thread
-parallel for i in range(0, 1000) {
-    process_item(i)
-}
+let total = add(10, 20)
+let item = arr[3]
+let value = obj.field
 ```
 
-> **Warning:** The loop body must be thread-safe. No shared mutable state without atomics.
-
----
-
-## Operators
-
-### Precedence Table (Highest to Lowest)
-
-| Prec | Category | Operators | Associativity |
-|:----:|----------|-----------|:-------------:|
-| — | Postfix | `()` call, `[]` index, `.` field, `as` cast, `++` `--` | Left-to-right |
-| — | Prefix | `-` neg, `!`/`not`, `~` bitnot, `*` deref, `&` addrof, `++` `--` | Right-to-left |
-| 10 | Multiplicative | `*`  `/`  `%` | Left-to-right |
-| 9 | Additive | `+`  `-` | Left-to-right |
-| 8 | Shift | `<<`  `>>` | Left-to-right |
-| 7 | Relational | `<`  `>`  `<=`  `>=` | Left-to-right |
-| 6 | Equality | `==`  `!=` | Left-to-right |
-| 5 | Bitwise AND | `&` | Left-to-right |
-| 4 | Bitwise XOR | `^` | Left-to-right |
-| 3 | Bitwise OR | `\|` | Left-to-right |
-| 2 | Logical AND | `&&` / `and` | Left-to-right |
-| 1 | Logical OR | `\|\|` / `or` | Left-to-right |
-| 0 | Assignment | `=`  `+=`  `-=`  `*=`  `/=` | Right-to-left |
-
-### Arithmetic
+### Casts
 
 ```c
-let sum = a + b
-let diff = a - b
-let prod = a * b
-let quot = a / b
-let rem = a % b
+let p = raw_value as ptr
 ```
 
-### Comparison
+### Arrays
 
 ```c
-if x == y { print("equal\n") }
-if x != y { print("not equal\n") }
-if x < y  { print("less\n") }
-if x >= y { print("greater or equal\n") }
+let values = [1, 2, 3]
+let more = [1, 2, 3,]
 ```
 
-### Logical
-
-```c
-// symbol or english — your choice
-if a > 0 && b > 0 { print("both positive\n") }
-if a > 0 and b > 0 { print("both positive\n") }
-
-if x == 0 || y == 0 { print("at least one zero\n") }
-if x == 0 or y == 0 { print("at least one zero\n") }
-
-if !done { print("still going\n") }
-if not done { print("still going\n") }
-```
-
-### Bitwise
-
-```c
-let masked = value & 0xFF
-let combined = flags | 0x01
-let flipped = bits ^ 0xFF
-let inverted = ~bits
-let shifted_left = x << 4
-let shifted_right = x >> 4
-```
-
-### Increment / Decrement
-
-```c
-var i = 0
-i++          // post-increment
-i--          // post-decrement
-++i          // pre-increment
---i          // pre-decrement
-```
-
-### Compound Assignment
-
-```c
-var x = 10
-x += 5       // x = 15
-x -= 3       // x = 12
-x *= 2       // x = 24
-x /= 4       // x = 6
-```
-
----
-
-## Literals
-
-### Integers
-
-```c
-let decimal = 42
-let hex = 0xFF
-let binary = 0b1010
-let big = 1000000
-```
-
-### Floats
-
-```c
-let pi = 3.14
-let half = 0.5
-let x = 44.0f
-let alpha = 1.0f
-```
-
-Bare float literals default to `f64`.
-
-Use the `f` suffix when you want an `f32` literal without writing `as f32`.
-
-### Strings
-
-Strings are null-terminated byte sequences. `print()` does not append a newline — add `\n`
-explicitly.
-
-```c
-let greeting = "Hello, World!\n"
-let path = "C:\\Users\\opus\\file.txt"
-let tab_separated = "name\tvalue\n"
-```
-
-#### Escape Sequences
-
-| Sequence | Character |
-|----------|-----------|
-| `\n` | Newline |
-| `\r` | Carriage return |
-| `\t` | Tab |
-| `\\` | Backslash |
-| `\"` | Double quote |
-| `\0` | Null byte |
-
-### Hex Strings
-
-Raw byte buffers from hex notation:
-
-```c
-// produces a buffer with those exact bytes
-let shellcode = hex"48 89 5C 24 08 48 89 6C 24 10"
-```
-
-### Characters
-
-```c
-let ch = 'A'
-let newline = '\n'
-```
-
-### Booleans
-
-```c
-let a = true
-let b = false
-let c = yes       // same as true
-let d = no        // same as false
-```
-
----
-
-## Comments
-
-```c
-// single-line comment
-
-/* multi-line
-   comment that spans
-   several lines */
-
-let x = 42  // inline comment
-```
-
----
-
-## Structs
-
-### C-Style Definition
-
-```c
-struct Point {
-    int x;
-    int y;
-}
-```
-
-### Rust-Style Definition
-
-```c
-struct Point {
-    x: int,
-    y: int,
-}
-```
-
-### Mixed Syntax
-
-Both field styles can coexist in the same struct:
-
-```c
-struct Entity {
-    int id;
-    name: str,
-    float speed;
-}
-```
-
-### Struct Literals
-
-Create instances using the struct name followed by braces. The compiler recognizes this
-pattern when the name starts with an uppercase letter:
-
-```c
-let origin = Point { x: 0, y: 0 }
-let player_pos = Point { x: 100, y: 200 }
-```
-
-### Field Access
-
-```c
-let px = origin.x
-let py = origin.y
-print_int(px)
-```
-
-### Memory Layout
-
-- Each field occupies 8 bytes regardless of declared type
-- Structs are heap-allocated via `HeapAlloc`
-- You must call `free(p)` when done — there is no automatic cleanup
+### Struct/class literals
 
 ```c
 let p = Point { x: 10, y: 20 }
-print_int(p.x)
-print_int(p.y)
-free(p)    // dont forget this
+let pair = Pair { left, right }
+let acc = counter { value: 0 }
 ```
 
----
+### Unsupported expression forms
+
+These are intentionally rejected today:
+
+- `if` expressions
+- block expressions used as values
+
+## Types
+
+Common primitive and friendly names:
+
+| Name | Meaning |
+|------|---------|
+| `bool` | boolean |
+| `int` / `integer` | 32-bit signed |
+| `long` / `isize` | 64-bit signed |
+| `uint` / `usize` | 64-bit or 32-bit friendly unsigned aliases as defined by the compiler |
+| `i8`, `i16`, `i32`, `i64`, `i128` | exact-width signed |
+| `u8`, `u16`, `u32`, `u64`, `u128` | exact-width unsigned |
+| `float` / `f32` | 32-bit float |
+| `double` / `real` / `f64` | 64-bit float |
+| `str` / `string` | string |
+| `char` | character |
+| `ptr` / `address` / `pointer` | raw pointer |
+
+Function types:
+
+```c
+using Worker = fn(int, int) -> int
+```
+
+Pointer types:
+
+```c
+let p: *int = 0
+let mp: *mut int = 0
+```
+
+Array types:
+
+```c
+let buf: [i32; 16]
+```
+
+## Structs
+
+```c
+struct Point {
+    int x
+    y: int
+}
+```
 
 ## Classes
 
-Classes are structs with methods.
-
-### Definition
-
 ```c
-class Player {
-    health: int,
-    speed: int,
+class Counter {
+    int value
 
-    function void takeDamage(int amount) {
-        self.health = self.health - amount
-    }
-
-    function int getHealth() {
-        return self.health
-    }
-
-    function bool isAlive() {
-        return self.health > 0
-    }
+    fn bump(delta: int) -> int => self.value + delta
+    function int mix(int a, int b) => self.value + a + b
+    int raw(int x) => self.value + x
 }
 ```
-
-### Creating Instances
-
-```c
-var p = Player { health: 100, speed: 50 }
-```
-
-### Method Calls
-
-```c
-p.takeDamage(30)
-let hp = p.getHealth()    // 70
-```
-
-### The `self` Keyword
-
-Inside methods, `self` refers to the instance. Use it to read and write fields:
-
-```c
-class Enemy {
-    health: int,
-    damage: int,
-
-    function void heal(int amount) {
-        self.health = self.health + amount
-    }
-
-    function void attack(ptr target) {
-        // self.damage reads this enemys damage field
-        let d = self.damage
-        // apply to target...
-    }
-}
-```
-
-### How Methods Compile
-
-Methods compile to global functions with the instance as the first argument:
-
-```c
-// this call:
-p.takeDamage(30)
-
-// compiles to:
-Player_takeDamage(p, 30)
-```
-
-### Field Modification
-
-```c
-var p = Player { health: 100, speed: 50 }
-p.health = 200
-p.speed += 10
-```
-
-### Chained Field Access
-
-```c
-struct Inner { int value; }
-struct Outer { ptr inner; }
-
-let i = Inner { value: 42 }
-let o = Outer { inner: i }
-print_int(o.inner.value)    // 42
-```
-
----
 
 ## Enums
 
-### Definition
-
 ```c
-enum Direction {
-    North,
-    South,
-    East,
-    West,
+enum State {
+    Idle,
+    Running,
+    Dead,
 }
 ```
-
-Values auto-increment from 0: `North = 0`, `South = 1`, `East = 2`, `West = 3`.
-
-### Explicit Values
-
-```c
-enum TokenKind {
-    Ident,          // 0
-    IntLit,         // 1
-    StringLit,      // 2
-    Operator = 10,  // 10
-    Keyword,        // 11
-    Eof,            // 12
-}
-```
-
-After an explicit value, subsequent variants continue incrementing from there.
-
-### Usage
-
-Access variants with dot syntax:
-
-```c
-let dir = Direction.North
-
-if dir == Direction.North {
-    print("heading north\n")
-}
-```
-
-Enum values are compile-time constants — they get inlined directly.
-
----
 
 ## Imports
 
-### Basic Import
-
 ```c
-import math          // loads math.op from same directory
-```
-
-### Nested Paths
-
-```c
-import utils.strings  // loads utils/strings.op
-```
-
-### Aliased Import
-
-```c
-import graphics.renderer as gfx
-```
-
-### How It Works
-
-1. `import module_name` resolves to `module_name.op` relative to the current file
-2. `import foo.bar` resolves to `foo/bar.op`
-3. Compilation is two-pass: all function signatures are collected first, then code is generated
-4. Circular imports are detected and prevented
-
-```c
-// file: math.op
-function int square(int x) {
-    return x * x
-}
-
-// file: main.op
 import math
-
-function int main() {
-    alloc_console()
-    let result = square(5)
-    print_int(result)
-    return 0
-}
+import math as maths
+import api.entry
 ```
 
----
-
-## Extern Declarations
-
-Declare external functions (from DLLs or other object files):
+## Extern declarations
 
 ```c
-extern fn MessageBoxA(ptr hwnd, str text, str caption, int flags) -> int;
-extern fn GetTickCount() -> int;
+extern fn Sleep(int ms) -> int
+extern function int GetTickCount()
 ```
 
-This tells the compiler the function exists but is defined elsewhere. The linker resolves it
-at load time.
+## Useful notes
 
----
-
-## Type Aliases
-
-Use `using` to name types cleanly, including function signatures:
-
-```c
-using VertexFn = fn(ptr, f32, f32, f32) -> void
-using MessageBoxAFn = fn(ptr, str, str, int) -> int
-```
-
-This is especially useful for FFI:
-
-```c
-let raw = get_proc(get_module("user32.dll"), "MessageBoxA")
-let message_box = raw as MessageBoxAFn
-message_box(0, "Hello", "Opus", 0x40)
-```
-
----
-
-## Casting
-
-Use the `as` keyword to cast between types:
-
-```c
-let raw = malloc(64)
-let value = raw as int
-
-let addr = 0xDEADBEEF as ptr
-let byte_val = big_number as i8
-```
-
-Casts are unchecked — you are responsible for making sure the conversion makes sense.
-
-```c
-function void example() {
-    import mem
-
-    let p = malloc(8)
-    mem.write(p, 42)
-    let val = mem.read(p) as int
-    print_int(val)
-    free(p)
-}
-```
-
----
-
-## Putting It All Together
-
-A complete program that demonstrates multiple features:
-
-```c
-import utils
-
-struct Player {
-    int health;
-    int score;
-}
-
-enum GameState {
-    Menu,
-    Playing,
-    GameOver,
-}
-
-function void print_player(ptr p) {
-    print("health: ")
-    print_int(p.health)
-    print("score: ")
-    print_int(p.score)
-}
-
-function int main() {
-    alloc_console()
-
-    var p = Player { health: 100, score: 0 }
-    var state = GameState.Playing
-
-    while state == GameState.Playing {
-        p.score += 10
-        p.health -= 1
-
-        if p.health <= 0 {
-            state = GameState.GameOver
-        }
-    }
-
-    print("game over!\n")
-    print_player(p)
-    free(p)
-    return 0
-}
-```
+- Semicolons are optional in most day-to-day code.
+- The parser accepts mixed syntax in one file.
+- Error recovery is typo-aware in many common cases now, including English keywords and missing commas.

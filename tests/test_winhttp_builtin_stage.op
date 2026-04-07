@@ -1,0 +1,157 @@
+function ptr utf16z(str text_value) {
+    let len = string_length(text_value)
+    let out = malloc((len + 1) * 2)
+    if out == 0 {
+        return 0
+    }
+    memset(out, 0, (len + 1) * 2)
+
+    var i = 0
+    while i < len {
+        mem_write_i16(out + i * 2, char_at(text_value, i))
+        i++
+    }
+    return out
+}
+
+function str bytes_to_text(ptr bytes, int len) {
+    let copy = malloc(len + 1)
+    if copy == 0 {
+        return string_substring("", 0, 0)
+    }
+    memset(copy, 0, len + 1)
+    memcpy(copy, bytes, len)
+    let out = make_string(copy)
+    free(copy)
+    return out
+}
+
+function int main() {
+    let module_handle = load_library("winhttp.dll")
+    if module_handle == 0 {
+        return 1
+    }
+
+    let open_fn = get_proc(module_handle, "WinHttpOpen")
+    let connect_fn = get_proc(module_handle, "WinHttpConnect")
+    let open_request_fn = get_proc(module_handle, "WinHttpOpenRequest")
+    let send_request_fn = get_proc(module_handle, "WinHttpSendRequest")
+    let receive_response_fn = get_proc(module_handle, "WinHttpReceiveResponse")
+    let query_headers_fn = get_proc(module_handle, "WinHttpQueryHeaders")
+    let query_data_available_fn = get_proc(module_handle, "WinHttpQueryDataAvailable")
+    let read_data_fn = get_proc(module_handle, "WinHttpReadData")
+    let close_handle_fn = get_proc(module_handle, "WinHttpCloseHandle")
+    if open_fn == 0 or connect_fn == 0 or open_request_fn == 0 or send_request_fn == 0 or receive_response_fn == 0 or query_headers_fn == 0 or query_data_available_fn == 0 or read_data_fn == 0 or close_handle_fn == 0 {
+        return 2
+    }
+
+    let agent = utf16z("Opus/WinHTTP")
+    let host = utf16z("example.com")
+    let method = utf16z("GET")
+    let path = utf16z("/")
+    if agent == 0 or host == 0 or method == 0 or path == 0 {
+        return 3
+    }
+
+    let session = ffi_call5(open_fn, agent, 1, 0, 0, 0)
+    if session == 0 {
+        return 10
+    }
+
+    let connection = ffi_call4(connect_fn, session, host, 443, 0)
+    if connection == 0 {
+        return 11
+    }
+
+    let request = ffi_call7(open_request_fn, connection, method, path, 0, 0, 0, 8388608)
+    if request == 0 {
+        return 12
+    }
+
+    if ffi_call7(send_request_fn, request, 0, 0, 0, 0, 0, 0) == 0 {
+        return 13
+    }
+
+    if ffi_call2(receive_response_fn, request, 0) == 0 {
+        return 14
+    }
+
+    let status_ptr = malloc(8)
+    let size_ptr = malloc(8)
+    if status_ptr == 0 or size_ptr == 0 {
+        return 15
+    }
+    memset(status_ptr, 0, 8)
+    memset(size_ptr, 0, 8)
+    mem_write_i32(size_ptr, 4)
+
+    if ffi_call6(query_headers_fn, request, 19 + 536870912, 0, status_ptr, size_ptr, 0) == 0 {
+        return 16
+    }
+
+    let status = mem_read_i32(status_ptr)
+    let available_ptr = malloc(8)
+    if available_ptr == 0 {
+        return 17
+    }
+    memset(available_ptr, 0, 8)
+    let read_count_ptr = malloc(8)
+    let chunk_ptr = malloc(4097)
+    if read_count_ptr == 0 or chunk_ptr == 0 {
+        return 18
+    }
+    memset(read_count_ptr, 0, 8)
+    memset(chunk_ptr, 0, 4097)
+
+    var body = string_substring("", 0, 0)
+    while true {
+        mem_write_i32(available_ptr, 0)
+        if ffi_call2(query_data_available_fn, request, available_ptr) == 0 {
+            return 19
+        }
+
+        let available = mem_read_i32(available_ptr)
+        if available <= 0 {
+            break
+        }
+
+        var to_read = available
+        if to_read > 4096 {
+            to_read = 4096
+        }
+
+        mem_write_i32(read_count_ptr, 0)
+        if ffi_call4(read_data_fn, request, chunk_ptr, to_read, read_count_ptr) == 0 {
+            return 20
+        }
+
+        let chunk_len = mem_read_i32(read_count_ptr)
+        if chunk_len <= 0 {
+            break
+        }
+
+        mem_write_i8(chunk_ptr + chunk_len, 0)
+        let chunk_text = bytes_to_text(chunk_ptr, chunk_len)
+        let next_body = string_append(body, chunk_text)
+        free(body)
+        free(chunk_text)
+        body = next_body
+    }
+
+    let body_len = string_length(body)
+
+    free(body)
+    free(chunk_ptr)
+    free(read_count_ptr)
+    free(available_ptr)
+    free(size_ptr)
+    free(status_ptr)
+    free(path)
+    free(method)
+    free(host)
+    free(agent)
+    ffi_call1(close_handle_fn, request)
+    ffi_call1(close_handle_fn, connection)
+    ffi_call1(close_handle_fn, session)
+    return body_len
+}

@@ -1,0 +1,14 @@
+function int main() {
+    let kernel = load_library("kernel32.dll")
+    if kernel == 0 {
+        return 1
+    }
+
+    let sleep_ptr = get_proc(kernel, "Sleep")
+    if sleep_ptr == 0 {
+        return 2
+    }
+
+    ffi_call1(sleep_ptr, 10)
+    return 0
+}

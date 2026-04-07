@@ -1,6 +1,5 @@
 // the simplest opus program
 function int main() {
-    alloc_console()
     print("Hello, World!\n")
     return 0
 }

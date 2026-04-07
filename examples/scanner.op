@@ -1,6 +1,8 @@
 // dll memory scanner example
 // compile with: opus --dll scanner.op
 
+import mem
+
 function int main() {
     alloc_console()
     set_title("Opus Scanner")
@@ -15,13 +17,11 @@ function int main() {
     print("process id: ")
     print_int(pid)
 
-    // read PE header
-    let e_lfanew = mem_read_i32(base + 0x3C)
-    let image_size = mem_read_i32(base + e_lfanew + 0x50)
+    let e_lfanew = mem.read32(base + 0x3C)
+    let image_size = mem.read32(base + e_lfanew + 0x50)
     print("image size: ")
     print_hex(image_size)
 
-    // pattern scan
     print("\nscanning...\n")
     let t1 = get_tick_count()
 

@@ -1,0 +1,87 @@
+// Explicit SIMD helpers over raw pointer buffers.
+// The public surface prefers language-friendly names like intx8 and longx8.
+// Raw width-flavored aliases stay available for compatibility and low-level work.
+
+function bool has_avx2() {
+    return simd_has_avx2() != 0
+}
+
+function bool has_avx512f() {
+    return simd_has_avx512f() != 0
+}
+
+function bool has_avx512dq() {
+    return simd_has_avx512dq() != 0
+}
+
+function void intx8_add(ptr dst, ptr a, ptr b) {
+    simd_i32x8_add(dst, a, b)
+}
+
+function void intx8_sub(ptr dst, ptr a, ptr b) {
+    simd_i32x8_sub(dst, a, b)
+}
+
+function void intx8_mul(ptr dst, ptr a, ptr b) {
+    simd_i32x8_mul(dst, a, b)
+}
+
+function void longx4_add(ptr dst, ptr a, ptr b) {
+    simd_i64x4_add(dst, a, b)
+}
+
+function void longx4_sub(ptr dst, ptr a, ptr b) {
+    simd_i64x4_sub(dst, a, b)
+}
+
+function void intx8_splat(ptr dst, int lane_value) {
+    simd_i32x8_splat(dst, lane_value)
+}
+
+function void longx4_splat(ptr dst, long lane_value) {
+    simd_i64x4_splat(dst, lane_value)
+}
+
+function void intx16_add(ptr dst, ptr a, ptr b) {
+    simd_i32x16_add(dst, a, b)
+}
+
+function void intx16_sub(ptr dst, ptr a, ptr b) {
+    simd_i32x16_sub(dst, a, b)
+}
+
+function void intx16_mul(ptr dst, ptr a, ptr b) {
+    simd_i32x16_mul(dst, a, b)
+}
+
+function void longx8_add(ptr dst, ptr a, ptr b) {
+    simd_i64x8_add(dst, a, b)
+}
+
+function void longx8_sub(ptr dst, ptr a, ptr b) {
+    simd_i64x8_sub(dst, a, b)
+}
+
+function void intx16_splat(ptr dst, int lane_value) {
+    simd_i32x16_splat(dst, lane_value)
+}
+
+function void longx8_splat(ptr dst, long lane_value) {
+    simd_i64x8_splat(dst, lane_value)
+}
+
+// Compatibility aliases for the lower-level width-flavored names.
+function void i32x8_add(ptr dst, ptr a, ptr b) { intx8_add(dst, a, b) }
+function void i32x8_sub(ptr dst, ptr a, ptr b) { intx8_sub(dst, a, b) }
+function void i32x8_mul(ptr dst, ptr a, ptr b) { intx8_mul(dst, a, b) }
+function void i64x4_add(ptr dst, ptr a, ptr b) { longx4_add(dst, a, b) }
+function void i64x4_sub(ptr dst, ptr a, ptr b) { longx4_sub(dst, a, b) }
+function void i32x8_splat(ptr dst, int lane_value) { intx8_splat(dst, lane_value) }
+function void i64x4_splat(ptr dst, long lane_value) { longx4_splat(dst, lane_value) }
+function void i32x16_add(ptr dst, ptr a, ptr b) { intx16_add(dst, a, b) }
+function void i32x16_sub(ptr dst, ptr a, ptr b) { intx16_sub(dst, a, b) }
+function void i32x16_mul(ptr dst, ptr a, ptr b) { intx16_mul(dst, a, b) }
+function void i64x8_add(ptr dst, ptr a, ptr b) { longx8_add(dst, a, b) }
+function void i64x8_sub(ptr dst, ptr a, ptr b) { longx8_sub(dst, a, b) }
+function void i32x16_splat(ptr dst, int lane_value) { intx16_splat(dst, lane_value) }
+function void i64x8_splat(ptr dst, long lane_value) { longx8_splat(dst, lane_value) }

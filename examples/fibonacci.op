@@ -7,8 +7,6 @@ function int fib(int n) {
 }
 
 function int main() {
-    alloc_console()
-
     print("fibonacci sequence:\n")
     for i in range(0, 21) {
         print("fib(")

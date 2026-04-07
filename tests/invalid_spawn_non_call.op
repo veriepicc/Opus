@@ -1,0 +1,9 @@
+function int worker() {
+    return 1
+}
+
+function int main() {
+    let worker_ref = worker
+    let h = spawn worker_ref
+    return 0
+}

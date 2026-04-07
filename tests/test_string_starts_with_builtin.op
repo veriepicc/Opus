@@ -1,0 +1,6 @@
+function int main() {
+    if string_starts_with("https://example.com", "https://") == 0 {
+        return 1
+    }
+    return 0
+}

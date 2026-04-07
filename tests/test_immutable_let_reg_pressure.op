@@ -1,0 +1,58 @@
+fn mix(i: i64, salt: i64) -> i64 {
+    let mut x: i64 = i * 1103515245 + salt * 2654435761
+    x = x ^ (x >> 13)
+    x = x * 2246822519
+    return x & 1023
+}
+
+fn main() -> i64 {
+    let mut bid_px: i64 = 100000
+    let mut bid_sz: i64 = 24
+    let mut ask_px: i64 = 100002
+    let mut ask_sz: i64 = 26
+    let mut inventory: i64 = 0
+    let mut buy_px: i64 = 0
+    let mut sell_px: i64 = 0
+    let mut i: i64 = 0
+
+    while i < 1 {
+        let bid_move: i64 = (mix(i, 17) & 7) - 3
+        let ask_move: i64 = (mix(i, 29) & 7) - 3
+        let bid_size_bump: i64 = (mix(i, 43) & 31) + 1
+        let ask_size_bump: i64 = (mix(i, 59) & 31) + 1
+
+        bid_px = bid_px + bid_move
+        ask_px = ask_px + ask_move
+        if ask_px <= bid_px {
+            ask_px = bid_px + 1
+        }
+
+        if (i & 1) == 0 {
+            bid_sz = bid_sz + bid_size_bump
+            ask_sz = ask_sz - (ask_size_bump >> 1)
+        } else {
+            ask_sz = ask_sz + ask_size_bump
+            bid_sz = bid_sz - (bid_size_bump >> 1)
+        }
+
+        if bid_sz < 1 {
+            bid_sz = 1 + (bid_size_bump & 15)
+        }
+        if ask_sz < 1 {
+            ask_sz = 1 + (ask_size_bump & 15)
+        }
+
+        let spread: i64 = ask_px - bid_px
+        let mid: i64 = (ask_px + bid_px) >> 1
+        let imbalance: i64 = bid_sz - ask_sz
+        let skew: i64 = inventory >> 2
+        let risk_push: i64 = inventory * spread + imbalance
+
+        buy_px = mid - 1 - skew
+        sell_px = mid + 1 - skew
+        inventory = inventory + (risk_push & 1)
+        i = i + 1
+    }
+
+    return (buy_px ^ sell_px ^ inventory) & 255
+}

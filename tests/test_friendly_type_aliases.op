@@ -1,0 +1,40 @@
+function int take_integer(integer x) {
+    return x + 1
+}
+
+function int take_real(real x) {
+    if x > 1.0 {
+        return 2
+    }
+    return 0
+}
+
+function long take_isize(isize x) {
+    return x + 2
+}
+
+function ulong take_usize(usize x) {
+    return x + 3
+}
+
+function int main() {
+    let a: integer = 41
+    let b: real = 1.5
+    let c: isize = 7
+    let d: usize = 9
+
+    if take_integer(a) != 42 {
+        return 1
+    }
+    if take_real(b) != 2 {
+        return 2
+    }
+    if take_isize(c) != 9 {
+        return 3
+    }
+    if take_usize(d) != 12 {
+        return 4
+    }
+
+    return 0
+}

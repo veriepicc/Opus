@@ -1,0 +1,51 @@
+import simd
+import mem
+
+function int main() {
+    if has_avx2() == 0 {
+        return 0
+    }
+
+    let a = mem.make_zero(32)
+    let b = mem.make_zero(32)
+    let out = mem.make_zero(32)
+    if a == 0 or b == 0 or out == 0 {
+        return 90
+    }
+
+    var i = 0
+    while i < 8 {
+        mem.write32(a + i * 4, i + 1)
+        mem.write32(b + i * 4, (i + 1) * 10)
+        i++
+    }
+
+    intx8_add(out, a, b)
+    i = 0
+    while i < 8 {
+        if mem.read32(out + i * 4) != (i + 1) + ((i + 1) * 10) {
+            return 91
+        }
+        i++
+    }
+
+    intx8_mul(out, a, b)
+    i = 0
+    while i < 8 {
+        if mem.read32(out + i * 4) != (i + 1) * ((i + 1) * 10) {
+            return 92
+        }
+        i++
+    }
+
+    longx4_splat(out, 77)
+    i = 0
+    while i < 4 {
+        if mem.read(out + i * 8) != 77 {
+            return 93
+        }
+        i++
+    }
+
+    return 0
+}

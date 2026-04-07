@@ -889,6 +889,92 @@ public:
         buf_.emit8(b2);
     }
 
+    // 4-byte EVEX prefix for zmm operations.
+    // This is enough for the subset we currently use:
+    // - unmasked ops
+    // - no broadcast/rounding
+    // - 512-bit vectors
+    // - up to 5-bit dst/vvvv register ids
+    void emit_evex(std::uint8_t mmmmm, std::uint8_t pp, bool W,
+                   std::uint8_t reg, std::uint8_t vvvv, std::uint8_t rm,
+                   std::uint8_t ll = 0b10) {
+        buf_.emit8(0x62);
+
+        // byte 1: R' X' B' R 0 0 mm
+        std::uint8_t b1 = mmmmm & 0x03;
+        b1 |= 0x40; // X' = 1 (no SIB index extension)
+        if (!(rm & 0x08))  b1 |= 0x20; // B'
+        if (!(reg & 0x08)) b1 |= 0x10; // R
+        if (!(reg & 0x10)) b1 |= 0x80; // R'
+        buf_.emit8(b1);
+
+        // byte 2: W vvvv 1 pp
+        std::uint8_t b2 = pp & 0x03;
+        b2 |= 0x04; // fixed 1 bit
+        b2 |= ((~vvvv & 0x0F) << 3);
+        if (W) b2 |= 0x80;
+        buf_.emit8(b2);
+
+        // byte 3: z L'L b V' aaa
+        std::uint8_t b3 = 0;
+        b3 |= (ll & 0x03) << 5; // 10 = 512-bit zmm
+        if (!(vvvv & 0x10)) b3 |= 0x08; // V'
+        buf_.emit8(b3);
+    }
+
+    // ========================================================================
+    // AVX512 SIMD INSTRUCTIONS (EVEX-encoded, 512-bit ZMM)
+    // ========================================================================
+
+    void vmovdqu32_zmm_load(std::uint8_t zmm_dst, Reg base, std::int32_t offset = 0) {
+        // EVEX.512.F3.0F.W0 6F /r
+        emit_evex(0x01, 0x02, false, zmm_dst, 0, static_cast<std::uint8_t>(base));
+        buf_.emit8(0x6F);
+        emit_mem_operand(Reg(zmm_dst & 7), base, offset);
+    }
+
+    void vmovdqu32_zmm_store(Reg base, std::int32_t offset, std::uint8_t zmm_src) {
+        // EVEX.512.F3.0F.W0 7F /r
+        emit_evex(0x01, 0x02, false, zmm_src, 0, static_cast<std::uint8_t>(base));
+        buf_.emit8(0x7F);
+        emit_mem_operand(Reg(zmm_src & 7), base, offset);
+    }
+
+    void vmovdqa32_zmm(std::uint8_t dst, std::uint8_t src) {
+        // EVEX.512.66.0F.W0 6F /r (register-register form)
+        emit_evex(0x01, 0x01, false, dst, 0, src);
+        buf_.emit8(0x6F);
+        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src & 7)));
+    }
+
+    void vpaddd_zmm(std::uint8_t dst, std::uint8_t src1, std::uint8_t src2) {
+        // EVEX.512.66.0F.W0 FE /r
+        emit_evex(0x01, 0x01, false, dst, src1, src2);
+        buf_.emit8(0xFE);
+        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+    }
+
+    void vpsubd_zmm(std::uint8_t dst, std::uint8_t src1, std::uint8_t src2) {
+        // EVEX.512.66.0F.W0 FA /r
+        emit_evex(0x01, 0x01, false, dst, src1, src2);
+        buf_.emit8(0xFA);
+        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+    }
+
+    void vpmulld_zmm(std::uint8_t dst, std::uint8_t src1, std::uint8_t src2) {
+        // EVEX.512.66.0F38.W0 40 /r
+        emit_evex(0x02, 0x01, false, dst, src1, src2);
+        buf_.emit8(0x40);
+        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+    }
+
+    void vpbroadcastd_zmm(std::uint8_t zmm_dst, Reg src) {
+        // EVEX.512.66.0F38.W0 7C /r
+        emit_evex(0x02, 0x01, false, zmm_dst, 0, static_cast<std::uint8_t>(src));
+        buf_.emit8(0x7C);
+        buf_.emit8(modrm(0b11, Reg(zmm_dst & 7), src));
+    }
+
     // vmovdqu ymm, [base+offset] (256-bit unaligned load)
     void vmovdqu_load(std::uint8_t ymm_dst, Reg base, std::int32_t offset) {
         // VEX.256.F3.0F.WIG 6F /r

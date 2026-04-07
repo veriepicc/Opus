@@ -1,0 +1,7 @@
+function int child(int x) {
+    return x + 1
+}
+
+function int main() {
+    return await spawn child(41)
+}

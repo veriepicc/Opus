@@ -1,0 +1,9 @@
+import http
+
+function int main() {
+    let text_value = http_empty_text()
+    if text_value == 0 {
+        return 1
+    }
+    return string_length(text_value)
+}

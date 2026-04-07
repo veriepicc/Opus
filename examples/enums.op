@@ -23,8 +23,6 @@ function str state_name(int s) {
 }
 
 function int main() {
-    alloc_console()
-
     var state = State.Idle
     var ticks = 0
 

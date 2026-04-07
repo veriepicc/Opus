@@ -1,0 +1,35 @@
+function int main() {
+    if string_starts_with("opus", "op") == 0 {
+        return 1
+    }
+    if parse_int("-42") != -42 {
+        return 2
+    }
+    if is_alpha(65) == 0 {
+        return 3
+    }
+    if is_digit(57) == 0 {
+        return 4
+    }
+    if is_alnum(95) == 0 {
+        return 5
+    }
+    if is_whitespace(32) == 0 {
+        return 6
+    }
+
+    let buf = buffer_new(4)
+    if buf == 0 {
+        return 7
+    }
+    buffer_push(buf, 65)
+    buffer_push(buf, 66)
+    if buffer_len(buf) != 2 {
+        return 8
+    }
+    if write_bytes("tests/tmp_native_image_shared_builtins.bin", buf, 2) != 2 {
+        return 9
+    }
+
+    return 0
+}

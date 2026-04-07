@@ -1,0 +1,7 @@
+function int add(int left, int right) {
+    return left + right
+}
+
+function int main() {
+    return add(1 2)
+}

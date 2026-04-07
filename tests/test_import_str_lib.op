@@ -1,0 +1,11 @@
+function int len_wrap(str s) {
+    return string_length(s)
+}
+
+function int starts_with_wrap(str s, str prefix) {
+    return string_starts_with(s, "https://")
+}
+
+function str clone_wrap(str s) {
+    return string_substring(s, 0, string_length(s))
+}

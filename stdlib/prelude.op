@@ -1,5 +1,13 @@
+import ascii
+import fmt
+import fs
+import json
 import mem
+import path
+import process
+import rand
 import text
+import time
 import vec
 import cpp_vector
 import option

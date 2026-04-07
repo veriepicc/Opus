@@ -7,8 +7,7 @@ import std;
 export namespace opus {
 export inline const std::unordered_map<std::string, std::string>& embedded_stdlib_sources() {
     static const std::unordered_map<std::string, std::string> sources = {
-        {"algo", R"OPALGO(
-import mem
+        {"algo", R"OPALGO(import mem
 
 // General utility algorithms for 8-byte cells and integers.
 
@@ -192,8 +191,71 @@ function void algo_sort_i64(ptr values, int len) {
 }
 
 )OPALGO"},
-        {"cpp_vector", R"OPCPPVECTO(
-import mem
+        {"ascii", R"OPASCII(import text
+
+// ASCII-oriented helpers for formatting, parsing, and quick protocol work.
+// Ownership:
+// - ascii_hex_digit/ascii_hex_byte return heap strings; caller must free.
+
+function bool ascii_is_lower(int ch) {
+    return ch >= 97 and ch <= 122
+}
+
+function bool ascii_is_upper(int ch) {
+    return ch >= 65 and ch <= 90
+}
+
+function bool ascii_is_alpha(int ch) {
+    return ascii_is_lower(ch) or ascii_is_upper(ch)
+}
+
+function bool ascii_is_digit(int ch) {
+    return ch >= 48 and ch <= 57
+}
+
+function bool ascii_is_alnum(int ch) {
+    return ascii_is_alpha(ch) or ascii_is_digit(ch)
+}
+
+function bool ascii_is_space(int ch) {
+    return ch == 32 or ch == 9 or ch == 10 or ch == 13
+}
+
+function int ascii_to_lower(int ch) {
+    if ascii_is_upper(ch) {
+        return ch + 32
+    }
+    return ch
+}
+
+function int ascii_to_upper(int ch) {
+    if ascii_is_lower(ch) {
+        return ch - 32
+    }
+    return ch
+}
+
+function str ascii_hex_digit(int nibble) {
+    let table = "0123456789ABCDEF"
+    if nibble < 0 {
+        nibble = 0
+    }
+    if nibble > 15 {
+        nibble = 15
+    }
+    return string_substring(table, nibble, 1)
+}
+
+function str ascii_hex_byte(int byte_value) {
+    let hi = ascii_hex_digit((byte_value >> 4) & 15)
+    let lo = ascii_hex_digit(byte_value & 15)
+    let out = string_append(hi, lo)
+    free(hi)
+    free(lo)
+    return out
+}
+)OPASCII"},
+        {"cpp_vector", R"OPCPPVECTO(import mem
 import vec
 
 using CppVectorSizeFn = fn(ptr) -> i64
@@ -337,8 +399,7 @@ function void cpp_vector_call_push_back_i64(ptr method_addr, ptr this_vec, i64 i
 }
 
 )OPCPPVECTO"},
-        {"demo", R"OPDEMO(
-import mem
+        {"demo", R"OPDEMO(import mem
 import text
 import vec
 import cpp_vector
@@ -501,8 +562,1728 @@ function int main() {
     return 0
 }
 )OPDEMO"},
-        {"mem", R"OPMEM(
-// Memory convenience wrappers built on top of the compiler builtins.
+        {"fmt", R"OPFMT(import ascii
+import text
+
+// Small formatting helpers that make ordinary output code much less repetitive.
+// Ownership:
+// - every fmt_* function returning str returns a heap string; caller must free.
+
+function str fmt_bool(bool flag) {
+    if flag {
+        return text_clone("true")
+    }
+    return text_clone("false")
+}
+
+function str fmt_int(int number) {
+    return int_to_string(number)
+}
+
+function str fmt_int_pad_left(int number, int width) {
+    let raw = int_to_string(number)
+    let out = text_pad_left(raw, width, "0")
+    free(raw)
+    return out
+}
+
+function str fmt_pair(str key, str val) {
+    let left = string_append(key, ": ")
+    let out = string_append(left, val)
+    free(left)
+    return out
+}
+
+function str fmt_csv3(str a, str b, str c) {
+    let ab = text_join3(a, ",", b)
+    let out = text_join3(ab, ",", c)
+    free(ab)
+    return out
+}
+
+function str fmt_wrap(str val, str left, str right) {
+    return text_surround(val, left, right)
+}
+
+function str fmt_hex_byte(int byte_value) {
+    let body = ascii_hex_byte(byte_value)
+    let out = string_append("0x", body)
+    free(body)
+    return out
+}
+)OPFMT"},
+        {"fs", R"OPFS(import text
+
+// Filesystem-style helpers over the builtin file/string layer.
+// Ownership:
+// - fs_read_text/fs_read_or return heap strings; caller must free.
+
+function str fs_read_text(str file_path) {
+    return read_file(file_path)
+}
+
+function int fs_write_text(str file_path, str body) {
+    return write_file(file_path, body)
+}
+
+function bool fs_write_ok(str file_path, str body) {
+    return fs_write_text(file_path, body) != 0
+}
+
+function str fs_read_or(str file_path, str fallback) {
+    let content = fs_read_text(file_path)
+    if content == 0 {
+        return text_clone(fallback)
+    }
+    return content
+}
+
+function bool fs_starts_with(str file_path, str prefix) {
+    let content = fs_read_text(file_path)
+    if content == 0 {
+        return false
+    }
+    let ok = text_starts_with(content, prefix)
+    free(content)
+    return ok
+}
+
+function bool fs_contains(str file_path, str needle) {
+    let content = fs_read_text(file_path)
+    if content == 0 {
+        return false
+    }
+    let ok = text_contains(content, needle)
+    free(content)
+    return ok
+}
+)OPFS"},
+        {"http", R"OPHTTP(// DONOTUSE: ffi_call0..7 are radioactive compat junk until typed abi control replaces them
+
+struct HttpUrl {
+    secure: int,
+    port: int,
+    host: str,
+    path: str,
+}
+
+struct HttpResponse {
+    status: int,
+    body: str,
+}
+
+struct HttpWideParts {
+    user_agent_w: ptr,
+    method_w: ptr,
+    host_w: ptr,
+    path_w: ptr,
+}
+
+using WinHttpConnectFn = fn(ptr, ptr, int, int) -> ptr
+
+function str http_empty_text() {
+    return string_substring("", 0, 0)
+}
+
+function ptr http_make_zero(int size) {
+    let block = malloc(size)
+    if block == 0 {
+        return 0
+    }
+    memset(block, 0, size)
+    return block
+}
+
+function bool http_is_digit(int ch) {
+    return ch >= 48 and ch <= 57
+}
+
+function int http_len(str text_value) {
+    return string_length(text_value)
+}
+
+function bool http_eq(str left, str right) {
+    return string_equals(left, right) != 0
+}
+
+function bool http_is_empty(str text_value) {
+    return string_length(text_value) == 0
+}
+
+function str http_clone(str text_value) {
+    return string_substring(text_value, 0, string_length(text_value))
+}
+
+function str http_slice(str text_value, int start_idx, int slice_len) {
+    return string_substring(text_value, start_idx, slice_len)
+}
+
+function str http_prefix(str text_value, int slice_len) {
+    return string_substring(text_value, 0, slice_len)
+}
+
+function str http_join2(str left, str right) {
+    return string_append(left, right)
+}
+
+function int http_find(str text_value, str needle) {
+    let text_len_val = string_length(text_value)
+    let needle_len = string_length(needle)
+    if needle_len == 0 {
+        return 0
+    }
+    if needle_len > text_len_val {
+        return -1
+    }
+
+    var i = 0
+    while i <= text_len_val - needle_len {
+        var j = 0
+        var matched = true
+        while j < needle_len {
+            if char_at(text_value, i + j) != char_at(needle, j) {
+                matched = false
+                break
+            }
+            j++
+        }
+        if matched {
+            return i
+        }
+        i++
+    }
+
+    return -1
+}
+
+function int http_rfind_char(str text_value, int ch) {
+    var i = string_length(text_value)
+    while i > 0 {
+        i--
+        if char_at(text_value, i) == ch {
+            return i
+        }
+    }
+    return -1
+}
+
+function HttpUrl http_url_new() {
+    var parsed: HttpUrl = malloc(32)
+    if parsed == 0 {
+        return 0
+    }
+    parsed.secure = 1
+    parsed.port = 443
+    parsed.host = 0
+    parsed.path = 0
+    return parsed
+}
+
+function void http_url_free(HttpUrl parsed) {
+    if parsed == 0 {
+        return
+    }
+    if parsed.host != 0 {
+        free(parsed.host)
+    }
+    if parsed.path != 0 {
+        free(parsed.path)
+    }
+    free(parsed)
+}
+
+function HttpResponse http_response_new(int status, str body_text) {
+    var response: HttpResponse = malloc(16)
+    if response == 0 {
+        if body_text != 0 {
+            free(body_text)
+        }
+        return 0
+    }
+    response.status = status
+    response.body = body_text
+    return response
+}
+
+function HttpWideParts http_wide_parts_new() {
+    var parts: HttpWideParts = malloc(32)
+    if parts == 0 {
+        return 0
+    }
+    parts.user_agent_w = 0
+    parts.method_w = 0
+    parts.host_w = 0
+    parts.path_w = 0
+    return parts
+}
+
+function void http_wide_parts_free(HttpWideParts parts) {
+    if parts == 0 {
+        return
+    }
+    if parts.user_agent_w != 0 {
+        free(parts.user_agent_w)
+    }
+    if parts.method_w != 0 {
+        free(parts.method_w)
+    }
+    if parts.host_w != 0 {
+        free(parts.host_w)
+    }
+    if parts.path_w != 0 {
+        free(parts.path_w)
+    }
+    free(parts)
+}
+
+function HttpResponse http_fail_response() {
+    return http_response_new(0, http_empty_text())
+}
+
+function void http_response_free(HttpResponse response) {
+    if response == 0 {
+        return
+    }
+    if response.body != 0 {
+        free(response.body)
+    }
+    free(response)
+}
+
+function bool http_ok(HttpResponse response) {
+    if response == 0 {
+        return false
+    }
+    return response.status >= 200 and response.status < 300
+}
+
+function int http_parse_port(str text_value) {
+    let len = http_len(text_value)
+    if len <= 0 {
+        return -1
+    }
+
+    var value = 0
+    var i = 0
+    while i < len {
+        let ch = char_at(text_value, i)
+        if !http_is_digit(ch) {
+            return -1
+        }
+        value = value * 10 + (ch - 48)
+        i++
+    }
+
+    return value
+}
+
+function ptr http_utf16z(str text_value) {
+    let len = http_len(text_value)
+    let out = http_make_zero((len + 1) * 2)
+    if out == 0 {
+        return 0
+    }
+
+    var i = 0
+    while i < len {
+        mem_write_i16(out + i * 2, char_at(text_value, i))
+        i++
+    }
+
+    return out
+}
+
+function ptr http_url_host_utf16(HttpUrl parsed) {
+    if parsed == 0 or parsed.host == 0 {
+        return 0
+    }
+
+    let host_text = parsed.host
+    let host_len = string_length(host_text)
+    let out = http_make_zero((host_len + 1) * 2)
+    if out == 0 {
+        return 0
+    }
+
+    var i = 0
+    while i < host_len {
+        mem_write_i16(out + i * 2, char_at(host_text, i))
+        i++
+    }
+
+    return out
+}
+
+function ptr http_url_path_utf16(HttpUrl parsed) {
+    if parsed == 0 or parsed.path == 0 {
+        return 0
+    }
+
+    let path_text = parsed.path
+    let path_len = string_length(path_text)
+    let out = http_make_zero((path_len + 1) * 2)
+    if out == 0 {
+        return 0
+    }
+
+    var i = 0
+    while i < path_len {
+        mem_write_i16(out + i * 2, char_at(path_text, i))
+        i++
+    }
+
+    return out
+}
+
+function ptr http_open_session(ptr open_fn, ptr set_timeouts_fn) {
+    let user_agent_w = http_utf16z("Opus/WinHTTP")
+    if user_agent_w == 0 {
+        return 0
+    }
+
+    let session = ffi_call5(open_fn, user_agent_w, 1, 0, 0, 0)
+    free(user_agent_w)
+    if session != 0 {
+        ffi_call5(set_timeouts_fn, session, 3000, 3000, 3000, 3000)
+    }
+    return session
+}
+
+function ptr http_open_connection(ptr connect_fn, ptr session, HttpUrl parsed) {
+    let host_w = http_url_host_utf16(parsed)
+    if host_w == 0 {
+        return 0
+    }
+
+    return host_w
+}
+
+function ptr http_open_get_request(ptr open_request_fn, ptr connection, HttpUrl parsed) {
+    let method_w = http_utf16z("GET")
+    if method_w == 0 {
+        return 0
+    }
+
+    let path_w = http_url_path_utf16(parsed)
+    if path_w == 0 {
+        free(method_w)
+        return 0
+    }
+
+    var request_flags = 0
+    if parsed.secure != 0 {
+        request_flags = 8388608
+    }
+
+    let request = ffi_call7(open_request_fn, connection, method_w, path_w, 0, 0, 0, request_flags)
+    free(path_w)
+    free(method_w)
+    return request
+}
+
+function str http_bytes_to_text(ptr bytes, int len) {
+    let copy = http_make_zero(len + 1)
+    if copy == 0 {
+        return http_empty_text()
+    }
+    memcpy(copy, bytes, len)
+    let out = make_string(copy)
+    free(copy)
+    return out
+}
+
+function str http_take_path(str url, int start_idx, int stop_idx) {
+    if start_idx >= stop_idx {
+        return http_clone("/")
+    }
+
+    let first = char_at(url, start_idx)
+    if first == 47 {
+        return http_slice(url, start_idx, stop_idx - start_idx)
+    }
+
+    let suffix = http_slice(url, start_idx, stop_idx - start_idx)
+    let out = http_join2("/", suffix)
+    free(suffix)
+    return out
+}
+
+function HttpUrl http_parse_url(str url) {
+    let parsed = http_url_new()
+    if parsed == 0 {
+        return 0
+    }
+
+    let url_len = http_len(url)
+    var start = 0
+
+    if url_len >= 8 and
+       char_at(url, 0) == 104 and
+       char_at(url, 1) == 116 and
+       char_at(url, 2) == 116 and
+       char_at(url, 3) == 112 and
+       char_at(url, 4) == 115 and
+       char_at(url, 5) == 58 and
+       char_at(url, 6) == 47 and
+       char_at(url, 7) == 47 {
+        parsed.secure = 1
+        parsed.port = 443
+        start = 8
+    } else if url_len >= 7 and
+              char_at(url, 0) == 104 and
+              char_at(url, 1) == 116 and
+              char_at(url, 2) == 116 and
+              char_at(url, 3) == 112 and
+              char_at(url, 4) == 58 and
+              char_at(url, 5) == 47 and
+              char_at(url, 6) == 47 {
+        parsed.secure =)OPHTTP"
+            R"OPHTTP( 0
+        parsed.port = 80
+        start = 7
+    }
+
+    if start >= url_len {
+        http_url_free(parsed)
+        return 0
+    }
+
+    var host_end = start
+    while host_end < url_len {
+        if char_at(url, host_end) == 47 {
+            break
+        }
+        host_end++
+    }
+
+    if host_end <= start {
+        http_url_free(parsed)
+        return 0
+    }
+
+    parsed.host = string_substring(url, start, host_end - start)
+    if parsed.host == 0 or string_length(parsed.host) == 0 {
+        http_url_free(parsed)
+        return 0
+    }
+
+    parsed.path = http_take_path(url, host_end, url_len)
+    if parsed.path == 0 {
+        http_url_free(parsed)
+        return 0
+    }
+
+    return parsed
+}
+
+function void http_close_if(ptr close_fn, ptr handle_value) {
+    if handle_value != 0 {
+        ffi_call1(close_fn, handle_value)
+    }
+}
+
+function int http_query_status(ptr request_handle, ptr query_headers) {
+    let status_ptr = http_make_zero(8)
+    let size_ptr = http_make_zero(8)
+    if status_ptr == 0 or size_ptr == 0 {
+        if status_ptr != 0 {
+            free(status_ptr)
+        }
+        if size_ptr != 0 {
+            free(size_ptr)
+        }
+        return 0
+    }
+
+    mem_write_i32(size_ptr, 4)
+    var status = 0
+    let ok = ffi_call6(
+        query_headers,
+        request_handle,
+        19 + 536870912,
+        0,
+        status_ptr,
+        size_ptr,
+        0)
+    if ok != 0 {
+        status = mem_read_i32(status_ptr)
+    }
+
+    free(status_ptr)
+    free(size_ptr)
+    return status
+}
+
+function str http_read_body(ptr request_handle, ptr query_data_available, ptr read_data) {
+    let available_ptr = http_make_zero(8)
+    let read_count_ptr = http_make_zero(8)
+    let chunk_ptr = http_make_zero(4097)
+    if available_ptr == 0 or read_count_ptr == 0 or chunk_ptr == 0 {
+        if available_ptr != 0 {
+            free(available_ptr)
+        }
+        if read_count_ptr != 0 {
+            free(read_count_ptr)
+        }
+        if chunk_ptr != 0 {
+            free(chunk_ptr)
+        }
+        return http_empty_text()
+    }
+
+    var body = http_empty_text()
+    while true {
+        mem_write_i32(available_ptr, 0)
+        if ffi_call2(query_data_available, request_handle, available_ptr) == 0 {
+            free(body)
+            body = http_empty_text()
+            break
+        }
+
+        let available = mem_read_i32(available_ptr)
+        if available <= 0 {
+            break
+        }
+
+        var to_read = available
+        if to_read > 4096 {
+            to_read = 4096
+        }
+
+        mem_write_i32(read_count_ptr, 0)
+        if ffi_call4(read_data, request_handle, chunk_ptr, to_read, read_count_ptr) == 0 {
+            free(body)
+            body = http_empty_text()
+            break
+        }
+
+        let chunk_len = mem_read_i32(read_count_ptr)
+        if chunk_len <= 0 {
+            break
+        }
+
+        mem_write_i8(chunk_ptr + chunk_len, 0)
+        let chunk_text = http_bytes_to_text(chunk_ptr, chunk_len)
+        let next_body = string_append(body, chunk_text)
+        free(body)
+        free(chunk_text)
+        body = next_body
+    }
+
+    free(available_ptr)
+    free(read_count_ptr)
+    free(chunk_ptr)
+    return body
+}
+
+function int http_debug_fetch_stage(str url) {
+    let parsed = http_parse_url(url)
+    if parsed == 0 {
+        return 901
+    }
+
+    let module_handle = load_library("winhttp.dll")
+    if module_handle == 0 {
+        return 902
+    }
+
+    let open_fn = get_proc(module_handle, "WinHttpOpen")
+    let connect_fn = get_proc(module_handle, "WinHttpConnect")
+    let open_request_fn = get_proc(module_handle, "WinHttpOpenRequest")
+    let send_request_fn = get_proc(module_handle, "WinHttpSendRequest")
+    let receive_response_fn = get_proc(module_handle, "WinHttpReceiveResponse")
+    let query_data_available_fn = get_proc(module_handle, "WinHttpQueryDataAvailable")
+    let query_headers_fn = get_proc(module_handle, "WinHttpQueryHeaders")
+    let read_data_fn = get_proc(module_handle, "WinHttpReadData")
+    let set_timeouts_fn = get_proc(module_handle, "WinHttpSetTimeouts")
+    let close_handle_fn = get_proc(module_handle, "WinHttpCloseHandle")
+
+    if open_fn == 0 or connect_fn == 0 or open_request_fn == 0 or send_request_fn == 0 or
+       receive_response_fn == 0 or query_data_available_fn == 0 or query_headers_fn == 0 or read_data_fn == 0 or
+       set_timeouts_fn == 0 or close_handle_fn == 0 {
+        return 903
+    }
+
+    let host_w = http_url_host_utf16(parsed)
+    if host_w == 0 {
+        return 904
+    }
+    return 905
+
+    let user_agent_w = http_utf16z("Opus/WinHTTP")
+    let method_w = http_utf16z("GET")
+    let path_w = http_url_path_utf16(parsed)
+    if user_agent_w == 0 or method_w == 0 or path_w == 0 {
+        return 906
+    }
+
+    let session = ffi_call5(open_fn, user_agent_w, 1, 0, 0, 0)
+    if session == 0 {
+        return 905
+    }
+    ffi_call5(set_timeouts_fn, session, 3000, 3000, 3000, 3000)
+
+    let connection = ffi_call4(connect_fn, session, host_w, parsed.port, 0)
+    if connection == 0 {
+        return 906
+    }
+
+    var request_flags = 0
+    if parsed.secure != 0 {
+        request_flags = 8388608
+    }
+
+    let request = ffi_call7(open_request_fn, connection, method_w, path_w, 0, 0, 0, request_flags)
+    if request == 0 {
+        return 907
+    }
+    if ffi_call7(send_request_fn, request, 0, 0, 0, 0, 0, 0) == 0 {
+        return 908
+    }
+    if ffi_call2(receive_response_fn, request, 0) == 0 {
+        return 909
+    }
+
+    return http_query_status(request, query_headers_fn)
+}
+
+function HttpResponse http_fetch(str url) {
+    return http_response_new(http_debug_fetch_stage(url), http_empty_text())
+}
+
+function str http_get(str url) {
+    let response = http_fetch(url)
+    if response == 0 {
+        return http_empty_text()
+    }
+
+    let body_text = response.body
+    response.body = 0
+    free(response)
+    return body_text
+}
+)OPHTTP"},
+        {"json", R"OPJSON(import ascii
+import mem
+import text
+
+// Full JSON DOM parser + stringify helpers.
+// The representation is intentionally small and explicit:
+// - linked children for arrays/objects
+// - text payload for strings and numbers
+// - bool payload for booleans
+// - stable recursive free/stringify path
+// Ownership:
+// - json_parse allocates a tree that must be released with json_free.
+// - json_key/json_string/json_number_text/json_get_string/json_quote_string/json_escape_string_inner/json_stringify return heap strings; caller must free.
+
+let JSON_KIND_NULL: int = 0
+let JSON_KIND_BOOL: int = 1
+let JSON_KIND_NUMBER: int = 2
+let JSON_KIND_STRING: int = 3
+let JSON_KIND_ARRAY: int = 4
+let JSON_KIND_OBJECT: int = 5
+
+let JSON_OFFSET_KIND: int = 0
+let JSON_OFFSET_BOOL: int = 8
+let JSON_OFFSET_COUNT: int = 16
+let JSON_OFFSET_KEY: int = 24
+let JSON_OFFSET_TEXT: int = 32
+let JSON_OFFSET_CHILD: int = 40
+let JSON_OFFSET_NEXT: int = 48
+
+struct JsonValue {
+    kind: int,
+    bool_value: int,
+    count: int,
+    key: str,
+    text: str,
+    child: ptr,
+    next: ptr,
+}
+
+struct JsonCursor {
+    source: str,
+    index: int,
+    length: int,
+    ok: int,
+}
+
+function str json_owned_empty() {
+    return text_clone("")
+}
+
+function JsonValue json_new(int kind) {
+    var node: JsonValue = malloc(56)
+    if node == 0 {
+        return 0
+    }
+    node.kind = kind
+    node.bool_value = 0
+    node.count = 0
+    node.key = json_owned_empty()
+    node.text = json_owned_empty()
+    node.child = 0
+    node.next = 0
+    return node
+}
+
+function void json_set_key(JsonValue value_node, str key_name) {
+    if value_node == 0 {
+        if key_name != 0 {
+            free(key_name)
+        }
+        return
+    }
+    var target = value_node
+    free(target.key)
+    target.key = key_name
+}
+
+function void json_set_text(JsonValue value_node, str text_value) {
+    if value_node == 0 {
+        if text_value != 0 {
+            free(text_value)
+        }
+        return
+    }
+    var target = value_node
+    free(target.text)
+    target.text = text_value
+}
+
+function JsonCursor json_cursor_new(str source) {
+    var cursor: JsonCursor = malloc(32)
+    if cursor == 0 {
+        return 0
+    }
+    cursor.source = source
+    cursor.index = 0
+    cursor.length = string_length(source)
+    cursor.ok = 1
+    return cursor
+}
+
+function JsonCursor json_cursor_at(str source, int start_idx) {
+    let cursor = json_cursor_new(source)
+    if cursor == 0 {
+        return 0
+    }
+
+    if start_idx < 0 {
+        cursor.index = 0
+    } else if start_idx > cursor.length {
+        cursor.index = cursor.length
+    } else {
+        cursor.index = start_idx
+    }
+
+    return cursor
+}
+
+function bool json_cursor_is_ok(JsonCursor cursor) {
+    return cursor != 0 and cursor.ok != 0
+}
+
+function void json_fail(JsonCursor cursor) {
+    if cursor != 0 {
+        var current = cursor
+        current.ok = 0
+    }
+}
+
+function int json_peek(JsonCursor cursor) {
+    if cursor == 0 {
+        return 0
+    }
+    if cursor.index >= cursor.length {
+        return 0
+    }
+    return char_at(cursor.source, cursor.index)
+}
+
+function int json_peek_offset(JsonCursor cursor, int offset) {
+    if cursor == 0 {
+        return 0
+    }
+    let idx = cursor.index + offset
+    if idx < 0 or idx >= cursor.length {
+        return 0
+    }
+    return char_at(cursor.source, idx)
+}
+
+function int json_take(JsonCursor cursor) {
+    let ch = json_peek(cursor)
+    if ch != 0 {
+        var current = cursor
+        current.index = current.index + 1
+    }
+    return ch
+}
+
+function void json_skip_ws_cursor(JsonCursor cursor) {
+    if cursor == 0 {
+        return
+    }
+    var current = cursor
+    while current.index < current.length {
+        if !ascii_is_space(char_at(current.source, current.index)) {
+            break
+        }
+        current.index = current.index + 1
+    }
+}
+
+function bool json_consume(JsonCursor cursor, int ch) {
+    if json_peek(cursor) != ch {
+        json_fail(cursor)
+        return false
+    }
+    var current = cursor
+    current.index = current.index + 1
+    return true
+}
+
+function bool json_match_word(JsonCursor cursor, str word) {
+    let word_len = string_length(word)
+    var i = 0
+    while i < word_len {
+        if json_peek_offset(cursor, i) != char_at(word, i) {
+            return false
+        }
+        i++
+    }
+    var current = cursor
+    current.index = current.index + word_len
+    return true
+}
+
+function int json_hex4(JsonCursor cursor) {
+    var out_value = 0
+    var i = 0
+    while i < 4 {
+        let ch = json_take(cursor)
+        let nibble = ascii_hex_digit(ch)
+        if nibble < 0 {
+            json_fail(cursor)
+            return -1
+        }
+        out_value = out_value * 16 + nibble
+        i++
+    }
+    return out_value
+}
+
+function int json_write_utf8(ptr buf, int out_idx, int codepoint) {
+    if codepoint < 0 {
+        codepoint = 63
+    }
+
+    if codepoint <= 127 {
+        mem.write8(buf + out_idx, codepoint)
+        return out_idx + 1
+    }
+
+    if codepoint <= 2047 {
+        mem.write8(buf + out_idx, 192 + (codepoint >> 6))
+        mem.write8(buf + out_idx + 1, 128 + (codepoint & 63))
+        return out_idx + 2
+    }
+
+    if codepoint <= 65535 {
+        mem.write8(buf + out_idx, 224 + (codepoint >> 12))
+        mem.write8(buf + out_idx + 1, 128 + ((codepoint >> 6) & 63))
+        mem.write8(buf + out_idx + 2, 128 + (codepoint & 63))
+        return out_idx + 3
+    }
+
+    mem.write8(buf + out_idx, 240 + (codepoint >> 18))
+    mem.write8(buf + out_idx + 1, 128 + ((codepoint >> 12) & 63))
+    mem.write8(buf + out_idx + 2, 128 + ((codepoint >> 6) & 63))
+    mem.write8(buf + out_idx + 3, 128 + (codepoint & 63))
+    return out_idx + 4
+}
+
+function str json_parse_string_raw(JsonCursor cursor) {
+    if !json_consume(cursor, 34) {
+        return 0
+    }
+
+    let max_bytes = cursor.length - cursor.index + 1
+    let out_buf = mem.make_zero(max_bytes)
+    if out_buf == 0 {
+        json_fail(cursor)
+        return 0
+    }
+
+    var out_idx = 0
+    while cursor.index < cursor.length {
+        let ch = json_take(cursor)
+        if ch == 34 {
+            mem.write8(out_buf + out_idx, 0)
+            let out = make_string(out_buf)
+            free(out_buf)
+            return out
+        }
+
+        if ch == 92 {
+            let esc = json_take(cursor)
+            if esc == 34 {
+                mem.write8(out_buf + out_idx, 34)
+                out_idx++
+            } else if esc == 92 {
+                mem.write8(out_buf + out_idx, 92)
+                out_idx++
+            } else if esc == 47 {
+                mem.write8(out_buf + out_idx, 47)
+                out_idx++
+            } else if esc == 98 {
+                mem.write8(out_buf + out_idx, 8)
+                out_idx++
+            } else if esc == 102 {
+                mem.write8(out_buf + out_idx, 12)
+                out_idx++
+            } else if esc == 110 {
+                mem.write8(out_buf + out_idx, 10)
+                out_idx++
+            } else if esc == 114 {
+                mem.write8(out_buf + out_idx, 13)
+                out_idx++
+            } else if esc == 116 {
+                mem.write8(out_buf + out_idx, 9)
+                out_idx++
+            } else if esc == 117 {
+                var codepoint = json_hex4(cursor)
+                if codepoint < 0 {
+                    free(out_buf)
+                    return 0
+                }
+
+                if codepoint >= 55296 and codepoint <= 56319 and json_peek(cursor) == 92 and json_peek_offset(cursor, 1) == 117 {
+                    var current = cursor
+                    current.index = current.index + 2
+                    let low = json_hex4(cursor)
+                    if low >= 56320 and low <= 57343 {
+                        codepoint = 65536 + ((codepoint - 55296) << 10) + (low - 56320)
+                    } else {
+                        free(out_buf)
+                        json_fail(cursor)
+                        return 0
+                    }
+                } else if codepoint >= 56320 and codepoint <= 57343 {
+                    free(out_buf)
+                    json_fail(cursor)
+                    return 0
+                }
+
+                out_idx = json_write_utf8(out_buf, out_idx, codepo)OPJSON"
+            R"OPJSON(int)
+            } else {
+                free(out_buf)
+                json_fail(cursor)
+                return 0
+            }
+        } else {
+            if ch < 32 {
+                free(out_buf)
+                json_fail(cursor)
+                return 0
+            }
+            mem.write8(out_buf + out_idx, ch)
+            out_idx++
+        }
+    }
+
+    free(out_buf)
+    json_fail(cursor)
+    return 0
+}
+
+function str json_parse_number_raw(JsonCursor cursor) {
+    if cursor == 0 {
+        return 0
+    }
+
+    let source_text = cursor.source
+    let total = cursor.length
+    var idx = cursor.index
+    let start_idx = idx
+
+    if idx < total and char_at(source_text, idx) == 45 {
+        idx++
+    }
+
+    if idx >= total {
+        json_fail(cursor)
+        return 0
+    }
+
+    let first = char_at(source_text, idx)
+    if first == 48 {
+        idx++
+    } else if ascii_is_digit(first) {
+        while idx < total and ascii_is_digit(char_at(source_text, idx)) {
+            idx++
+        }
+    } else {
+        json_fail(cursor)
+        return 0
+    }
+
+    if idx < total and char_at(source_text, idx) == 46 {
+        idx++
+        if idx >= total or !ascii_is_digit(char_at(source_text, idx)) {
+            json_fail(cursor)
+            return 0
+        }
+        while idx < total and ascii_is_digit(char_at(source_text, idx)) {
+            idx++
+        }
+    }
+
+    if idx < total {
+        let exp_ch = char_at(source_text, idx)
+        if exp_ch == 101 or exp_ch == 69 {
+            idx++
+            if idx < total {
+                let sign_ch = char_at(source_text, idx)
+                if sign_ch == 43 or sign_ch == 45 {
+                    idx++
+                }
+            }
+            if idx >= total or !ascii_is_digit(char_at(source_text, idx)) {
+                json_fail(cursor)
+                return 0
+            }
+            while idx < total and ascii_is_digit(char_at(source_text, idx)) {
+                idx++
+            }
+        }
+    }
+
+    let out_len = idx - start_idx
+    let raw_buf = mem.make_zero(out_len + 1)
+    if raw_buf == 0 {
+        json_fail(cursor)
+        return 0
+    }
+
+    var i = 0
+    while i < out_len {
+        mem.write8(raw_buf + i, char_at(source_text, start_idx + i))
+        i++
+    }
+    mem.write8(raw_buf + out_len, 0)
+
+    var current = cursor
+    current.index = idx
+
+    let out = make_string(raw_buf)
+    free(raw_buf)
+    return out
+}
+
+function void json_append_child(JsonValue parent, JsonValue child) {
+    if parent == 0 or child == 0 {
+        return
+    }
+
+    var target = parent
+    if target.child == 0 {
+        target.child = child
+        target.count = 1
+        return
+    }
+
+    var last: JsonValue = target.child
+    while last.next != 0 {
+        last = last.next
+    }
+    last.next = child
+    target.count = target.count + 1
+}
+
+function JsonValue json_parse_value(JsonCursor cursor) {
+    json_skip_ws_cursor(cursor)
+    if !json_cursor_is_ok(cursor) {
+        return 0
+    }
+
+    let ch = json_peek(cursor)
+    if ch == 34 {
+        let value_node = json_new(JSON_KIND_STRING)
+        let decoded = json_parse_string_raw(cursor)
+        if decoded == 0 {
+            json_free(value_node)
+            return 0
+        }
+        json_set_text(value_node, decoded)
+        return value_node
+    }
+
+    if ch == 123 {
+        json_take(cursor)
+        let obj = json_new(JSON_KIND_OBJECT)
+        json_skip_ws_cursor(cursor)
+        if json_peek(cursor) == 125 {
+            json_take(cursor)
+            return obj
+        }
+
+        var done = false
+        while json_cursor_is_ok(cursor) and !done {
+            json_skip_ws_cursor(cursor)
+            if json_peek(cursor) != 34 {
+                json_free(obj)
+                json_fail(cursor)
+                return 0
+            }
+
+            let key_name = json_parse_string_raw(cursor)
+            if key_name == 0 {
+                json_free(obj)
+                return 0
+            }
+
+            json_skip_ws_cursor(cursor)
+            if !json_consume(cursor, 58) {
+                free(key_name)
+                json_free(obj)
+                return 0
+            }
+
+            let child = json_parse_value(cursor)
+            if child == 0 {
+                free(key_name)
+                json_free(obj)
+                return 0
+            }
+
+            json_set_key(child, key_name)
+            json_append_child(obj, child)
+
+            json_skip_ws_cursor(cursor)
+            let tail = json_peek(cursor)
+            if tail == 44 {
+                json_take(cursor)
+            } else if tail == 125 {
+                json_take(cursor)
+                done = true
+            } else {
+                json_free(obj)
+                json_fail(cursor)
+                return 0
+            }
+        }
+
+        if done {
+            return obj
+        }
+
+        json_free(obj)
+        return 0
+    }
+
+    if ch == 91 {
+        json_take(cursor)
+        let arr = json_new(JSON_KIND_ARRAY)
+        json_skip_ws_cursor(cursor)
+        if json_peek(cursor) == 93 {
+            json_take(cursor)
+            return arr
+        }
+
+        var done = false
+        while json_cursor_is_ok(cursor) and !done {
+            let child = json_parse_value(cursor)
+            if child == 0 {
+                json_free(arr)
+                return 0
+            }
+
+            json_append_child(arr, child)
+            json_skip_ws_cursor(cursor)
+            let tail = json_peek(cursor)
+            if tail == 44 {
+                json_take(cursor)
+            } else if tail == 93 {
+                json_take(cursor)
+                done = true
+            } else {
+                json_free(arr)
+                json_fail(cursor)
+                return 0
+            }
+        }
+
+        if done {
+            return arr
+        }
+
+        json_free(arr)
+        return 0
+    }
+
+    if ch == 116 {
+        if json_peek_offset(cursor, 0) != 116 or json_peek_offset(cursor, 1) != 114 or json_peek_offset(cursor, 2) != 117 or json_peek_offset(cursor, 3) != 101 {
+            json_fail(cursor)
+            return 0
+        }
+        json_take(cursor)
+        json_take(cursor)
+        json_take(cursor)
+        json_take(cursor)
+        var value_node = json_new(JSON_KIND_BOOL)
+        value_node.bool_value = 1
+        return value_node
+    }
+
+    if ch == 102 {
+        if json_peek_offset(cursor, 0) != 102 or json_peek_offset(cursor, 1) != 97 or json_peek_offset(cursor, 2) != 108 or json_peek_offset(cursor, 3) != 115 or json_peek_offset(cursor, 4) != 101 {
+            json_fail(cursor)
+            return 0
+        }
+        json_take(cursor)
+        json_take(cursor)
+        json_take(cursor)
+        json_take(cursor)
+        json_take(cursor)
+        var value_node = json_new(JSON_KIND_BOOL)
+        value_node.bool_value = 0
+        return value_node
+    }
+
+    if ch == 110 {
+        if json_peek_offset(cursor, 0) != 110 or json_peek_offset(cursor, 1) != 117 or json_peek_offset(cursor, 2) != 108 or json_peek_offset(cursor, 3) != 108 {
+            json_fail(cursor)
+            return 0
+        }
+        json_take(cursor)
+        json_take(cursor)
+        json_take(cursor)
+        json_take(cursor)
+        return json_new(JSON_KIND_NULL)
+    }
+
+    if ch == 45 or ascii_is_digit(ch) {
+        let raw = json_parse_number_raw(cursor)
+        if raw == 0 {
+            return 0
+        }
+        let value_node = json_new(JSON_KIND_NUMBER)
+        json_set_text(value_node, raw)
+        return value_node
+    }
+
+    json_fail(cursor)
+    return 0
+}
+
+function JsonValue json_parse(str source) {
+    let cursor = json_cursor_new(source)
+    let root = json_parse_value(cursor)
+    json_skip_ws_cursor(cursor)
+    if root == 0 or !json_cursor_is_ok(cursor) or cursor.index != cursor.length {
+        if root != 0 {
+            json_free(root)
+        }
+        free(cursor)
+        return 0
+    }
+    free(cursor)
+    return root
+}
+
+function void json_free(JsonValue value_node) {
+    if value_node == 0 {
+        return
+    }
+
+    var child: JsonValue = value_node.child
+    while child != 0 {
+        let next_child: JsonValue = child.next
+        json_free(child)
+        child = next_child
+    }
+
+    if value_node.key)OPJSON"
+            R"OPJSON( != 0 {
+        free(value_node.key)
+    }
+    if value_node.text != 0 {
+        free(value_node.text)
+    }
+    free(value_node)
+}
+
+function int json_kind(JsonValue value_node) {
+    if value_node == 0 {
+        return JSON_KIND_NULL
+    }
+    return mem.read32(value_node)
+}
+
+function bool json_is_null(JsonValue value_node) {
+    let kind = json_kind(value_node)
+    return kind == JSON_KIND_NULL
+}
+
+function bool json_is_bool(JsonValue value_node) {
+    let kind = json_kind(value_node)
+    return kind == JSON_KIND_BOOL
+}
+
+function bool json_is_number(JsonValue value_node) {
+    let kind = json_kind(value_node)
+    return kind == JSON_KIND_NUMBER
+}
+
+function bool json_is_string(JsonValue value_node) {
+    let kind = json_kind(value_node)
+    return kind == JSON_KIND_STRING
+}
+
+function bool json_is_array(JsonValue value_node) {
+    let kind = json_kind(value_node)
+    return kind == JSON_KIND_ARRAY
+}
+
+function bool json_is_object(JsonValue value_node) {
+    let kind = json_kind(value_node)
+    return kind == JSON_KIND_OBJECT
+}
+
+function bool json_bool_value(JsonValue value_node, bool fallback) {
+    if !json_is_bool(value_node) {
+        return fallback
+    }
+    return mem.read32(value_node + JSON_OFFSET_BOOL) != 0
+}
+
+function str json_key(JsonValue value_node) {
+    if value_node == 0 {
+        return json_owned_empty()
+    }
+    let raw_key: str = mem.read(value_node + JSON_OFFSET_KEY)
+    return text_clone(raw_key)
+}
+
+function str json_string(JsonValue value_node) {
+    if !json_is_string(value_node) {
+        return json_owned_empty()
+    }
+    let raw_text: str = mem.read(value_node + JSON_OFFSET_TEXT)
+    return text_clone(raw_text)
+}
+
+function str json_number_text(JsonValue value_node) {
+    if !json_is_number(value_node) {
+        return json_owned_empty()
+    }
+    let raw_text: str = mem.read(value_node + JSON_OFFSET_TEXT)
+    return text_clone(raw_text)
+}
+
+function int json_int(JsonValue value_node, int fallback) {
+    if !json_is_number(value_node) {
+        return fallback
+    }
+    let raw_text: str = mem.read(value_node + JSON_OFFSET_TEXT)
+    if text_contains_char(raw_text, 46) or text_contains_char(raw_text, 101) or text_contains_char(raw_text, 69) {
+        return fallback
+    }
+    return parse_int(raw_text)
+}
+
+function int json_count(JsonValue value_node) {
+    if value_node == 0 {
+        return 0
+    }
+    return mem.read32(value_node + JSON_OFFSET_COUNT)
+}
+
+function int json_array_len(JsonValue value_node) {
+    if !json_is_array(value_node) {
+        return 0
+    }
+    return mem.read32(value_node + JSON_OFFSET_COUNT)
+}
+
+function JsonValue json_child(JsonValue value_node) {
+    if value_node == 0 {
+        return 0
+    }
+    let child: JsonValue = mem.read(value_node + JSON_OFFSET_CHILD)
+    return child
+}
+
+function JsonValue json_next(JsonValue value_node) {
+    if value_node == 0 {
+        return 0
+    }
+    let next_value: JsonValue = mem.read(value_node + JSON_OFFSET_NEXT)
+    return next_value
+}
+
+function JsonValue json_array_at(JsonValue value_node, int index) {
+    if !json_is_array(value_node) or index < 0 {
+        return 0
+    }
+
+    var item: JsonValue = mem.read(value_node + JSON_OFFSET_CHILD)
+    var i = 0
+    while item != 0 {
+        if i == index {
+            return item
+        }
+        item = mem.read(item + JSON_OFFSET_NEXT)
+        i++
+    }
+    return 0
+}
+
+function JsonValue json_object_get(JsonValue value_node, str key_name) {
+    if !json_is_object(value_node) {
+        return 0
+    }
+
+    var item: JsonValue = mem.read(value_node + JSON_OFFSET_CHILD)
+    while item != 0 {
+        let item_key: str = mem.read(item + JSON_OFFSET_KEY)
+        let matches = string_equals(item_key, key_name)
+        if matches != 0 {
+            return item
+        }
+        item = mem.read(item + JSON_OFFSET_NEXT)
+    }
+    return 0
+}
+
+function bool json_object_has(JsonValue value_node, str key_name) {
+    return json_object_get(value_node, key_name) != 0
+}
+
+function int json_hex_char(int nibble) {
+    return char_at("0123456789ABCDEF", nibble & 15)
+}
+
+function int json_write_escape_u00(ptr out_buf, int out_idx, int ch) {
+    mem.write8(out_buf + out_idx + 0, 92)
+    mem.write8(out_buf + out_idx + 1, 117)
+    mem.write8(out_buf + out_idx + 2, 48)
+    mem.write8(out_buf + out_idx + 3, 48)
+    mem.write8(out_buf + out_idx + 4, json_hex_char(ch >> 4))
+    mem.write8(out_buf + out_idx + 5, json_hex_char(ch))
+    return out_idx + 6
+}
+
+function str json_escape_string_inner(str raw_text) {
+    let source_len = string_length(raw_text)
+    let out_buf = mem.make_zero(source_len * 6 + 1)
+    if out_buf == 0 {
+        return json_owned_empty()
+    }
+
+    var out_idx = 0
+    var i = 0
+    while i < source_len {
+        let ch = char_at(raw_text, i)
+        if ch == 34 {
+            mem.write8(out_buf + out_idx + 0, 92)
+            mem.write8(out_buf + out_idx + 1, 34)
+            out_idx = out_idx + 2
+        } else if ch == 92 {
+            mem.write8(out_buf + out_idx + 0, 92)
+            mem.write8(out_buf + out_idx + 1, 92)
+            out_idx = out_idx + 2
+        } else if ch == 8 {
+            mem.write8(out_buf + out_idx + 0, 92)
+            mem.write8(out_buf + out_idx + 1, 98)
+            out_idx = out_idx + 2
+        } else if ch == 12 {
+            mem.write8(out_buf + out_idx + 0, 92)
+            mem.write8(out_buf + out_idx + 1, 102)
+            out_idx = out_idx + 2
+        } else if ch == 10 {
+            mem.write8(out_buf + out_idx + 0, 92)
+            mem.write8(out_buf + out_idx + 1, 110)
+            out_idx = out_idx + 2
+        } else if ch == 13 {
+            mem.write8(out_buf + out_idx + 0, 92)
+            mem.write8(out_buf + out_idx + 1, 114)
+            out_idx = out_idx + 2
+        } else if ch == 9 {
+            mem.write8(out_buf + out_idx + 0, 92)
+            mem.write8(out_buf + out_idx + 1, 116)
+            out_idx = out_idx + 2
+        } else if ch < 32 {
+            out_idx = json_write_escape_u00(out_buf, out_idx, ch)
+        } else {
+            mem.write8(out_buf + out_idx, ch)
+            out_idx++
+        }
+        i++
+    }
+
+    mem.write8(out_buf + out_idx, 0)
+    let out = make_string(out_buf)
+    free(out_buf)
+    return out
+}
+
+function str json_quote_string(str raw_text) {
+    let inner = json_escape_string_inner(raw_text)
+    let out = text_surround(inner, "\"", "\"")
+    free(inner)
+    return out
+}
+
+function str json_append_keep(str left, str right) {
+    let out = string_append(left, right)
+    free(left)
+    return out
+}
+
+function str json_append_take(str left, str right) {
+    let out = string_append(left, right)
+    free(left)
+    free(right)
+    return out
+}
+
+function str json_stringify(JsonValue value_node) {
+    return text_clone("null")
+}
+
+// Compatibility helpers for the earlier tiny json surface.
+
+function int json_skip_ws(str source, int start_idx) {
+    let cursor = json_cursor_at(source, start_idx)
+    if cursor == 0 {
+        return start_idx
+    }
+
+    json_skip_ws_cursor(cursor)
+    let out = cursor.index
+    free(cursor)
+    return out
+}
+
+function int json_find_key(str source, str key_name) {
+    let source_len = string_length(source)
+    let key_len = string_length(key_name)
+    if key_len <= 0 or source_len < key_len + 2 {
+        return -1
+    }
+
+    var i = 0
+    while i <= source_len - key_len - 2 {
+        if char_at(source, i) == 34 {
+            var matches = true
+            var j = 0
+            while j < key_len {
+                if char_at(source, i + 1 + j) != char_at(key_name, j) {
+                    matches = false
+                    break
+                }
+                j++
+            }
+
+            if matches and char_at(source, i + 1 + key_len) == 34 {
+                return i
+            }
+        }
+        i++
+    }
+
+    return -1
+}
+
+function int json_find_value_start(str source, str key_name) {
+    let key_idx = json_find_key(source, key_name)
+    if key_idx < 0 {
+        return -1
+    }
+
+    let len = string_length(source)
+    var idx = key_idx
+    while idx < len {
+        if char_at(source, idx) == 58 {
+            return json_skip_ws(source, idx + 1)
+        }
+        idx++
+    }
+    return -1
+}
+
+function str json_get_string(s)OPJSON"
+            R"OPJSON(tr source, str key_name) {
+    let start = json_find_value_start(source, key_name)
+    if start < 0 or char_at(source, start) != 34 {
+        return json_owned_empty()
+    }
+
+    let cursor = json_cursor_at(source, start)
+    if cursor == 0 {
+        return json_owned_empty()
+    }
+    let out = json_parse_string_raw(cursor)
+    free(cursor)
+    if out == 0 {
+        return json_owned_empty()
+    }
+    return out
+}
+
+function int json_get_int(str source, str key_name, int fallback) {
+    let start = json_find_value_start(source, key_name)
+    if start < 0 {
+        return fallback
+    }
+
+    let cursor = json_cursor_at(source, start)
+    if cursor == 0 {
+        return fallback
+    }
+    let raw = json_parse_number_raw(cursor)
+    free(cursor)
+    if raw == 0 {
+        return fallback
+    }
+
+    if text_contains_char(raw, 46) or text_contains_char(raw, 101) or text_contains_char(raw, 69) {
+        free(raw)
+        return fallback
+    }
+
+    let out = parse_int(raw)
+    free(raw)
+    return out
+}
+
+function bool json_get_bool(str source, str key_name, bool fallback) {
+    let start = json_find_value_start(source, key_name)
+    if start < 0 {
+        return fallback
+    }
+
+    if char_at(source, start + 0) == 116 and char_at(source, start + 1) == 114 and char_at(source, start + 2) == 117 and char_at(source, start + 3) == 101 {
+        return true
+    }
+
+    if char_at(source, start + 0) == 102 and char_at(source, start + 1) == 97 and char_at(source, start + 2) == 108 and char_at(source, start + 3) == 115 and char_at(source, start + 4) == 101 {
+        return false
+    }
+
+    return fallback
+}
+
+function bool json_has_key(str source, str key_name) {
+    return json_find_value_start(source, key_name) >= 0
+}
+)OPJSON"},
+        {"mem", R"OPMEM(// Memory convenience wrappers built on top of the compiler builtins.
 
 function ptr make(int size) {
     return malloc(size)
@@ -661,8 +2442,7 @@ function ptr mem_end(ptr base, int offset) {
     return after(base, offset)
 }
 )OPMEM"},
-        {"option", R"OPOPTION(
-// Specialized optional value wrappers.
+        {"option", R"OPOPTION(// Specialized optional value wrappers.
 // Opus does not have generics yet, so we keep the most useful payload shapes.
 
 struct OptI64 {
@@ -877,8 +2657,7 @@ function void opt_bool_free(OptBool opt) {
     }
 }
 )OPOPTION"},
-        {"owner", R"OPOWNER(
-import mem
+        {"owner", R"OPOWNER(import mem
 import text
 
 // Manual ownership helpers.
@@ -1100,9 +2879,91 @@ function void owned_block_reset(*OwnedBlock block, ptr value_ptr, int size, bool
     block.owned = take_ownership
 }
 )OPOWNER"},
-        {"prelude", R"OPPRELUDE(
+        {"path", R"OPPATH(import text
+
+// Lightweight path helpers for common tooling tasks.
+// Ownership:
+// - path_join2/path_basename/path_dirname/path_ext/path_stem return heap strings; caller must free.
+
+function int path_last_sep(str source) {
+    var i = string_length(source) - 1
+    while i >= 0 {
+        let ch = char_at(source, i)
+        if ch == 47 or ch == 92 {
+            return i
+        }
+        i--
+    }
+    return -1
+}
+
+function str path_join2(str left, str right) {
+    if text_is_empty(left) {
+        return text_clone(right)
+    }
+    if text_is_empty(right) {
+        return text_clone(left)
+    }
+
+    let last = char_at(left, string_length(left) - 1)
+    if last == 47 or last == 92 {
+        return string_append(left, right)
+    }
+    return text_join3(left, "/", right)
+}
+
+function str path_basename(str source) {
+    let idx = path_last_sep(source)
+    if idx < 0 {
+        return text_clone(source)
+    }
+    return string_substring(source, idx + 1, string_length(source) - idx - 1)
+}
+
+function str path_dirname(str source) {
+    let idx = path_last_sep(source)
+    if idx < 0 {
+        return text_clone("")
+    }
+    if idx == 0 {
+        return string_substring(source, 0, 1)
+    }
+    return string_substring(source, 0, idx)
+}
+
+function str path_ext(str source) {
+    let base = path_basename(source)
+    let dot = text_rfind_char(base, 46)
+    if dot < 0 {
+        free(base)
+        return text_clone("")
+    }
+    let out = string_substring(base, dot + 1, string_length(base) - dot - 1)
+    free(base)
+    return out
+}
+
+function str path_stem(str source) {
+    let base = path_basename(source)
+    let dot = text_rfind_char(base, 46)
+    if dot < 0 {
+        return base
+    }
+    let out = string_substring(base, 0, dot)
+    free(base)
+    return out
+}
+)OPPATH"},
+        {"prelude", R"OPPRELUDE(import ascii
+import fmt
+import fs
+import json
 import mem
+import path
+import process
+import rand
 import text
+import time
 import vec
 import cpp_vector
 import option
@@ -1110,8 +2971,109 @@ import result
 import owner
 import algo
 )OPPRELUDE"},
-        {"result", R"OPRESULT(
-// Result wrappers with a small error record.
+        {"process", R"OPPROCESS(// Process and runtime host helpers.
+
+using MessageBoxAFn = fn(ptr, str, str, int) -> int
+
+function int process_id() {
+    return get_current_process_id()
+}
+
+function ptr process_handle() {
+    return get_current_process()
+}
+
+function int process_last_error() {
+    return get_last_error()
+}
+
+function ptr process_load_library(str lib_path) {
+    return load_library(lib_path)
+}
+
+function ptr process_get_symbol(ptr module_handle, str symbol_name) {
+    return get_proc(module_handle, symbol_name)
+}
+
+function int process_msgbox(str title, str body, int flags) {
+    let user32 = load_library("user32.dll")
+    if user32 == 0 {
+        return 0
+    }
+
+    let raw = get_proc(user32, "MessageBoxA")
+    if raw == 0 {
+        return 0
+    }
+
+    let message_box = raw as MessageBoxAFn
+    return message_box(0, body, title, flags)
+}
+
+function void process_exit(int code) {
+    exit(code)
+}
+)OPPROCESS"},
+        {"rand", R"OPRAND(import time
+
+// Small deterministic random helpers for gameplay, tooling, and tests.
+
+var rand_state: int = 0
+
+function int rand_seed(int seed) {
+    if seed == 0 {
+        seed = 1
+    }
+    rand_state = seed
+    return rand_state
+}
+
+function int rand_seed_auto() {
+    var seed = time_tick_ms()
+    if seed == 0 {
+        seed = 1
+    }
+    rand_state = seed
+    return rand_state
+}
+
+function int rand_next() {
+    if rand_state == 0 {
+        rand_seed_auto()
+    }
+
+    // xorshift32-style update on the low 32 bits
+    var x = rand_state
+    x = x ^ (x << 13)
+    x = x ^ (x >> 17)
+    x = x ^ (x << 5)
+    if x < 0 {
+        x = -x
+    }
+    rand_state = x
+    return x
+}
+
+function int rand_range(int low, int high) {
+    if high <= low {
+        return low
+    }
+    let span = high - low
+    return low + (rand_next() % span)
+}
+
+function bool rand_bool() {
+    return (rand_next() & 1) != 0
+}
+
+function int rand_pick2(int a, int b) {
+    if rand_bool() {
+        return a
+    }
+    return b
+}
+)OPRAND"},
+        {"result", R"OPRESULT(// Result wrappers with a small error record.
 // These are intentionally specialized instead of generic.
 
 struct ResI64 {
@@ -1357,8 +3319,95 @@ function void res_void_free(ResVoid result) {
     }
 }
 )OPRESULT"},
-        {"text", R"OPTEXT(
-// Text helpers layered over the builtin string primitives.
+        {"simd", R"OPSIMD(// Explicit SIMD helpers over raw pointer buffers.
+// The public surface prefers language-friendly names like intx8 and longx8.
+// Raw width-flavored aliases stay available for compatibility and low-level work.
+
+function bool has_avx2() {
+    return simd_has_avx2() != 0
+}
+
+function bool has_avx512f() {
+    return simd_has_avx512f() != 0
+}
+
+function bool has_avx512dq() {
+    return simd_has_avx512dq() != 0
+}
+
+function void intx8_add(ptr dst, ptr a, ptr b) {
+    simd_i32x8_add(dst, a, b)
+}
+
+function void intx8_sub(ptr dst, ptr a, ptr b) {
+    simd_i32x8_sub(dst, a, b)
+}
+
+function void intx8_mul(ptr dst, ptr a, ptr b) {
+    simd_i32x8_mul(dst, a, b)
+}
+
+function void longx4_add(ptr dst, ptr a, ptr b) {
+    simd_i64x4_add(dst, a, b)
+}
+
+function void longx4_sub(ptr dst, ptr a, ptr b) {
+    simd_i64x4_sub(dst, a, b)
+}
+
+function void intx8_splat(ptr dst, int lane_value) {
+    simd_i32x8_splat(dst, lane_value)
+}
+
+function void longx4_splat(ptr dst, long lane_value) {
+    simd_i64x4_splat(dst, lane_value)
+}
+
+function void intx16_add(ptr dst, ptr a, ptr b) {
+    simd_i32x16_add(dst, a, b)
+}
+
+function void intx16_sub(ptr dst, ptr a, ptr b) {
+    simd_i32x16_sub(dst, a, b)
+}
+
+function void intx16_mul(ptr dst, ptr a, ptr b) {
+    simd_i32x16_mul(dst, a, b)
+}
+
+function void longx8_add(ptr dst, ptr a, ptr b) {
+    simd_i64x8_add(dst, a, b)
+}
+
+function void longx8_sub(ptr dst, ptr a, ptr b) {
+    simd_i64x8_sub(dst, a, b)
+}
+
+function void intx16_splat(ptr dst, int lane_value) {
+    simd_i32x16_splat(dst, lane_value)
+}
+
+function void longx8_splat(ptr dst, long lane_value) {
+    simd_i64x8_splat(dst, lane_value)
+}
+
+// Compatibility aliases for the lower-level width-flavored names.
+function void i32x8_add(ptr dst, ptr a, ptr b) { intx8_add(dst, a, b) }
+function void i32x8_sub(ptr dst, ptr a, ptr b) { intx8_sub(dst, a, b) }
+function void i32x8_mul(ptr dst, ptr a, ptr b) { intx8_mul(dst, a, b) }
+function void i64x4_add(ptr dst, ptr a, ptr b) { longx4_add(dst, a, b) }
+function void i64x4_sub(ptr dst, ptr a, ptr b) { longx4_sub(dst, a, b) }
+function void i32x8_splat(ptr dst, int lane_value) { intx8_splat(dst, lane_value) }
+function void i64x4_splat(ptr dst, long lane_value) { longx4_splat(dst, lane_value) }
+function void i32x16_add(ptr dst, ptr a, ptr b) { intx16_add(dst, a, b) }
+function void i32x16_sub(ptr dst, ptr a, ptr b) { intx16_sub(dst, a, b) }
+function void i32x16_mul(ptr dst, ptr a, ptr b) { intx16_mul(dst, a, b) }
+function void i64x8_add(ptr dst, ptr a, ptr b) { longx8_add(dst, a, b) }
+function void i64x8_sub(ptr dst, ptr a, ptr b) { longx8_sub(dst, a, b) }
+function void i32x16_splat(ptr dst, int lane_value) { intx16_splat(dst, lane_value) }
+function void i64x8_splat(ptr dst, long lane_value) { longx8_splat(dst, lane_value) }
+)OPSIMD"},
+        {"text", R"OPTEXT(// Text helpers layered over the builtin string primitives.
 
 function int text_len(str text) {
     return string_length(text)
@@ -1611,8 +3660,32 @@ function str text_surround(str text, str left, str right) {
     return out
 }
 )OPTEXT"},
-        {"vec", R"OPVEC(
-import mem
+        {"time", R"OPTIME(// Time and delay helpers layered over the native builtins.
+
+function int time_tick_ms() {
+    return get_tick_count()
+}
+
+function void time_sleep_ms(int ms) {
+    if ms <= 0 {
+        return
+    }
+    sleep(ms)
+}
+
+function int time_elapsed_ms(int start_tick) {
+    let now = time_tick_ms()
+    if now < start_tick {
+        return 0
+    }
+    return now - start_tick
+}
+
+function bool time_after_ms(int start_tick, int duration_ms) {
+    return time_elapsed_ms(start_tick) >= duration_ms
+}
+)OPTIME"},
+        {"vec", R"OPVEC(import mem
 
 // A growable vector layered over the builtin array storage.
 // The vector owns its backing array when created via vec_new or vec_copy.

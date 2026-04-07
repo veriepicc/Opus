@@ -1,0 +1,5 @@
+import helper.missing;
+
+function int run() {
+    return 0
+}

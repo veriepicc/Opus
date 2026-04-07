@@ -1,0 +1,5 @@
+function int main() {
+    let value = 7
+    value = 9
+    return value
+}

@@ -1,0 +1,8 @@
+function int child(int x) {
+    return x + 2
+}
+
+function int main() {
+    let h = async child(40)
+    return await h
+}

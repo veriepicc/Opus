@@ -1,0 +1,15 @@
+function int float(int short, int double) {
+    let long = short + double
+    let return_value = long
+    return return_value
+}
+
+function int main() {
+    let byte = 19
+    let ptr = 23
+    let result = float(byte, ptr)
+    if result != 42 {
+        return 1
+    }
+    return 0
+}

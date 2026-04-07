@@ -1,0 +1,126 @@
+fn mix(i: i64, salt: i64) -> i64 {
+    let mut x: i64 = i * 1103515245 + salt * 2654435761
+    x = x ^ (x >> 13)
+    x = x * 2246822519
+    return x & 1023
+}
+
+fn main() -> i64 {
+    let mut bid_px: i64 = 100000
+    let mut bid_sz: i64 = 24
+    let mut ask_px: i64 = 100002
+    let mut ask_sz: i64 = 26
+    let mut last_px: i64 = 100001
+    let mut last_qty: i64 = 4
+    let mut seq: i64 = 1
+
+    let mut inventory: i64 = 0
+    let mut cash: i64 = 0
+    let mut pnl: i64 = 0
+    let mut buy_px: i64 = 0
+    let mut sell_px: i64 = 0
+    let mut buy_qty: i64 = 0
+    let mut sell_qty: i64 = 0
+    let mut fills: i64 = 0
+    let mut rejects: i64 = 0
+    let mut risk: i64 = 0
+    let mut checksum: i64 = 0
+    let mut i: i64 = 0
+
+    while i < 12000000 {
+        let bid_move: i64 = (mix(i, 17) & 7) - 3
+        let ask_move: i64 = (mix(i, 29) & 7) - 3
+        let bid_size_bump: i64 = (mix(i, 43) & 31) + 1
+        let ask_size_bump: i64 = (mix(i, 59) & 31) + 1
+
+        bid_px = bid_px + bid_move
+        ask_px = ask_px + ask_move
+        if ask_px <= bid_px {
+            ask_px = bid_px + 1
+        }
+
+        if (i & 1) == 0 {
+            bid_sz = bid_sz + bid_size_bump
+            ask_sz = ask_sz - (ask_size_bump >> 1)
+        } else {
+            ask_sz = ask_sz + ask_size_bump
+            bid_sz = bid_sz - (bid_size_bump >> 1)
+        }
+
+        if bid_sz < 1 {
+            bid_sz = 1 + (bid_size_bump & 15)
+        }
+        if ask_sz < 1 {
+            ask_sz = 1 + (ask_size_bump & 15)
+        }
+
+        let spread: i64 = ask_px - bid_px
+        let mid: i64 = (ask_px + bid_px) >> 1
+        let imbalance: i64 = bid_sz - ask_sz
+        let skew: i64 = inventory >> 2
+        let risk_push: i64 = inventory * spread + imbalance
+
+        buy_px = mid - 1 - skew
+        sell_px = mid + 1 - skew
+
+        if spread > 3 {
+            buy_px = buy_px - 1
+            sell_px = sell_px + 1
+        }
+
+        buy_qty = 8 + ((bid_sz + imbalance) & 15)
+        sell_qty = 8 + ((ask_sz - imbalance) & 15)
+
+        if inventory > 96 {
+            buy_qty = 1
+            sell_qty = sell_qty + 8
+            risk = risk + 3
+        } else {
+            if inventory < -96 {
+                sell_qty = 1
+                buy_qty = buy_qty + 8
+                risk = risk + 3
+            } else {
+                risk = risk + (risk_push & 1)
+            }
+        }
+
+        let trigger: i64 = mix(i, inventory + 71)
+        if trigger < 96 {
+            inventory = inventory + buy_qty
+            cash = cash - buy_px * buy_qty
+            fills = fills + 1
+        } else {
+            if trigger > 928 {
+                inventory = inventory - sell_qty
+                cash = cash + sell_px * sell_qty
+                fills = fills + 1
+            } else {
+                rejects = rejects + 1
+            }
+        }
+
+        last_px = mid
+        last_qty = ((bid_sz ^ ask_sz) & 63) + 1
+        seq = seq + 1
+        pnl = cash + inventory * last_px - risk * 17
+
+        if inventory > 128 {
+            inventory = inventory - 7
+            cash = cash + bid_px * 7
+            checksum = checksum + inventory
+        } else {
+            if inventory < -128 {
+                inventory = inventory + 7
+                cash = cash - ask_px * 7
+                checksum = checksum - inventory
+            } else {
+                checksum = checksum + pnl + seq + last_qty + rejects
+            }
+        }
+
+        i = i + 1
+    }
+
+    return (checksum ^ pnl ^ last_px) & 255
+}

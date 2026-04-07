@@ -1,0 +1,7 @@
+function int sum5(int a, int b, int c, int d, int e) {
+    return a + b * 10 + c * 100 + d * 1000 + e * 10000
+}
+
+function int main() {
+    return ffi_call5(&sum5, 1, 2, 3, 4, 5)
+}

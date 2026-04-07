@@ -1,0 +1,7 @@
+function int main() {
+    var s = make_string("a")
+    free(s)
+    s = make_string("b")
+    free(s)
+    return 0
+}

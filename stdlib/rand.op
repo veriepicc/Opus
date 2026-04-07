@@ -1,0 +1,58 @@
+import time
+
+// Small deterministic random helpers for gameplay, tooling, and tests.
+
+var rand_state: int = 0
+
+function int rand_seed(int seed) {
+    if seed == 0 {
+        seed = 1
+    }
+    rand_state = seed
+    return rand_state
+}
+
+function int rand_seed_auto() {
+    var seed = time_tick_ms()
+    if seed == 0 {
+        seed = 1
+    }
+    rand_state = seed
+    return rand_state
+}
+
+function int rand_next() {
+    if rand_state == 0 {
+        rand_seed_auto()
+    }
+
+    // xorshift32-style update on the low 32 bits
+    var x = rand_state
+    x = x ^ (x << 13)
+    x = x ^ (x >> 17)
+    x = x ^ (x << 5)
+    if x < 0 {
+        x = -x
+    }
+    rand_state = x
+    return x
+}
+
+function int rand_range(int low, int high) {
+    if high <= low {
+        return low
+    }
+    let span = high - low
+    return low + (rand_next() % span)
+}
+
+function bool rand_bool() {
+    return (rand_next() & 1) != 0
+}
+
+function int rand_pick2(int a, int b) {
+    if rand_bool() {
+        return a
+    }
+    return b
+}

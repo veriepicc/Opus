@@ -1,0 +1,4 @@
+function int main() {
+    let values = [1 2]
+    return 0
+}

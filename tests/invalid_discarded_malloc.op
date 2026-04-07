@@ -1,0 +1,4 @@
+function int main() {
+    malloc(64)
+    return 0
+}

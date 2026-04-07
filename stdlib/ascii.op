@@ -1,0 +1,63 @@
+import text
+
+// ASCII-oriented helpers for formatting, parsing, and quick protocol work.
+// Ownership:
+// - ascii_hex_digit/ascii_hex_byte return heap strings; caller must free.
+
+function bool ascii_is_lower(int ch) {
+    return ch >= 97 and ch <= 122
+}
+
+function bool ascii_is_upper(int ch) {
+    return ch >= 65 and ch <= 90
+}
+
+function bool ascii_is_alpha(int ch) {
+    return ascii_is_lower(ch) or ascii_is_upper(ch)
+}
+
+function bool ascii_is_digit(int ch) {
+    return ch >= 48 and ch <= 57
+}
+
+function bool ascii_is_alnum(int ch) {
+    return ascii_is_alpha(ch) or ascii_is_digit(ch)
+}
+
+function bool ascii_is_space(int ch) {
+    return ch == 32 or ch == 9 or ch == 10 or ch == 13
+}
+
+function int ascii_to_lower(int ch) {
+    if ascii_is_upper(ch) {
+        return ch + 32
+    }
+    return ch
+}
+
+function int ascii_to_upper(int ch) {
+    if ascii_is_lower(ch) {
+        return ch - 32
+    }
+    return ch
+}
+
+function str ascii_hex_digit(int nibble) {
+    let table = "0123456789ABCDEF"
+    if nibble < 0 {
+        nibble = 0
+    }
+    if nibble > 15 {
+        nibble = 15
+    }
+    return string_substring(table, nibble, 1)
+}
+
+function str ascii_hex_byte(int byte_value) {
+    let hi = ascii_hex_digit((byte_value >> 4) & 15)
+    let lo = ascii_hex_digit(byte_value & 15)
+    let out = string_append(hi, lo)
+    free(hi)
+    free(lo)
+    return out
+}

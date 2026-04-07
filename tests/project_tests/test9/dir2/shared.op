@@ -1,0 +1,3 @@
+function int value() {
+    return 22
+}

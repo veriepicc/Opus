@@ -12,25 +12,44 @@ $tests = @(
     "test_direct_call_mixed_float_abi",
     "test_else_if",
     "test_enum_values",
+    "test_english_writer_ergonomics",
+    "test_field_decl_styles",
     "test_float_suffix_f32",
+    "test_friendly_type_aliases",
     "test_globals_simple",
     "test_globals",
     "test_import_alias_fn_value",
     "test_import_basic",
+    "test_import_keyword_alias",
     "test_auto_stdlib_ptr_aliases",
     "test_array_bounds_semantics",
     "test_await_precedence",
+    "test_await_spawn_inline",
+    "test_async_spawn_alias",
     "test_index_expr_array",
+    "test_json_file_parse",
+    "test_json_full",
     "test_method_args",
     "test_multi_return",
     "test_nested_exprs",
+    "test_owned_overwrite_after_free",
+    "test_writer_ergonomics",
     "test_print_int_decimal",
+    "test_immutable_struct_field_write",
+    "test_keyword_names",
+    "test_immutable_let_reg_pressure",
+    "test_mixed_syntax_decls",
     "test_parallel_capture_shadow",
     "test_reg_preserve",
     "test_short_circuit",
+    "test_simd_avx2",
+    "test_simd_avx512",
+    "test_simd_avx512_loop_kernel",
+    "test_stdlib_expanded",
     "test_str_arg_helper",
     "test_str_return_branch",
     "test_struct_ptr_params",
+    "test_spawn_qualified_call",
     "test_using_fn_alias",
     "test_unary_complex"
 )
@@ -59,6 +78,36 @@ $negativeTests = @(
         ExpectedErrorContains = "requires 2 arguments, got 1"
     },
     @{
+        Name = "invalid_spawn_non_call"
+        File = "tests\\invalid_spawn_non_call.op"
+        ExpectedErrorContains = "spawn requires a function call like 'spawn worker()'"
+    },
+    @{
+        Name = "invalid_owned_overwrite"
+        File = "tests\\invalid_owned_overwrite.op"
+        ExpectedErrorContains = "overwrites a live owned value"
+    },
+    @{
+        Name = "invalid_typo_value"
+        File = "tests\\invalid_typo_value.op"
+        ExpectedErrorContains = "undefined function: countr"
+    },
+    @{
+        Name = "invalid_immutable_rebind"
+        File = "tests\\invalid_immutable_rebind.op"
+        ExpectedErrorContains = "cannot rebind immutable variable: value"
+    },
+    @{
+        Name = "invalid_unknown_qualified_symbol"
+        File = "tests\\invalid_unknown_qualified_symbol.op"
+        ExpectedErrorContains = "import namespace 'text' has no exported member 'text_lne' (did you mean 'text_len'?)"
+    },
+    @{
+        Name = "invalid_unknown_struct_suggestion"
+        File = "tests\\invalid_unknown_struct_suggestion.op"
+        ExpectedErrorContains = "unknown struct/class: Countr (did you mean 'Counter'?)"
+    },
+    @{
         Name = "invalid_parallel_capture_mutation"
         File = "tests\\invalid_parallel_capture_mutation.op"
         ExpectedErrorContains = "parallel for cannot mutate captured variable 'shared'"
@@ -67,59 +116,165 @@ $negativeTests = @(
         Name = "invalid_parallel_global_mutation"
         File = "tests\\invalid_parallel_global_mutation.op"
         ExpectedErrorContains = "parallel for cannot mutate global 'global_counter' directly"
+    },
+    @{
+        Name = "invalid_discarded_owned_string"
+        File = "tests\\invalid_discarded_owned_string.op"
+        ExpectedErrorContains = "discarded result from 'fmt_pair' returns 'str'"
+    },
+    @{
+        Name = "invalid_discarded_malloc"
+        File = "tests\\invalid_discarded_malloc.op"
+        ExpectedErrorContains = "discarded result from 'malloc' allocates owned memory"
+    },
+    @{
+        Name = "invalid_if_expression"
+        File = "tests\\invalid_if_expression.op"
+        ExpectedErrorContains = "if expressions are not supported yet"
+    },
+    @{
+        Name = "invalid_block_expression"
+        File = "tests\\invalid_block_expression.op"
+        ExpectedErrorContains = "block expressions are not supported yet"
+    },
+    @{
+        Name = "invalid_top_level_decl_typo"
+        File = "tests\\invalid_top_level_decl_typo.op"
+        ExpectedErrorContains = "did you mean 'function'?"
+    },
+    @{
+        Name = "invalid_english_decl_typo"
+        File = "tests\\invalid_english_decl_typo.op"
+        ExpectedErrorContains = "did you mean 'define'?"
+    },
+    @{
+        Name = "invalid_return_stmt_typo"
+        File = "tests\\invalid_return_stmt_typo.op"
+        ExpectedErrorContains = "did you mean 'return'?"
+    },
+    @{
+        Name = "invalid_english_create_stmt_typo"
+        File = "tests\\invalid_english_create_stmt_typo.op"
+        ExpectedErrorContains = "did you mean 'create'?"
+    },
+    @{
+        Name = "invalid_class_method_keyword_typo"
+        File = "tests\\invalid_class_method_keyword_typo.op"
+        ExpectedErrorContains = "did you mean 'function'?"
+    },
+    @{
+        Name = "invalid_english_then_typo"
+        File = "tests\\invalid_english_then_typo.op"
+        ExpectedErrorContains = "did you mean 'then'?"
+    },
+    @{
+        Name = "invalid_english_do_typo"
+        File = "tests\\invalid_english_do_typo.op"
+        ExpectedErrorContains = "did you mean 'do'?"
+    },
+    @{
+        Name = "invalid_english_as_typo"
+        File = "tests\\invalid_english_as_typo.op"
+        ExpectedErrorContains = "did you mean 'as'?"
+    },
+    @{
+        Name = "invalid_english_to_typo"
+        File = "tests\\invalid_english_to_typo.op"
+        ExpectedErrorContains = "did you mean 'to'?"
+    },
+    @{
+        Name = "invalid_english_with_typo"
+        File = "tests\\invalid_english_with_typo.op"
+        ExpectedErrorContains = "did you mean 'with'?"
+    },
+    @{
+        Name = "invalid_english_returning_typo"
+        File = "tests\\invalid_english_returning_typo.op"
+        ExpectedErrorContains = "did you mean 'returning'?"
+    },
+    @{
+        Name = "invalid_english_variable_keyword_typo"
+        File = "tests\\invalid_english_variable_keyword_typo.op"
+        ExpectedErrorContains = "did you mean 'variable'?"
+    },
+    @{
+        Name = "invalid_english_end_if_typo"
+        File = "tests\\invalid_english_end_if_typo.op"
+        ExpectedErrorContains = "did you mean 'if'?"
+    },
+    @{
+        Name = "invalid_english_end_while_typo"
+        File = "tests\\invalid_english_end_while_typo.op"
+        ExpectedErrorContains = "did you mean 'while'?"
+    },
+    @{
+        Name = "invalid_call_missing_comma"
+        File = "tests\\invalid_call_missing_comma.op"
+        ExpectedErrorContains = "expected ',' between arguments"
+    },
+    @{
+        Name = "invalid_array_missing_comma"
+        File = "tests\\invalid_array_missing_comma.op"
+        ExpectedErrorContains = "expected ',' between array elements"
+    },
+    @{
+        Name = "invalid_param_missing_comma"
+        File = "tests\\invalid_param_missing_comma.op"
+        ExpectedErrorContains = "expected ',' between parameters"
     }
 )
 
-$negativeRunTests = @(
-    @{
-        Name = "invalid_jit_parallel_for"
-        File = "tests\\invalid_jit_parallel_for.op"
-        ExpectedErrorContains = "parallel for is not supported in JIT mode yet"
-    }
-)
+$negativeRunTests = @()
 
 $positiveRunTests = @(
     @{
-        Name = "jit_cast_to_int_run"
-        File = "tests\\jit_cast_to_int_run.op"
+        Name = "run_cast_to_int"
+        File = "tests\\run_cast_to_int.op"
         ExpectedExit = 0
-        ExpectedOutputContains = "Program returned: 3"
+        ExpectedOutput = "Program returned: 3"
     },
     @{
-        Name = "jit_narrow_i32_run"
-        File = "tests\\jit_narrow_i32_run.op"
+        Name = "run_narrow_i32"
+        File = "tests\\run_narrow_i32.op"
         ExpectedExit = 0
-        ExpectedOutputContains = "2`r`n2`r`nProgram returned: 0"
+        ExpectedOutput = "2`n2`nProgram returned: 0"
     },
     @{
-        Name = "jit_let_mut_typed_run"
-        File = "tests\\jit_let_mut_typed_run.op"
+        Name = "run_let_mut_typed"
+        File = "tests\\run_let_mut_typed.op"
         ExpectedExit = 0
-        ExpectedOutputContains = "Program returned: 3"
+        ExpectedOutput = "Program returned: 3"
     },
     @{
-        Name = "jit_index_expr_run"
-        File = "tests\\jit_index_expr_run.op"
+        Name = "run_index_expr"
+        File = "tests\\run_index_expr.op"
         ExpectedExit = 0
-        ExpectedOutputContains = "10`r`n20`r`n30`r`nProgram returned: 0"
+        ExpectedOutput = "10`n20`n30`nProgram returned: 0"
     },
     @{
-        Name = "jit_array_literal_run"
-        File = "tests\\jit_array_literal_run.op"
+        Name = "run_array_literal"
+        File = "tests\\run_array_literal.op"
         ExpectedExit = 0
-        ExpectedOutputContains = "2`r`nProgram returned: 0"
+        ExpectedOutput = "2`nProgram returned: 0"
     },
     @{
-        Name = "jit_await_null_run"
-        File = "tests\\jit_await_null_run.op"
+        Name = "run_await_null"
+        File = "tests\\run_await_null.op"
         ExpectedExit = 0
-        ExpectedOutputContains = "0`r`nProgram returned: 0"
+        ExpectedOutput = "0`nProgram returned: 0"
     },
     @{
-        Name = "jit_atomic_cas_run"
-        File = "tests\\jit_atomic_cas_run.op"
+        Name = "run_atomic_cas"
+        File = "tests\\run_atomic_cas.op"
         ExpectedExit = 0
-        ExpectedOutputContains = "1`r`n7`r`n0`r`n7`r`nProgram returned: 0"
+        ExpectedOutput = "1`n7`n0`n7`nProgram returned: 0"
+    },
+    @{
+        Name = "run_native_image_shared_builtins"
+        File = "tests\\run_native_image_shared_builtins.op"
+        ExpectedExit = 0
+        ExpectedOutput = "Program returned: 0"
+        CleanupFiles = @("tests\\tmp_native_image_shared_builtins.bin")
     }
 )
 
@@ -129,6 +284,13 @@ $projectTests = @(
         ProjectFile = "tests\project_tests\test3\opus.project"
         ExeFile = "tests\project_tests\test3\Test3.exe"
         ExpectedExit = 55
+        RuntimeTimeoutSeconds = 5
+    },
+    @{
+        Name = "project_test7_nested_import_alias"
+        ProjectFile = "tests\project_tests\test7\opus.project"
+        ExeFile = "tests\project_tests\test7\Test7.exe"
+        ExpectedExit = 42
         RuntimeTimeoutSeconds = 5
     },
     @{
@@ -155,6 +317,31 @@ $negativeProjectTests = @(
         Name = "project_test6_duplicate_project_decl"
         ProjectFile = "tests\project_tests\test6\opus.project"
         ExpectedErrorContains = "multiple project declarations found"
+    },
+    @{
+        Name = "project_test8_nested_missing_module"
+        ProjectFile = "tests\project_tests\test8\opus.project"
+        ExpectedErrorContains = "cannot find module: helper/missing.op (from api/entry.op)"
+    },
+    @{
+        Name = "project_test9_ambiguous_import"
+        ProjectFile = "tests\project_tests\test9\opus.project"
+        ExpectedErrorContains = "ambiguous module import: shared.op (from main.op)"
+    },
+    @{
+        Name = "project_test10_invalid_mode"
+        ProjectFile = "tests\project_tests\test10\opus.project"
+        ExpectedErrorContains = "invalid project mode: 'exee', expected 'dll' or 'exe'"
+    },
+    @{
+        Name = "project_test11_invalid_debug"
+        ProjectFile = "tests\project_tests\test11\opus.project"
+        ExpectedErrorContains = "invalid debug value: 'flase', expected 'true' or 'false'"
+    },
+    @{
+        Name = "project_test12_unknown_property"
+        ProjectFile = "tests\project_tests\test12\opus.project"
+        ExpectedErrorContains = "unknown project property: 'ouptut' (did you mean 'output'?)"
     }
 )
 
@@ -207,6 +394,22 @@ function Invoke-BoundedProcess {
         StdOut = $process.StandardOutput.ReadToEnd()
         StdErr = $process.StandardError.ReadToEnd()
     }
+}
+
+function Normalize-TestOutput {
+    param([string]$Text)
+    if ($null -eq $Text) {
+        return ""
+    }
+    return (($Text -replace "`r`n", "`n") -replace "`r", "`n").TrimEnd()
+}
+
+function Join-CommandOutput {
+    param($Output)
+    if ($null -eq $Output) {
+        return ""
+    }
+    return [string]::Join("`n", ($Output | ForEach-Object { "$_" }))
 }
 
 foreach ($test in $tests) {
@@ -345,7 +548,7 @@ foreach ($project in $negativeProjectTests) {
         $script:compileOutput = $output
     }).TotalMilliseconds
 
-    $compileText = ($script:compileOutput | Out-String)
+    $compileText = Join-CommandOutput $script:compileOutput
 
     if ($LASTEXITCODE -ne 0 -and $compileText.Contains($project.ExpectedErrorContains)) {
         $result = [PSCustomObject]@{
@@ -389,7 +592,7 @@ foreach ($test in $negativeTests) {
         $script:compileOutput = $output
     }).TotalMilliseconds
     
-    $compileText = ($script:compileOutput | Out-String)
+    $compileText = Join-CommandOutput $script:compileOutput
     $expectedMessage = if ($test -is [string]) { $null } else { $test.ExpectedErrorContains }
 
     if ($LASTEXITCODE -ne 0 -and ($null -eq $expectedMessage -or $compileText.Contains($expectedMessage))) {
@@ -426,11 +629,20 @@ foreach ($runTest in $positiveRunTests) {
     Write-Host "Testing: $($runTest.Name)" -ForegroundColor Yellow
 
     $output = & .\bin\Release\Opus.exe --run $runTest.File 2>&1
-    $combined = ($output | Out-String)
+    $combined = Join-CommandOutput $output
+    $normalizedCombined = Normalize-TestOutput $combined
     $expectedExit = $runTest.ExpectedExit
-    $expectedOutput = $runTest.ExpectedOutputContains
+    $expectedOutput = Normalize-TestOutput $runTest.ExpectedOutput
     $exitOk = $LASTEXITCODE -eq $expectedExit
-    $outputOk = $combined.Contains($expectedOutput)
+    $outputOk = $normalizedCombined -eq $expectedOutput
+
+    if ($runTest.ContainsKey("CleanupFiles")) {
+        foreach ($cleanupPath in $runTest.CleanupFiles) {
+            if (Test-Path $cleanupPath) {
+                Remove-Item $cleanupPath -Force
+            }
+        }
+    }
 
     if ($exitOk -and $outputOk) {
         $result = [PSCustomObject]@{
@@ -470,7 +682,7 @@ foreach ($test in $negativeRunTests) {
         $script:compileOutput = $output
     }).TotalMilliseconds
 
-    $compileText = ($script:compileOutput | Out-String)
+    $compileText = Join-CommandOutput $script:compileOutput
 
     if ($LASTEXITCODE -ne 0 -and $compileText.Contains($test.ExpectedErrorContains)) {
         $result = [PSCustomObject]@{

@@ -1,0 +1,53 @@
+import simd
+import mem
+
+function int main() {
+    if has_avx512f() == 0 {
+        return 0
+    }
+
+    let a = mem.make_zero(64)
+    let b = mem.make_zero(64)
+    let out = mem.make_zero(64)
+    if a == 0 or b == 0 or out == 0 {
+        return 100
+    }
+
+    var i = 0
+    while i < 16 {
+        mem.write32(a + i * 4, i + 2)
+        mem.write32(b + i * 4, (i + 1) * 3)
+        i++
+    }
+
+    intx16_add(out, a, b)
+    i = 0
+    while i < 16 {
+        if mem.read32(out + i * 4) != (i + 2) + ((i + 1) * 3) {
+            return 101
+        }
+        i++
+    }
+
+    longx8_splat(out, 1234)
+    i = 0
+    while i < 8 {
+        if mem.read(out + i * 8) != 1234 {
+            return 102
+        }
+        i++
+    }
+
+    if has_avx512dq() != 0 {
+        intx16_mul(out, a, b)
+        i = 0
+        while i < 16 {
+            if mem.read32(out + i * 4) != (i + 2) * ((i + 1) * 3) {
+                return 103
+            }
+            i++
+        }
+    }
+
+    return 0
+}

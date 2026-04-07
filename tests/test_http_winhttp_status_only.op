@@ -1,0 +1,9 @@
+import http
+
+function int main() {
+    let response = http_fetch("https://example.com")
+    if response == 0 {
+        return 1
+    }
+    return response.status
+}

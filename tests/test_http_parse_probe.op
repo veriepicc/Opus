@@ -1,0 +1,21 @@
+import http
+
+function int main() {
+    let parsed = http_parse_url("https://example.com")
+    if parsed == 0 {
+        return 1
+    }
+    if parsed.secure != 1 {
+        return 2
+    }
+    if parsed.port != 443 {
+        return 3
+    }
+    if string_equals(parsed.host, "example.com") == 0 {
+        return 4
+    }
+    if string_equals(parsed.path, "/") == 0 {
+        return 5
+    }
+    return 0
+}
