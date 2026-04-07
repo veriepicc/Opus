@@ -5,6 +5,7 @@ export module opus.parser;
 import opus.types;
 import opus.lexer;
 import opus.ast;
+import opus.errors;
 import std;
 
 export namespace opus {
@@ -41,6 +42,9 @@ public:
         ast::Module mod;
         mod.name = std::string(name);
         mod.syntax = mode_;
+        if (!tokens_.empty()) {
+            mod.source_file = tokens_.front().loc.file;
+        }
 
         while (!at_end() && !check(TokenKind::Eof)) {
             if (!check_loop_safeguard("parse_module")) {
@@ -57,7 +61,71 @@ public:
         if (!errors_.empty()) {
             return std::unexpected(std::move(errors_));
         }
+
+        for (const auto& issue : ast::validate_module(mod)) {
+            errors_.push_back(ParseError{
+                .message = issue.message,
+                .loc = issue.loc
+            });
+        }
+
+        if (!errors_.empty()) {
+            return std::unexpected(std::move(errors_));
+        }
         return mod;
+    }
+
+    std::expected<ast::ProjectDecl, std::vector<ParseError>> parse_project_file() {
+        ast::ProjectDecl project;
+        SourceLoc project_loc = tokens_.empty() ? SourceLoc{} : tokens_.front().loc;
+        bool found_project = false;
+
+        while (!at_end() && !check(TokenKind::Eof)) {
+            if (!check_loop_safeguard("parse_project_file")) {
+                break;
+            }
+
+            if (match(TokenKind::Project)) {
+                SourceLoc decl_loc = previous().loc;
+                auto parsed = parse_project_decl();
+                if (!parsed) {
+                    synchronize();
+                    continue;
+                }
+
+                if (found_project) {
+                    error_at(decl_loc, "multiple project declarations found in opus.project");
+                    continue;
+                }
+
+                project = std::move(*parsed);
+                project_loc = decl_loc;
+                found_project = true;
+                continue;
+            }
+
+            error("unexpected top-level declaration in opus.project");
+            synchronize();
+        }
+
+        if (!found_project && errors_.empty()) {
+            error_at(project_loc, "no project declaration found in opus.project");
+        }
+
+        if (found_project) {
+            for (const auto& issue : ast::validate_project_decl(project, project_loc)) {
+                errors_.push_back(ParseError{
+                    .message = issue.message,
+                    .loc = issue.loc
+                });
+            }
+        }
+
+        if (!errors_.empty()) {
+            return std::unexpected(std::move(errors_));
+        }
+
+        return project;
     }
 
 private:
@@ -68,6 +136,33 @@ private:
     std::size_t loop_counter_;
     std::size_t max_iterations_;
     bool safeguard_triggered_ = false;
+
+    enum class NameMode {
+        Standard,
+        AllowTypeKeywords,
+    };
+
+    enum class StatementMode {
+        CStyle,
+        V2,
+        English,
+        Mixed,
+    };
+
+    enum class BracedBodyMode {
+        V2,
+        Mixed,
+    };
+
+    enum class RecoveryMode {
+        Declaration,
+        Statement,
+        ClassMember,
+        StructMember,
+        EnumMember,
+        ProjectProperty,
+        StructLiteralField,
+    };
 
     // ========================================================================
     // SAFEGUARDS
@@ -143,11 +238,395 @@ private:
         return current();
     }
 
+    Token consume_keyword_spelling(TokenKind kind, std::string_view spelling, std::string_view message) {
+        if (check(kind)) {
+            return advance();
+        }
+        if (token_has_close_keyword_spelling(current(), spelling)) {
+            std::vector<std::string> candidates{std::string(spelling)};
+            error(with_suggestion(std::string(message), current().text, candidates));
+            return current();
+        }
+        error(message);
+        return current();
+    }
+
+    bool consume_optional_keyword_spelling(TokenKind kind, std::string_view spelling, std::string_view message) {
+        if (check(kind)) {
+            advance();
+            return true;
+        }
+        if (token_has_close_keyword_spelling(current(), spelling)) {
+            std::vector<std::string> candidates{std::string(spelling)};
+            error(with_suggestion(std::string(message), current().text, candidates));
+            advance();
+            return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] std::string describe_token(const Token& tok) const {
+        if (tok.kind == TokenKind::Eof) {
+            return "EOF";
+        }
+        if (!tok.text.empty()) {
+            return std::format("'{}'", tok.text);
+        }
+        return "<token>";
+    }
+
+    [[nodiscard]] bool is_hard_reserved_name_keyword(TokenKind kind) const {
+        switch (kind) {
+            case TokenKind::Function:
+            case TokenKind::Fn:
+            case TokenKind::Class:
+            case TokenKind::Struct:
+            case TokenKind::Enum:
+            case TokenKind::Project:
+            case TokenKind::Import:
+            case TokenKind::Using:
+            case TokenKind::Extern:
+            case TokenKind::Let:
+            case TokenKind::Var:
+            case TokenKind::Const:
+            case TokenKind::Auto:
+            case TokenKind::If:
+            case TokenKind::Else:
+            case TokenKind::While:
+            case TokenKind::For:
+            case TokenKind::Loop:
+            case TokenKind::Parallel:
+            case TokenKind::Break:
+            case TokenKind::Continue:
+            case TokenKind::Return:
+            case TokenKind::Thread:
+            case TokenKind::Unsafe:
+            case TokenKind::Spawn:
+            case TokenKind::Await:
+            case TokenKind::Define:
+            case TokenKind::Variable:
+            case TokenKind::Create:
+            case TokenKind::Set:
+            case TokenKind::Call:
+            case TokenKind::End:
+            case TokenKind::Is:
+            case TokenKind::Than:
+            case TokenKind::Greater:
+            case TokenKind::Less:
+            case TokenKind::Equal:
+            case TokenKind::Begin:
+            case TokenKind::Then:
+            case TokenKind::Do:
+            case TokenKind::With:
+            case TokenKind::As:
+            case TokenKind::In:
+            case TokenKind::Returning:
+            case TokenKind::To:
+            case TokenKind::Until:
+            case TokenKind::Repeat:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    [[nodiscard]] bool is_contextual_name_token(
+        const Token& tok,
+        NameMode mode = NameMode::AllowTypeKeywords) const {
+        if (tok.kind == TokenKind::Ident || tok.kind == TokenKind::Value) {
+            return true;
+        }
+        if (mode == NameMode::AllowTypeKeywords && tok.is_type()) {
+            return true;
+        }
+        if (tok.kind == TokenKind::True || tok.kind == TokenKind::False ||
+            tok.kind == TokenKind::Eof || tok.kind == TokenKind::Error) {
+            return false;
+        }
+        if (tok.is_literal() || tok.is_operator()) {
+            return false;
+        }
+        switch (tok.kind) {
+            case TokenKind::LParen:
+            case TokenKind::RParen:
+            case TokenKind::LBrace:
+            case TokenKind::RBrace:
+            case TokenKind::LBracket:
+            case TokenKind::RBracket:
+            case TokenKind::Comma:
+            case TokenKind::Colon:
+            case TokenKind::Semicolon:
+            case TokenKind::Dot:
+            case TokenKind::Arrow:
+            case TokenKind::FatArrow:
+            case TokenKind::ColonColon:
+            case TokenKind::At:
+            case TokenKind::Hash:
+            case TokenKind::Question:
+            case TokenKind::Newline:
+                return false;
+            default:
+                break;
+        }
+        if (is_hard_reserved_name_keyword(tok.kind)) {
+            return false;
+        }
+        return tok.is_keyword();
+    }
+
+    [[nodiscard]] bool is_contextual_name_token(const Token& tok, bool allow_type_keywords) const {
+        return is_contextual_name_token(
+            tok,
+            allow_type_keywords ? NameMode::AllowTypeKeywords : NameMode::Standard);
+    }
+
+    [[nodiscard]] bool can_begin_ambiguous_type_name(const Token& tok) const {
+        return tok.kind == TokenKind::Ident || tok.kind == TokenKind::Value || tok.is_type();
+    }
+
+    [[nodiscard]] static bool keyword_spelling_is_close(
+        std::string_view actual,
+        std::string_view expected) {
+        if (actual == expected) {
+            return true;
+        }
+
+        auto actual_len = actual.size();
+        auto expected_len = expected.size();
+        if (actual_len + 1 < expected_len || expected_len + 1 < actual_len) {
+            return false;
+        }
+
+        if (actual_len == expected_len) {
+            std::vector<std::size_t> mismatches;
+            for (std::size_t i = 0; i < actual_len; ++i) {
+                if (actual[i] != expected[i]) {
+                    mismatches.push_back(i);
+                    if (mismatches.size() > 2) {
+                        return false;
+                    }
+                }
+            }
+
+            if (mismatches.size() == 1) {
+                return true;
+            }
+            if (mismatches.size() == 2) {
+                auto first = mismatches[0];
+                auto second = mismatches[1];
+                return second == first + 1 &&
+                       actual[first] == expected[second] &&
+                       actual[second] == expected[first];
+            }
+            return false;
+        }
+
+        auto one_insert_away = [](std::string_view shorter, std::string_view longer) {
+            std::size_t i = 0;
+            std::size_t j = 0;
+            bool skipped = false;
+            while (i < shorter.size() && j < longer.size()) {
+                if (shorter[i] == longer[j]) {
+                    ++i;
+                    ++j;
+                    continue;
+                }
+                if (skipped) {
+                    return false;
+                }
+                skipped = true;
+                ++j;
+            }
+            return true;
+        };
+
+        if (actual_len + 1 == expected_len) {
+            return one_insert_away(actual, expected);
+        }
+        if (expected_len + 1 == actual_len) {
+            return one_insert_away(expected, actual);
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool token_has_close_keyword_spelling(
+        const Token& tok,
+        std::string_view spelling) const {
+        if (!is_contextual_name_token(tok, NameMode::Standard)) {
+            return false;
+        }
+        return keyword_spelling_is_close(tok.text, spelling);
+    }
+
+    [[nodiscard]] static const std::vector<std::string>& c_decl_keyword_candidates() {
+        static const std::vector<std::string> values{
+            "function", "fn", "class", "struct", "enum",
+            "const", "import", "using", "extern", "let", "var", "project"
+        };
+        return values;
+    }
+
+    [[nodiscard]] static const std::vector<std::string>& mixed_decl_keyword_candidates() {
+        static const std::vector<std::string> values{
+            "function", "fn", "class", "struct", "enum",
+            "const", "import", "using", "extern", "let", "var", "project",
+            "define", "create"
+        };
+        return values;
+    }
+
+    [[nodiscard]] static const std::vector<std::string>& english_decl_keyword_candidates() {
+        static const std::vector<std::string> values{
+            "define", "create", "function", "struct"
+        };
+        return values;
+    }
+
+    [[nodiscard]] static const std::vector<std::string>& class_member_keyword_candidates() {
+        static const std::vector<std::string> values{"function", "fn"};
+        return values;
+    }
+
+    [[nodiscard]] static const std::vector<std::string>& statement_keyword_candidates() {
+        static const std::vector<std::string> values{
+            "let", "var", "auto", "const", "return", "if", "while",
+            "parallel", "for", "loop", "break", "continue",
+            "create", "set", "call"
+        };
+        return values;
+    }
+
+    [[nodiscard]] static const std::vector<std::string>& project_property_candidates() {
+        static const std::vector<std::string> values{
+            "entry", "output", "mode", "include", "debug", "healing"
+        };
+        return values;
+    }
+
+    [[nodiscard]] static const std::vector<std::string>& bool_value_candidates() {
+        static const std::vector<std::string> values{"true", "false"};
+        return values;
+    }
+
+    [[nodiscard]] static const std::vector<std::string>& healing_mode_candidates() {
+        static const std::vector<std::string> values{"auto", "freeze", "off"};
+        return values;
+    }
+
+    [[nodiscard]] static const std::vector<std::string>& project_mode_candidates() {
+        static const std::vector<std::string> values{"dll", "exe"};
+        return values;
+    }
+
+    [[nodiscard]] std::string with_suggestion(
+        std::string message,
+        std::string_view input,
+        const std::vector<std::string>& candidates) const {
+        if (auto suggestion = find_closest_match(input, candidates)) {
+            message += std::format(" (did you mean '{}'?)", *suggestion);
+        }
+        return message;
+    }
+
     void error(std::string_view message) {
+        std::string full(message);
+        full += std::format(", found {}", describe_token(current()));
         errors_.push_back(ParseError{
-            .message = std::string(message),
+            .message = std::move(full),
             .loc = current().loc
         });
+    }
+
+    void error_at(const SourceLoc& loc, std::string_view message) {
+        errors_.push_back(ParseError{
+            .message = std::string(message),
+            .loc = loc
+        });
+    }
+
+    void error_invalid_project_property(std::string_view key) {
+        error(with_suggestion(
+            std::format("unknown project property: '{}'", key),
+            key,
+            project_property_candidates()));
+    }
+
+    void error_expected_decl_start(const std::vector<std::string>& candidates, std::string_view fallback) {
+        if (is_contextual_name_token(current(), NameMode::Standard)) {
+            error(with_suggestion(std::string(fallback), current().text, candidates));
+            return;
+        }
+        error(fallback);
+    }
+
+    [[nodiscard]] bool maybe_report_keyword_typo(std::string_view spelling, std::string_view message) {
+        if (!token_has_close_keyword_spelling(current(), spelling)) {
+            return false;
+        }
+        std::vector<std::string> candidates{std::string(spelling)};
+        error(with_suggestion(std::string(message), current().text, candidates));
+        return true;
+    }
+
+    [[nodiscard]] bool looks_like_identifier_expr_statement_tail() const {
+        switch (peek(1).kind) {
+            case TokenKind::LParen:
+            case TokenKind::LBracket:
+            case TokenKind::Dot:
+            case TokenKind::As:
+            case TokenKind::PlusPlus:
+            case TokenKind::MinusMinus:
+            case TokenKind::Assign:
+            case TokenKind::PlusEq:
+            case TokenKind::MinusEq:
+            case TokenKind::StarEq:
+            case TokenKind::SlashEq:
+            case TokenKind::PercentEq:
+            case TokenKind::Plus:
+            case TokenKind::Minus:
+            case TokenKind::Star:
+            case TokenKind::Slash:
+            case TokenKind::Percent:
+            case TokenKind::Eq:
+            case TokenKind::Ne:
+            case TokenKind::Lt:
+            case TokenKind::Gt:
+            case TokenKind::Le:
+            case TokenKind::Ge:
+            case TokenKind::AndAnd:
+            case TokenKind::OrOr:
+            case TokenKind::Ampersand:
+            case TokenKind::Pipe:
+            case TokenKind::Caret:
+            case TokenKind::Shl:
+            case TokenKind::Shr:
+            case TokenKind::Semicolon:
+            case TokenKind::RBrace:
+            case TokenKind::End:
+            case TokenKind::Else:
+            case TokenKind::Eof:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    [[nodiscard]] bool maybe_report_statement_keyword_typo() {
+        if (!is_contextual_name_token(current(), NameMode::Standard)) {
+            return false;
+        }
+        if (looks_like_identifier_expr_statement_tail()) {
+            return false;
+        }
+        auto suggestion = find_closest_match(current().text, statement_keyword_candidates(), 2);
+        if (!suggestion) {
+            return false;
+        }
+        error(std::format(
+            "unrecognized statement start '{}' (did you mean '{}'?)",
+            current().text,
+            *suggestion));
+        return true;
     }
 
     void synchronize() {
@@ -159,67 +638,616 @@ private:
                 return;
             }
             if (previous().kind == TokenKind::Semicolon) return;
-            
-            switch (current().kind) {
-                // v2.0
-                case TokenKind::Function:
-                case TokenKind::Class:
-                case TokenKind::Struct:
-                case TokenKind::Var:
-                case TokenKind::Let:
-                case TokenKind::Const:
-                case TokenKind::Return:
-                case TokenKind::If:
-                case TokenKind::While:
-                case TokenKind::For:
-                case TokenKind::Thread:
-                case TokenKind::Unsafe:
-                // legacy
-                case TokenKind::Fn:
-                case TokenKind::Enum:
-                case TokenKind::Project:
-                // english
-                case TokenKind::Define:
-                case TokenKind::Create:
-                // type keywords
-                case TokenKind::TypeInt:
-                case TokenKind::TypeLong:
-                case TokenKind::TypeVoid:
-                case TokenKind::TypeBool:
-                case TokenKind::TypeFloat:
-                case TokenKind::TypeDouble:
-                    return;
-                default:
-                    advance();
+
+            if (looks_like_decl_start()) {
+                return;
             }
+            advance();
         }
     }
 
     [[nodiscard]] bool looks_like_type_first_fn_decl_start() const {
         if (current().is_type()) return true;
-        return check(TokenKind::Ident) &&
-               peek(1).kind == TokenKind::Ident &&
+        return can_begin_ambiguous_type_name(current()) &&
+               is_contextual_name_token(peek(1), true) &&
                peek(2).kind == TokenKind::LParen;
     }
 
-    [[nodiscard]] bool is_contextual_name_token(const Token& tok) const {
-        return tok.kind == TokenKind::Ident || tok.kind == TokenKind::Value;
+    [[nodiscard]] bool looks_like_type_first_signature() const {
+        return can_begin_ambiguous_type_name(current()) &&
+               is_contextual_name_token(peek(1), true) &&
+               peek(2).kind == TokenKind::LParen;
     }
 
-    Token consume_name(std::string_view message, bool allow_type_keywords = false) {
-        if (is_contextual_name_token(current())) {
-            return advance();
+    [[nodiscard]] bool keyword_appears_before_block(TokenKind keyword) const {
+        std::int32_t paren_depth = 0;
+        std::int32_t bracket_depth = 0;
+        for (std::size_t i = 1; i < 32 && pos_ + i < tokens_.size(); ++i) {
+            const auto kind = peek(i).kind;
+            if (kind == TokenKind::LParen) {
+                ++paren_depth;
+                continue;
+            }
+            if (kind == TokenKind::RParen) {
+                if (paren_depth > 0) --paren_depth;
+                continue;
+            }
+            if (kind == TokenKind::LBracket) {
+                ++bracket_depth;
+                continue;
+            }
+            if (kind == TokenKind::RBracket) {
+                if (bracket_depth > 0) --bracket_depth;
+                continue;
+            }
+
+            if (paren_depth == 0 && bracket_depth == 0) {
+                if (kind == keyword) {
+                    return true;
+                }
+                if (kind == TokenKind::LBrace ||
+                    kind == TokenKind::Semicolon ||
+                    kind == TokenKind::RBrace ||
+                    kind == TokenKind::End ||
+                    kind == TokenKind::Eof ||
+                    kind == TokenKind::Newline) {
+                    return false;
+                }
+            }
         }
-        if (allow_type_keywords && current().is_type()) {
+        return false;
+    }
+
+    [[nodiscard]] bool keyword_or_close_spelling_appears_before_block(
+        TokenKind keyword,
+        std::string_view spelling) const {
+        std::int32_t paren_depth = 0;
+        std::int32_t bracket_depth = 0;
+        for (std::size_t i = 1; i < 32 && pos_ + i < tokens_.size(); ++i) {
+            const auto& tok = peek(i);
+            const auto kind = tok.kind;
+            if (kind == TokenKind::LParen) {
+                ++paren_depth;
+                continue;
+            }
+            if (kind == TokenKind::RParen) {
+                if (paren_depth > 0) --paren_depth;
+                continue;
+            }
+            if (kind == TokenKind::LBracket) {
+                ++bracket_depth;
+                continue;
+            }
+            if (kind == TokenKind::RBracket) {
+                if (bracket_depth > 0) --bracket_depth;
+                continue;
+            }
+
+            if (paren_depth == 0 && bracket_depth == 0) {
+                if (kind == keyword || token_has_close_keyword_spelling(tok, spelling)) {
+                    return true;
+                }
+                if (kind == TokenKind::LBrace ||
+                    kind == TokenKind::Semicolon ||
+                    kind == TokenKind::RBrace ||
+                    kind == TokenKind::End ||
+                    kind == TokenKind::Eof ||
+                    kind == TokenKind::Newline) {
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool looks_like_english_if_stmt() const {
+        return check(TokenKind::If) &&
+               keyword_or_close_spelling_appears_before_block(TokenKind::Then, "then");
+    }
+
+    [[nodiscard]] bool looks_like_english_while_stmt() const {
+        return check(TokenKind::While) &&
+               keyword_or_close_spelling_appears_before_block(TokenKind::Do, "do");
+    }
+
+    [[nodiscard]] bool looks_like_struct_literal_after(std::size_t brace_offset = 0) const {
+        if (peek(brace_offset).kind != TokenKind::LBrace) {
+            return false;
+        }
+        if (peek(brace_offset + 1).kind == TokenKind::RBrace) {
+            return true;
+        }
+        if (!is_contextual_name_token(peek(brace_offset + 1), true)) {
+            return false;
+        }
+
+        const auto next_kind = peek(brace_offset + 2).kind;
+        return next_kind == TokenKind::Colon ||
+               next_kind == TokenKind::Comma ||
+               next_kind == TokenKind::RBrace;
+    }
+
+    Token consume_name(
+        std::string_view message,
+        NameMode mode = NameMode::AllowTypeKeywords) {
+        if (is_contextual_name_token(current(), mode)) {
             return advance();
         }
         error(message);
         return current();
     }
 
+    Token consume_name(std::string_view message, bool allow_type_keywords) {
+        return consume_name(
+            message,
+            allow_type_keywords ? NameMode::AllowTypeKeywords : NameMode::Standard);
+    }
+
+    [[nodiscard]] StatementMode mode_for_braced_body(BracedBodyMode mode) const {
+        switch (mode) {
+            case BracedBodyMode::V2:
+                return StatementMode::V2;
+            case BracedBodyMode::Mixed:
+                return StatementMode::Mixed;
+        }
+        return StatementMode::V2;
+    }
+
+    [[nodiscard]] bool can_resume_after_failure(RecoveryMode mode) const {
+        switch (mode) {
+            case RecoveryMode::Declaration:
+                return looks_like_decl_start();
+            case RecoveryMode::Statement:
+                return looks_like_stmt_start();
+            case RecoveryMode::ClassMember:
+                return looks_like_class_member_start();
+            case RecoveryMode::StructMember:
+                return looks_like_struct_member_start();
+            case RecoveryMode::EnumMember:
+                return looks_like_enum_member_start();
+            case RecoveryMode::ProjectProperty:
+                return looks_like_project_property_start();
+            case RecoveryMode::StructLiteralField:
+                return is_contextual_name_token(current(), NameMode::AllowTypeKeywords);
+        }
+        return false;
+    }
+
     [[nodiscard]] bool looks_like_typed_name_start() const {
         if (current().is_type()) return true;
-        return check(TokenKind::Ident) && peek(1).kind == TokenKind::Ident;
+        return can_begin_ambiguous_type_name(current()) &&
+               is_contextual_name_token(peek(1), true);
+    }
+
+    [[nodiscard]] bool looks_like_decl_start() const {
+        return check(TokenKind::Function) ||
+               check(TokenKind::Class) ||
+               check(TokenKind::Fn) ||
+               check(TokenKind::Struct) ||
+               check(TokenKind::Enum) ||
+               check(TokenKind::Const) ||
+               check(TokenKind::Import) ||
+               check(TokenKind::Using) ||
+               check(TokenKind::Extern) ||
+               check(TokenKind::Project) ||
+               check(TokenKind::Let) ||
+               check(TokenKind::Var) ||
+               check(TokenKind::Define) ||
+               check(TokenKind::Create) ||
+               looks_like_type_first_fn_decl_start();
+    }
+
+    [[nodiscard]] bool looks_like_stmt_start() const {
+        return check(TokenKind::Let) ||
+               check(TokenKind::Var) ||
+               check(TokenKind::Auto) ||
+               check(TokenKind::Const) ||
+               check(TokenKind::Return) ||
+               check(TokenKind::If) ||
+               check(TokenKind::While) ||
+               check(TokenKind::Parallel) ||
+               check(TokenKind::For) ||
+               check(TokenKind::Loop) ||
+               check(TokenKind::Break) ||
+               check(TokenKind::Continue) ||
+               check(TokenKind::LBrace) ||
+               check(TokenKind::Create) ||
+               check(TokenKind::Set) ||
+               check(TokenKind::Call) ||
+               looks_like_english_if_stmt() ||
+               looks_like_english_while_stmt() ||
+               looks_like_typed_name_start();
+    }
+
+    [[nodiscard]] bool looks_like_expr_start() const {
+        return check(TokenKind::IntLit) ||
+               check(TokenKind::FloatLit) ||
+               check(TokenKind::StringLit) ||
+               check(TokenKind::HexStringLit) ||
+               check(TokenKind::True) ||
+               check(TokenKind::False) ||
+               check(TokenKind::Spawn) ||
+               check(TokenKind::Thread) ||
+               check(TokenKind::Await) ||
+               check(TokenKind::LParen) ||
+               check(TokenKind::LBracket) ||
+               check(TokenKind::Minus) ||
+               check(TokenKind::Bang) ||
+               check(TokenKind::Not) ||
+               check(TokenKind::Tilde) ||
+               check(TokenKind::Star) ||
+               check(TokenKind::Ampersand) ||
+               check(TokenKind::PlusPlus) ||
+               check(TokenKind::MinusMinus) ||
+               is_contextual_name_token(current(), NameMode::AllowTypeKeywords);
+    }
+
+    [[nodiscard]] bool looks_like_class_member_start() const {
+        return check(TokenKind::Function) ||
+               check(TokenKind::Fn) ||
+               looks_like_type_first_signature() ||
+               looks_like_typed_name_start() ||
+               is_contextual_name_token(current(), true);
+    }
+
+    [[nodiscard]] bool looks_like_struct_member_start() const {
+        return looks_like_typed_name_start() ||
+               is_contextual_name_token(current(), true);
+    }
+
+    [[nodiscard]] bool looks_like_enum_member_start() const {
+        return is_contextual_name_token(current(), true);
+    }
+
+    [[nodiscard]] bool looks_like_project_property_start() const {
+        return check(TokenKind::Include) || is_contextual_name_token(current(), true);
+    }
+
+    template<typename StopFn>
+    void recover_after_failure(StopFn&& should_stop, RecoveryMode recovery_mode) {
+        if (!at_end()) {
+            advance();
+        }
+
+        std::size_t safety = 0;
+        while (!should_stop() && !at_end()) {
+            if (++safety > 10000) {
+                std::cerr << "[OPUS ERROR] local recovery exceeded 10000 iterations, aborting\n";
+                return;
+            }
+            if (previous().kind == TokenKind::Semicolon || previous().kind == TokenKind::Comma) {
+                return;
+            }
+            if (can_resume_after_failure(recovery_mode)) {
+                return;
+            }
+            advance();
+        }
+    }
+
+    template<typename StopFn>
+    ast::StmtSuite parse_stmt_suite_until(StatementMode mode, StopFn&& should_stop, const char* label) {
+        ast::StmtBlock stmts;
+        while (!should_stop() && !at_end()) {
+            if (!check_loop_safeguard(label)) break;
+
+            std::size_t before = pos_;
+            auto stmt = parse_stmt_in(mode);
+            if (stmt) {
+                stmts.push_back(std::move(*stmt));
+            } else if (pos_ == before && !at_end()) {
+                recover_after_failure([&]() { return should_stop(); }, RecoveryMode::Statement);
+            }
+        }
+        return ast::StmtSuite{std::move(stmts)};
+    }
+
+    ast::StmtSuite parse_stmt_suite_until_end(StatementMode mode, const char* label) {
+        return parse_stmt_suite_until(
+            mode,
+            [this]() { return check(TokenKind::End); },
+            label);
+    }
+
+    ast::StmtSuite parse_stmt_suite_until_else_or_end(StatementMode mode, const char* label) {
+        return parse_stmt_suite_until(
+            mode,
+            [this]() { return check(TokenKind::Else) || check(TokenKind::End); },
+            label);
+    }
+
+    template<typename StopFn, typename ParseOneFn>
+    void parse_recovering_sequence(
+        const char* label,
+        StopFn&& should_stop,
+        RecoveryMode recovery_mode,
+        ParseOneFn&& parse_one) {
+        while (!should_stop() && !at_end()) {
+            if (!check_loop_safeguard(label)) {
+                break;
+            }
+
+            std::size_t before = pos_;
+            bool progressed = parse_one();
+            if (!progressed && pos_ == before && !at_end()) {
+                recover_after_failure([&]() { return should_stop(); }, recovery_mode);
+            }
+        }
+    }
+
+    template<typename ParseElementFn, typename StopFn, typename OnElementFn>
+    bool parse_comma_separated(ParseElementFn&& parse_element, StopFn&& should_stop, OnElementFn&& on_element) {
+        while (!should_stop() && !at_end()) {
+            auto element = parse_element();
+            if (!element) {
+                return false;
+            }
+            on_element(std::move(*element));
+            if (!match(TokenKind::Comma)) {
+                break;
+            }
+            if (should_stop()) {
+                break;
+            }
+        }
+        return true;
+    }
+
+    template<typename ParseElementFn, typename StopFn, typename OnElementFn, typename CanBeginNextFn>
+    bool parse_comma_separated_recovering(
+        ParseElementFn&& parse_element,
+        StopFn&& should_stop,
+        OnElementFn&& on_element,
+        std::string_view missing_comma_message,
+        CanBeginNextFn&& can_begin_next_without_comma) {
+        while (!should_stop() && !at_end()) {
+            auto element = parse_element();
+            if (!element) {
+                return false;
+            }
+            on_element(std::move(*element));
+            if (match(TokenKind::Comma)) {
+                if (should_stop()) {
+                    break;
+                }
+                continue;
+            }
+            if (should_stop()) {
+                break;
+            }
+            if (can_begin_next_without_comma()) {
+                error(missing_comma_message);
+                continue;
+            }
+            break;
+        }
+        return true;
+    }
+
+    [[nodiscard]] ast::DeclPtr make_fn_decl(
+        std::string name,
+        ast::ParamList params,
+        Type return_type,
+        std::optional<ast::StmtSuite> body,
+        SourceSpan span = {},
+        ast::DeclAttrs attrs = {}) {
+        auto decl = std::make_unique<ast::Decl>();
+        decl->kind = ast::FnDecl{
+            .name = std::move(name),
+            .params = std::move(params),
+            .return_type = std::move(return_type),
+            .body = std::move(body),
+            .attrs = std::move(attrs),
+        };
+        decl->span = std::move(span);
+        return decl;
+    }
+
+    [[nodiscard]] ast::MethodDecl make_instance_method(
+        std::string name,
+        ast::ParamList params,
+        Type return_type,
+        ast::StmtSuite body) {
+        return ast::MethodDecl{
+            .name = std::move(name),
+            .params = std::move(params),
+            .return_type = std::move(return_type),
+            .body = std::move(body),
+            .receiver = ast::MethodReceiver::ImplicitSelf
+        };
+    }
+
+    [[nodiscard]] ast::StmtSuite make_expression_body_suite(Type return_type, ast::ExprPtr expr) {
+        auto stmt = std::make_unique<ast::Stmt>();
+        if (return_type.is_void()) {
+            stmt->kind = ast::ExprStmt{
+                .expr = std::move(expr)
+            };
+        } else {
+            stmt->kind = ast::ReturnStmt{
+                .value = std::move(expr)
+            };
+        }
+
+        ast::StmtBlock stmts;
+        stmts.push_back(std::move(stmt));
+        return ast::StmtSuite{std::move(stmts)};
+    }
+
+    struct ParsedCallableSignature {
+        std::string name;
+        ast::ParamList params;
+        Type return_type = Type::make_primitive(PrimitiveType::Void);
+    };
+
+    std::optional<ParsedCallableSignature> parse_signature_type_name_params(
+        std::string_view name_message,
+        NameMode name_mode = NameMode::AllowTypeKeywords) {
+        auto ret_type = parse_type();
+        if (!ret_type) {
+            return std::nullopt;
+        }
+
+        Token name_tok = consume_name(name_message, name_mode);
+        consume(TokenKind::LParen, "expected '(' after function name");
+        auto params = parse_param_list_flexible();
+        consume(TokenKind::RParen, "expected ')' after parameters");
+
+        return ParsedCallableSignature{
+            .name = std::string(name_tok.text),
+            .params = std::move(params),
+            .return_type = std::move(*ret_type)
+        };
+    }
+
+    std::optional<ParsedCallableSignature> parse_signature_name_params_optional_return(
+        std::string_view name_message,
+        NameMode name_mode = NameMode::AllowTypeKeywords) {
+        Token name_tok = consume_name(name_message, name_mode);
+        consume(TokenKind::LParen, "expected '(' after function name");
+        auto params = parse_param_list_flexible();
+        consume(TokenKind::RParen, "expected ')' after parameters");
+
+        Type ret_type = Type::make_primitive(PrimitiveType::Void);
+        if (match(TokenKind::Arrow) || match(TokenKind::Colon)) {
+            auto parsed_ret = parse_type();
+            if (parsed_ret) {
+                ret_type = std::move(*parsed_ret);
+            }
+        }
+
+        return ParsedCallableSignature{
+            .name = std::string(name_tok.text),
+            .params = std::move(params),
+            .return_type = std::move(ret_type)
+        };
+    }
+
+    std::optional<ParsedCallableSignature> parse_english_function_signature() {
+        Token name_tok = consume_name("expected function name", NameMode::AllowTypeKeywords);
+
+        ast::ParamList params;
+        if (match(TokenKind::With)) {
+            bool ok = parse_comma_separated_recovering(
+                [this]() -> std::optional<ast::Param> {
+                    Token pname = consume_name("expected parameter name");
+                    consume_keyword_spelling(TokenKind::As, "as", "expected 'as' after parameter name");
+                    auto ptype = parse_type();
+                    if (!ptype) {
+                        return std::nullopt;
+                    }
+                    return ast::Param{
+                        .name = std::string(pname.text),
+                        .type = std::move(*ptype)
+                    };
+                },
+                [this]() {
+                    return check(TokenKind::Returning) ||
+                           check(TokenKind::FatArrow) ||
+                           check(TokenKind::End) ||
+                           at_end();
+                },
+                [&](ast::Param param) {
+                    params.push_back(std::move(param));
+                },
+                "expected ',' between parameters",
+                [this]() { return is_contextual_name_token(current(), NameMode::Standard); });
+            if (!ok) {
+                return std::nullopt;
+            }
+        } else if (maybe_report_keyword_typo("with", "expected 'with'")) {
+            return std::nullopt;
+        }
+
+        Type ret_type = Type::make_primitive(PrimitiveType::Void);
+        if (match(TokenKind::Returning)) {
+            auto parsed_ret = parse_type();
+            if (parsed_ret) {
+                ret_type = std::move(*parsed_ret);
+            }
+        } else if (maybe_report_keyword_typo("returning", "expected 'returning'")) {
+            return std::nullopt;
+        }
+
+        return ParsedCallableSignature{
+            .name = std::string(name_tok.text),
+            .params = std::move(params),
+            .return_type = std::move(ret_type)
+        };
+    }
+
+    std::optional<ast::StmtSuite> parse_decl_body_suite(
+        Type return_type,
+        BracedBodyMode body_mode,
+        const char* label) {
+        if (match(TokenKind::FatArrow)) {
+            auto expr = parse_expr();
+            if (!expr) {
+                error(std::format("expected expression after {}", label));
+                return std::nullopt;
+            }
+            match(TokenKind::Semicolon);
+            return make_expression_body_suite(std::move(return_type), std::move(*expr));
+        }
+
+        consume(TokenKind::LBrace, std::format("expected '{{' or '=>' after {}", label));
+        auto body = parse_block_stmts(mode_for_braced_body(body_mode), "parse_decl_body_suite");
+        consume(TokenKind::RBrace, "expected '}' after function body");
+        return body;
+    }
+
+    std::optional<ast::MethodDecl> parse_class_method_function_style() {
+        auto sig = parse_signature_type_name_params("expected method name");
+        if (!sig) {
+            return std::nullopt;
+        }
+
+        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "method signature");
+        if (!body) {
+            return std::nullopt;
+        }
+
+        return make_instance_method(
+            std::move(sig->name),
+            std::move(sig->params),
+            std::move(sig->return_type),
+            std::move(*body));
+    }
+
+    std::optional<ast::MethodDecl> parse_class_method_fn_style() {
+        auto sig = parse_signature_name_params_optional_return("expected method name", NameMode::AllowTypeKeywords);
+        if (!sig) {
+            return std::nullopt;
+        }
+
+        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "method signature");
+        if (!body) {
+            return std::nullopt;
+        }
+
+        return make_instance_method(
+            std::move(sig->name),
+            std::move(sig->params),
+            std::move(sig->return_type),
+            std::move(*body));
+    }
+
+    std::optional<ast::MethodDecl> parse_class_method_type_first() {
+        auto sig = parse_signature_type_name_params("expected method name after type");
+        if (!sig) {
+            return std::nullopt;
+        }
+
+        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "method signature");
+        if (!body) {
+            return std::nullopt;
+        }
+
+        return make_instance_method(
+            std::move(sig->name),
+            std::move(sig->params),
+            std::move(sig->return_type),
+            std::move(*body));
     }
 
     // ========================================================================
@@ -262,7 +1290,13 @@ private:
             return parse_extern_decl();
         }
         if (match(TokenKind::Project)) {
-            return parse_project_decl();
+            SourceLoc project_loc = previous().loc;
+            auto ignored = parse_project_decl();
+            if (!ignored) {
+                synchronize();
+            }
+            error_at(project_loc, "project declarations are only valid in opus.project");
+            return std::nullopt;
         }
         if (match(TokenKind::Let)) {
             return parse_static_decl(false);
@@ -274,7 +1308,9 @@ private:
             return parse_fn_decl_v2_type_first();
         }
         
-        error("expected declaration (function, class, struct, etc.)");
+        error_expected_decl_start(
+            mixed_decl_keyword_candidates(),
+            "expected declaration (function, class, struct, etc.)");
         return std::nullopt;
     }
 
@@ -291,7 +1327,9 @@ private:
             }
         }
         
-        error("expected declaration (define function, create struct, etc.)");
+        error_expected_decl_start(
+            english_decl_keyword_candidates(),
+            "expected declaration (define function, create struct, etc.)");
         return std::nullopt;
     }
 
@@ -301,92 +1339,70 @@ private:
 
     std::optional<ast::DeclPtr> parse_fn_decl_c() {
         SourceSpan span{.start = previous().loc};
-        
-        Token name_tok = consume_name("expected function name");
-        std::string name(name_tok.text);
 
-        consume(TokenKind::LParen, "expected '(' after function name");
-        auto params = parse_param_list();
-        consume(TokenKind::RParen, "expected ')' after parameters");
-
-        Type ret_type = Type::make_primitive(PrimitiveType::Void);
-        if (match(TokenKind::Arrow)) {
-            auto t = parse_type();
-            if (t) ret_type = std::move(*t);
+        auto sig = parse_signature_name_params_optional_return("expected function name", NameMode::AllowTypeKeywords);
+        if (!sig) {
+            return std::nullopt;
         }
 
-        // mixed parsing allows any syntax inside fn bodies
-        consume(TokenKind::LBrace, "expected '{' before function body");
-        auto body = parse_block_stmts_mixed();
-        consume(TokenKind::RBrace, "expected '}' after function body");
+        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::Mixed, "function signature");
+        if (!body) {
+            return std::nullopt;
+        }
 
         span.end = previous().loc;
 
-        auto decl = std::make_unique<ast::Decl>();
-        decl->kind = ast::FnDecl{
-            .name = std::move(name),
-            .params = std::move(params),
-            .return_type = std::move(ret_type),
-            .body = std::move(body),
-        };
-        decl->span = span;
-        return decl;
+        return make_fn_decl(
+            std::move(sig->name),
+            std::move(sig->params),
+            std::move(sig->return_type),
+            std::optional<ast::StmtSuite>{std::move(*body)},
+            span);
     }
 
     std::optional<ast::DeclPtr> parse_fn_decl_english() {
         SourceSpan span{.start = previous().loc};
-        
-        Token name_tok = consume_name("expected function name");
-        std::string name(name_tok.text);
 
-        std::vector<ast::Param> params;
-        if (match(TokenKind::With)) {
-            do {
-                Token pname = consume_name("expected parameter name");
-                consume(TokenKind::As, "expected 'as' after parameter name");
-                auto ptype = parse_type();
-                if (ptype) {
-                    params.push_back(ast::Param{
-                        .name = std::string(pname.text),
-                        .type = std::move(*ptype)
-                    });
-                }
-            } while (match(TokenKind::Comma));
+        auto sig = parse_english_function_signature();
+        if (!sig) {
+            return std::nullopt;
         }
 
-        Type ret_type = Type::make_primitive(PrimitiveType::Void);
-        if (match(TokenKind::Returning)) {
-            auto t = parse_type();
-            if (t) ret_type = std::move(*t);
-        }
-
-        std::vector<ast::StmtPtr> body;
-        while (!at_end() && !check(TokenKind::End)) {
-            if (!check_loop_safeguard("parse_fn_decl_english")) {
-                break;
+        if (match(TokenKind::FatArrow)) {
+            auto expr = parse_expr();
+            if (!expr) {
+                error("expected expression after =>");
+                return std::nullopt;
             }
-            std::size_t before = pos_;
-            auto stmt = parse_stmt_mixed();
-            if (stmt) body.push_back(std::move(*stmt));
-            if (pos_ == before && !at_end()) {
-                advance();
+
+            auto body = make_expression_body_suite(sig->return_type.clone(), std::move(*expr));
+            match(TokenKind::Semicolon);
+            if (match(TokenKind::End)) {
+                consume_keyword_spelling(TokenKind::Function, "function", "expected 'function' after 'end'");
             }
+            span.end = previous().loc;
+
+            return make_fn_decl(
+                std::move(sig->name),
+                std::move(sig->params),
+                std::move(sig->return_type),
+                std::optional<ast::StmtSuite>{std::move(body)},
+                span);
         }
+
+        auto body = parse_stmt_suite_until_end(StatementMode::Mixed, "parse_fn_decl_english");
         
-        consume(TokenKind::End, "expected 'end'");
-        consume(TokenKind::Function, "expected 'function' after 'end'");
+        consume_keyword_spelling(TokenKind::End, "end", "expected 'end'");
+        consume_keyword_spelling(TokenKind::Function, "function", "expected 'function' after 'end'");
 
         span.end = previous().loc;
 
-        auto decl = std::make_unique<ast::Decl>();
-        decl->kind = ast::FnDecl{
-            .name = std::move(name),
-            .params = std::move(params),
-            .return_type = std::move(ret_type),
-            .body = std::move(body),
-        };
-        decl->span = span;
-        return decl;
+        return make_fn_decl(
+            std::move(sig->name),
+            std::move(sig->params),
+            std::move(sig->return_type),
+            std::optional<ast::StmtSuite>{std::move(body)},
+            span);
     }
 
     // ========================================================================
@@ -399,73 +1415,49 @@ private:
         
         bool is_thread = match(TokenKind::Thread);
         (void)is_thread; // todo: wire up to FnDecl when threading lands
-        
-        auto ret_type_opt = parse_type();
-        Type ret_type = ret_type_opt ? std::move(*ret_type_opt) : Type::make_primitive(PrimitiveType::Void);
-        
-        // allow type keywords as fn names too, e.g. "double"
-        Token name_tok;
-        if (check(TokenKind::Ident)) {
-            name_tok = advance();
-        } else if (current().is_type()) {
-            name_tok = advance();
-        } else {
-            error("expected function name");
-            name_tok = current();
+
+        auto sig = parse_signature_type_name_params("expected function name", NameMode::AllowTypeKeywords);
+        if (!sig) {
+            return std::nullopt;
         }
-        std::string name(name_tok.text);
 
-        consume(TokenKind::LParen, "expected '(' after function name");
-        auto params = parse_param_list_v2();
-        consume(TokenKind::RParen, "expected ')' after parameters");
-
-        consume(TokenKind::LBrace, "expected '{' before function body");
-        auto body = parse_block_stmts_v2();
-        consume(TokenKind::RBrace, "expected '}' after function body");
+        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "function signature");
+        if (!body) {
+            return std::nullopt;
+        }
 
         span.end = previous().loc;
 
-        auto decl = std::make_unique<ast::Decl>();
-        decl->kind = ast::FnDecl{
-            .name = std::move(name),
-            .params = std::move(params),
-            .return_type = std::move(ret_type),
-            .body = std::move(body),
-        };
-        decl->span = span;
-        return decl;
+        return make_fn_decl(
+            std::move(sig->name),
+            std::move(sig->params),
+            std::move(sig->return_type),
+            std::optional<ast::StmtSuite>{std::move(*body)},
+            span);
     }
 
     // v2.0: Type name(Type param, ...) { body } - no function keyword
     std::optional<ast::DeclPtr> parse_fn_decl_v2_type_first() {
         SourceSpan span{.start = current().loc};
-        
-        // return type is current token (already verified to be a type)
-        auto ret_type_opt = parse_type();
-        Type ret_type = ret_type_opt ? std::move(*ret_type_opt) : Type::make_primitive(PrimitiveType::Void);
-        
-        Token name_tok = consume_name("expected function name after type");
-        std::string name(name_tok.text);
 
-        consume(TokenKind::LParen, "expected '('");
-        auto params = parse_param_list_v2();
-        consume(TokenKind::RParen, "expected ')'");
+        auto sig = parse_signature_type_name_params("expected function name after type", NameMode::AllowTypeKeywords);
+        if (!sig) {
+            return std::nullopt;
+        }
 
-        consume(TokenKind::LBrace, "expected '{'");
-        auto body = parse_block_stmts_v2();
-        consume(TokenKind::RBrace, "expected '}'");
+        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "function signature");
+        if (!body) {
+            return std::nullopt;
+        }
 
         span.end = previous().loc;
 
-        auto decl = std::make_unique<ast::Decl>();
-        decl->kind = ast::FnDecl{
-            .name = std::move(name),
-            .params = std::move(params),
-            .return_type = std::move(ret_type),
-            .body = std::move(body),
-        };
-        decl->span = span;
-        return decl;
+        return make_fn_decl(
+            std::move(sig->name),
+            std::move(sig->params),
+            std::move(sig->return_type),
+            std::optional<ast::StmtSuite>{std::move(*body)},
+            span);
     }
 
     // v2.0 param list: Type name, Type name, ...
@@ -473,42 +1465,77 @@ private:
         std::vector<ast::Param> params;
         if (check(TokenKind::RParen)) return params;
 
-        do {
-            auto ptype = parse_type();
-            if (!ptype) {
-                error("expected parameter type");
-                return params;
-            }
-            Token pname = consume_name("expected parameter name after type");
-            params.push_back(ast::Param{
-                .name = std::string(pname.text),
-                .type = std::move(*ptype),
-                .is_mut = true  // All params are mutable by default in v2.0
-            });
-        } while (match(TokenKind::Comma));
+        bool ok = parse_comma_separated_recovering(
+            [this]() -> std::optional<ast::Param> {
+                auto ptype = parse_type();
+                if (!ptype) {
+                    error("expected parameter type");
+                    return std::nullopt;
+                }
+                Token pname = consume_name("expected parameter name after type");
+                return ast::Param{
+                    .name = std::string(pname.text),
+                    .type = std::move(*ptype),
+                    .is_mut = true
+                };
+            },
+            [this]() { return check(TokenKind::RParen) || at_end(); },
+            [&](ast::Param param) {
+                params.push_back(std::move(param));
+            },
+            "expected ',' between parameters",
+            [this]() { return looks_like_typed_name_start(); });
+        if (!ok) {
+            return params;
+        }
 
         return params;
     }
 
-    // shared block parser - takes a statement parser callable and loops with error recovery
-    std::vector<ast::StmtPtr> parse_block_stmts_impl(auto parse_stmt_fn, const char* label, bool also_stop_at_end = false) {
-        std::vector<ast::StmtPtr> stmts;
-        while (!check(TokenKind::RBrace) && !at_end() && !(also_stop_at_end && check(TokenKind::End))) {
-            if (!check_loop_safeguard(label)) break;
-            
-            std::size_t before = pos_;
-            auto stmt = parse_stmt_fn();
-            if (stmt) {
-                stmts.push_back(std::move(*stmt));
-            } else if (pos_ == before && !at_end()) {
-                advance();
-            }
+    [[nodiscard]] bool looks_like_name_first_param() const {
+        if (check(TokenKind::Mut)) {
+            return is_contextual_name_token(peek(1), true) && peek(2).kind == TokenKind::Colon;
         }
-        return stmts;
+        return is_contextual_name_token(current(), true) && peek(1).kind == TokenKind::Colon;
     }
 
-    std::vector<ast::StmtPtr> parse_block_stmts_v2() {
-        return parse_block_stmts_impl([this]() { return parse_stmt_v2(); }, "parse_block_stmts_v2");
+    std::vector<ast::Param> parse_param_list_flexible() {
+        if (looks_like_name_first_param()) {
+            return parse_param_list();
+        }
+        return parse_param_list_v2();
+    }
+
+    ast::StmtSuite parse_block_stmts(
+        StatementMode mode,
+        const char* label,
+        bool also_stop_at_end = false) {
+        return parse_stmt_suite_until(
+            mode,
+            [this, also_stop_at_end]() {
+                return check(TokenKind::RBrace) || (also_stop_at_end && check(TokenKind::End));
+            },
+            label);
+    }
+
+    std::optional<ast::StmtSuite> parse_stmt_suite_or_single(
+        StatementMode mode,
+        const char* block_label,
+        std::string_view missing_close_message) {
+        if (match(TokenKind::LBrace)) {
+            auto body = parse_block_stmts(mode, block_label);
+            consume(TokenKind::RBrace, missing_close_message);
+            return body;
+        }
+
+        auto stmt = parse_stmt_in(mode);
+        if (!stmt) {
+            return std::nullopt;
+        }
+
+        ast::StmtBlock stmts;
+        stmts.push_back(std::move(*stmt));
+        return ast::StmtSuite{std::move(stmts)};
     }
 
     std::optional<ast::StmtPtr> parse_stmt_v2() {
@@ -567,7 +1594,7 @@ private:
             return s;
         }
         if (match(TokenKind::Loop)) {
-            auto s = parse_loop_stmt();
+            auto s = parse_loop_stmt(StatementMode::V2);
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
@@ -586,12 +1613,16 @@ private:
             return stmt;
         }
         if (match(TokenKind::LBrace)) {
-            auto stmts = parse_block_stmts_v2();
+            auto stmts = parse_block_stmts(StatementMode::V2, "parse_block_stmts_v2");
             consume(TokenKind::RBrace, "expected '}'");
             auto stmt = std::make_unique<ast::Stmt>();
-            stmt->kind = ast::BlockStmt{.stmts = std::move(stmts)};
+            stmt->kind = ast::BlockStmt{.block = ast::Block{.stmts = std::move(stmts)}};
             stmt->span.start = stmt_start;
             return stmt;
+        }
+
+        if (maybe_report_statement_keyword_typo()) {
+            return std::nullopt;
         }
 
         auto expr = parse_expr();
@@ -608,24 +1639,18 @@ private:
     }
 
     std::optional<ast::StmtPtr> parse_let_or_var_v2(bool is_mut) {
-        // type keywords can be used as variable names (contextual)
-        Token name;
-        if (check(TokenKind::Ident)) {
-            name = advance();
-        } else if (current().is_type()) {
-            name = advance();
-        } else {
-            name = consume_name("expected variable name");
-        }
+        Token name = consume_name("expected variable name", true);
         
         std::optional<Type> type;
         if (match(TokenKind::Colon)) {
             type = parse_type();
         }
 
-        std::optional<ast::ExprPtr> init;
+        ast::ExprPtr init;
         if (match(TokenKind::Assign)) {
-            init = parse_expr();
+            if (auto expr = parse_expr()) {
+                init = std::move(*expr);
+            }
         }
 
         match(TokenKind::Semicolon);
@@ -649,7 +1674,10 @@ private:
         }
 
         consume(TokenKind::Assign, "expected '=' after constant name");
-        auto init = parse_expr();
+        ast::ExprPtr init;
+        if (auto expr = parse_expr()) {
+            init = std::move(*expr);
+        }
 
         match(TokenKind::Semicolon);
 
@@ -669,9 +1697,11 @@ private:
         
         Token name = consume_name("expected variable name after type");
         
-        std::optional<ast::ExprPtr> init;
+        ast::ExprPtr init;
         if (match(TokenKind::Assign)) {
-            init = parse_expr();
+            if (auto expr = parse_expr()) {
+                init = std::move(*expr);
+            }
         }
 
         match(TokenKind::Semicolon);
@@ -690,30 +1720,26 @@ private:
     std::optional<ast::StmtPtr> parse_if_stmt_v2() {
         auto cond = parse_expr();
         if (!cond) return std::nullopt;
-        
-        consume(TokenKind::LBrace, "expected '{' after if condition");
-        auto then_block = parse_block_stmts_v2();
-        consume(TokenKind::RBrace, "expected '}'");
 
-        std::vector<ast::StmtPtr> else_block;
+        auto then_block = parse_stmt_suite_or_single(
+            StatementMode::V2,
+            "parse_if_stmt_v2_then",
+            "expected '}' after if body");
+        if (!then_block) return std::nullopt;
+
+        std::optional<ast::StmtSuite> else_block;
         if (match(TokenKind::Else)) {
-            if (check(TokenKind::If)) {
-                advance();
-                auto else_if = parse_if_stmt_v2();
-                if (else_if) {
-                    else_block.push_back(std::move(*else_if));
-                }
-            } else {
-                consume(TokenKind::LBrace, "expected '{'");
-                else_block = parse_block_stmts_v2();
-                consume(TokenKind::RBrace, "expected '}'");
-            }
+            else_block = parse_stmt_suite_or_single(
+                StatementMode::V2,
+                "parse_if_stmt_v2_else",
+                "expected '}' after else body");
+            if (!else_block) return std::nullopt;
         }
 
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::IfStmt{
             .condition = std::move(*cond),
-            .then_block = std::move(then_block),
+            .then_block = std::move(*then_block),
             .else_block = std::move(else_block)
         };
         return stmt;
@@ -722,32 +1748,36 @@ private:
     std::optional<ast::StmtPtr> parse_while_stmt_v2() {
         auto cond = parse_expr();
         if (!cond) return std::nullopt;
-        consume(TokenKind::LBrace, "expected '{' after while condition");
-        auto body = parse_block_stmts_v2();
-        consume(TokenKind::RBrace, "expected '}'");
+        auto body = parse_stmt_suite_or_single(
+            StatementMode::V2,
+            "parse_while_stmt_v2_body",
+            "expected '}' after while body");
+        if (!body) return std::nullopt;
 
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::WhileStmt{
             .condition = std::move(*cond),
-            .body = std::move(body)
+            .body = std::move(*body)
         };
         return stmt;
     }
 
     std::optional<ast::StmtPtr> parse_for_stmt_v2() {
-        Token var = consume(TokenKind::Ident, "expected variable");
+        Token var = consume_name("expected variable");
         consume(TokenKind::In, "expected 'in'");
         auto iter = parse_expr();
         if (!iter) return std::nullopt;
-        consume(TokenKind::LBrace, "expected '{'");
-        auto body = parse_block_stmts_v2();
-        consume(TokenKind::RBrace, "expected '}'");
+        auto body = parse_stmt_suite_or_single(
+            StatementMode::V2,
+            "parse_for_stmt_v2_body",
+            "expected '}' after for body");
+        if (!body) return std::nullopt;
 
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::ForStmt{
             .name = std::string(var.text),
             .iterable = std::move(*iter),
-            .body = std::move(body)
+            .body = std::move(*body)
         };
         return stmt;
     }
@@ -756,64 +1786,55 @@ private:
         Token name_tok = consume_name("expected class name");
         consume(TokenKind::LBrace, "expected '{'");
 
-        std::vector<std::pair<std::string, Type>> fields;
+        ast::FieldDeclList fields;
         std::vector<ast::MethodDecl> methods;
 
-        while (!check(TokenKind::RBrace) && !at_end()) {
-            if (!check_loop_safeguard("parse_class_decl")) break;
-            std::size_t before = pos_;
-            
-            if (match(TokenKind::Function)) {
-                auto ret_type = parse_type();
-                Token method_name = consume_name("expected method name");
-                consume(TokenKind::LParen, "expected '(' after method name");
-                auto params = parse_param_list_v2();
-                consume(TokenKind::RParen, "expected ')'");
-                consume(TokenKind::LBrace, "expected '{'");
-                auto body = parse_block_stmts_v2();
-                consume(TokenKind::RBrace, "expected '}'");
-                
-                if (ret_type) {
-                    methods.push_back(ast::MethodDecl{
-                        .name = std::string(method_name.text),
-                        .params = std::move(params),
-                        .return_type = std::move(*ret_type),
-                        .body = std::move(body),
-                        .is_static = false
-                    });
-                }
-            }
-            else if (check(TokenKind::Ident)) {
-                Token fname = advance();
-                if (match(TokenKind::Colon)) {
-                    auto ftype = parse_type();
-                    if (ftype) {
-                        fields.emplace_back(std::string(fname.text), std::move(*ftype));
+        parse_recovering_sequence(
+            "parse_class_decl",
+            [this]() { return check(TokenKind::RBrace); },
+            RecoveryMode::ClassMember,
+            [&]() {
+                if (match(TokenKind::Function)) {
+                    auto method = parse_class_method_function_style();
+                    if (method) {
+                        methods.push_back(std::move(*method));
                     }
-                    match(TokenKind::Comma);
-                    match(TokenKind::Semicolon);
-                } else {
-                    error("expected ':' after field name");
+                    return true;
                 }
-            }
-            else if (looks_like_typed_name_start()) {
-                auto ftype = parse_type();
-                Token fname = consume_name("expected field name");
-                if (ftype) {
-                    fields.emplace_back(std::string(fname.text), std::move(*ftype));
+                if (match(TokenKind::Fn)) {
+                    auto method = parse_class_method_fn_style();
+                    if (method) {
+                        methods.push_back(std::move(*method));
+                    }
+                    return true;
                 }
-                match(TokenKind::Semicolon);
-                match(TokenKind::Comma);
-            }
-            else {
-                error("expected field or method in class");
-                advance();
-            }
+                if (looks_like_type_first_signature()) {
+                    auto method = parse_class_method_type_first();
+                    if (method) {
+                        methods.push_back(std::move(*method));
+                    }
+                    return true;
+                }
+                if (is_contextual_name_token(current(), NameMode::Standard) &&
+                    peek(1).kind != TokenKind::Colon) {
+                    if (auto suggestion = find_closest_match(current().text, class_member_keyword_candidates())) {
+                        error(std::format(
+                            "expected field or method in class (did you mean '{}'?)",
+                            *suggestion));
+                        return false;
+                    }
+                }
+                if (looks_like_typed_name_start() || is_contextual_name_token(current(), NameMode::AllowTypeKeywords)) {
+                    if (auto field = parse_field_decl_flexible()) {
+                        fields.push_back(std::move(*field));
+                    }
+                    consume_member_separator();
+                    return true;
+                }
 
-            if (pos_ == before && !at_end()) {
-                advance();
-            }
-        }
+                error("expected field or method in class");
+                return false;
+            });
 
         consume(TokenKind::RBrace, "expected '}'");
 
@@ -830,21 +1851,166 @@ private:
         std::vector<ast::Param> params;
         if (check(TokenKind::RParen)) return params;
 
-        do {
-            bool is_mut = match(TokenKind::Mut);
-            Token pname = consume_name("expected parameter name");
-            consume(TokenKind::Colon, "expected ':' after parameter name");
-            auto ptype = parse_type();
-            if (ptype) {
-                params.push_back(ast::Param{
+        bool ok = parse_comma_separated_recovering(
+            [this]() -> std::optional<ast::Param> {
+                bool is_mut = match(TokenKind::Mut);
+                Token pname = consume_name("expected parameter name");
+                consume(TokenKind::Colon, "expected ':' after parameter name");
+                auto ptype = parse_type();
+                if (!ptype) {
+                    return std::nullopt;
+                }
+                return ast::Param{
                     .name = std::string(pname.text),
                     .type = std::move(*ptype),
                     .is_mut = is_mut
-                });
-            }
-        } while (match(TokenKind::Comma));
+                };
+            },
+            [this]() { return check(TokenKind::RParen) || at_end(); },
+            [&](ast::Param param) {
+                params.push_back(std::move(param));
+            },
+            "expected ',' between parameters",
+            [this]() { return looks_like_name_first_param(); });
+        if (!ok) {
+            return params;
+        }
 
         return params;
+    }
+
+    void consume_member_separator() {
+        match(TokenKind::Comma);
+        match(TokenKind::Semicolon);
+    }
+
+    std::optional<ast::FieldDecl> parse_field_decl_flexible() {
+        if (looks_like_typed_name_start()) {
+            auto field_type = parse_type();
+            if (!field_type) {
+                return std::nullopt;
+            }
+
+            Token field_name = consume_name("expected field name");
+            return ast::FieldDecl{
+                .name = std::string(field_name.text),
+                .type = std::move(*field_type)
+            };
+        }
+
+        Token field_name = consume_name("expected field name");
+        consume(TokenKind::Colon, "expected ':' after field name");
+        auto field_type = parse_type();
+        if (!field_type) {
+            return std::nullopt;
+        }
+
+        return ast::FieldDecl{
+            .name = std::string(field_name.text),
+            .type = std::move(*field_type)
+        };
+    }
+
+    std::optional<std::string> parse_string_or_name_value(std::string_view label) {
+        if (check(TokenKind::StringLit)) {
+            Token value = advance();
+            auto* text = std::get_if<std::string>(&value.value);
+            if (!text) {
+                error(std::format("expected string value for {}", label));
+                return std::nullopt;
+            }
+            return *text;
+        }
+
+        if (is_contextual_name_token(current(), NameMode::AllowTypeKeywords)) {
+            return std::string(advance().text);
+        }
+
+        error(std::format("expected string or identifier for {}", label));
+        return std::nullopt;
+    }
+
+    std::optional<bool> parse_bool_value(std::string_view label) {
+        if (check(TokenKind::True)) {
+            advance();
+            return true;
+        }
+        if (check(TokenKind::False)) {
+            advance();
+            return false;
+        }
+        if (is_contextual_name_token(current(), NameMode::AllowTypeKeywords)) {
+            auto text = std::string(advance().text);
+            if (text == "true") {
+                return true;
+            }
+            if (text == "false") {
+                return false;
+            }
+            error(with_suggestion(
+                std::format("invalid {} value: '{}', expected 'true' or 'false'", label, text),
+                text,
+                bool_value_candidates()));
+            return std::nullopt;
+        }
+
+        error(std::format("expected 'true' or 'false' for {}", label));
+        return std::nullopt;
+    }
+
+    std::optional<ast::HealingMode> parse_healing_mode_value() {
+        auto value = parse_string_or_name_value("healing");
+        if (!value) {
+            return std::nullopt;
+        }
+
+        if (*value == "auto") {
+            return ast::HealingMode::Auto;
+        }
+        if (*value == "freeze") {
+            return ast::HealingMode::Freeze;
+        }
+        if (*value == "off") {
+            return ast::HealingMode::Off;
+        }
+
+        error(with_suggestion(
+            std::format("invalid healing mode: '{}', expected 'auto', 'freeze', or 'off'", *value),
+            *value,
+            healing_mode_candidates()));
+        return std::nullopt;
+    }
+
+    std::optional<std::vector<std::string>> parse_string_list(std::string_view label) {
+        consume(TokenKind::LBracket, std::format("expected '[' for {}", label));
+
+        std::vector<std::string> values;
+        while (!check(TokenKind::RBracket) && !at_end()) {
+            if (!check_loop_safeguard("parse_string_list")) {
+                break;
+            }
+
+            std::size_t before = pos_;
+            Token value = consume(TokenKind::StringLit, std::format("expected {} string", label));
+            auto* text = std::get_if<std::string>(&value.value);
+            if (text) {
+                values.push_back(*text);
+            } else {
+                error(std::format("expected string value for {}", label));
+                return std::nullopt;
+            }
+
+            if (!check(TokenKind::RBracket)) {
+                match(TokenKind::Comma);
+            }
+
+            if (pos_ == before && !at_end()) {
+                advance();
+            }
+        }
+
+        consume(TokenKind::RBracket, std::format("expected ']' after {}", label));
+        return values;
     }
 
     // ========================================================================
@@ -855,37 +2021,23 @@ private:
         Token name_tok = consume_name("expected struct name");
         consume(TokenKind::LBrace, "expected '{'");
 
-        std::vector<std::pair<std::string, Type>> fields;
-        while (!check(TokenKind::RBrace) && !at_end()) {
-            if (!check_loop_safeguard("parse_struct_decl")) {
-                break;
-            }
-            std::size_t before = pos_;
-            // supports both rust-style (name: Type,) and c-style (Type name;)
-            
-            if (looks_like_typed_name_start()) {
-                auto ftype = parse_type();
-                Token fname = consume_name("expected field name");
-                if (ftype) {
-                    fields.emplace_back(std::string(fname.text), std::move(*ftype));
+        ast::FieldDeclList fields;
+        parse_recovering_sequence(
+            "parse_struct_decl",
+            [this]() { return check(TokenKind::RBrace); },
+            RecoveryMode::StructMember,
+            [&]() {
+                if (looks_like_typed_name_start() || is_contextual_name_token(current(), NameMode::AllowTypeKeywords)) {
+                    if (auto field = parse_field_decl_flexible()) {
+                        fields.push_back(std::move(*field));
+                    }
+                    consume_member_separator();
+                    return true;
                 }
-                match(TokenKind::Semicolon);
-                match(TokenKind::Comma);
-            } else {
-                Token fname = consume_name("expected field name");
-                consume(TokenKind::Colon, "expected ':'");
-                auto ftype = parse_type();
-                if (ftype) {
-                    fields.emplace_back(std::string(fname.text), std::move(*ftype));
-                }
-                match(TokenKind::Comma);
-                match(TokenKind::Semicolon);
-            }
 
-            if (pos_ == before && !at_end()) {
-                advance();
-            }
-        }
+                error("expected field in struct");
+                return false;
+            });
 
         consume(TokenKind::RBrace, "expected '}'");
 
@@ -901,40 +2053,46 @@ private:
         Token name_tok = consume_name("expected enum name");
         consume(TokenKind::LBrace, "expected '{' after enum name");
         
-        std::vector<std::pair<std::string, std::optional<std::int64_t>>> variants;
+        ast::EnumVariantList variants;
         std::int64_t next_value = 0;
-        
-        while (!check(TokenKind::RBrace) && !at_end()) {
-            if (!check_loop_safeguard("parse_enum_decl")) break;
-            std::size_t before = pos_;
-            Token variant_name = consume_name("expected variant name");
-            
-            std::optional<std::int64_t> explicit_value;
-            if (match(TokenKind::Assign)) {
-                Token val_tok = consume(TokenKind::IntLit, "expected integer value");
-                auto* val_ptr = std::get_if<std::int64_t>(&val_tok.value);
-                if (!val_ptr) { error("expected integer value for enum variant"); return std::nullopt; }
-                explicit_value = *val_ptr;
-                next_value = *val_ptr + 1;
-            } else {
-                explicit_value = next_value++;
-            }
-            
-            variants.emplace_back(std::string(variant_name.text), explicit_value);
-            
-            if (!check(TokenKind::RBrace)) {
-                if (!match(TokenKind::Comma)) {
-                    if (!check(TokenKind::RBrace)) {
-                        error("expected ',' or '}' after enum variant");
-                        return std::nullopt;
-                    }
+        parse_recovering_sequence(
+            "parse_enum_decl",
+            [this]() { return check(TokenKind::RBrace); },
+            RecoveryMode::EnumMember,
+            [&]() {
+                if (!is_contextual_name_token(current(), NameMode::AllowTypeKeywords)) {
+                    error("expected variant name");
+                    return false;
                 }
-            }
 
-            if (pos_ == before && !at_end()) {
-                advance();
-            }
-        }
+                Token variant_name = consume_name("expected variant name");
+
+                std::optional<std::int64_t> explicit_value;
+                if (match(TokenKind::Assign)) {
+                    Token val_tok = consume(TokenKind::IntLit, "expected integer value");
+                    auto* val_ptr = std::get_if<std::int64_t>(&val_tok.value);
+                    if (!val_ptr) {
+                        error("expected integer value for enum variant");
+                        return true;
+                    }
+                    explicit_value = *val_ptr;
+                    next_value = *val_ptr + 1;
+                } else {
+                    explicit_value = next_value++;
+                }
+
+                variants.push_back(ast::EnumVariantDecl{
+                    .name = std::string(variant_name.text),
+                    .value = explicit_value
+                });
+
+                if (!check(TokenKind::RBrace) && !match(TokenKind::Comma)) {
+                    error("expected ',' or '}' after enum variant");
+                    return false;
+                }
+
+                return true;
+            });
         
         consume(TokenKind::RBrace, "expected '}' after enum variants");
         
@@ -973,7 +2131,7 @@ private:
             type = parse_type();
         }
         
-        std::optional<ast::ExprPtr> init;
+        ast::ExprPtr init;
         if (match(TokenKind::Assign)) {
             auto expr = parse_expr();
             if (expr) {
@@ -998,11 +2156,11 @@ private:
     }
 
     std::optional<ast::DeclPtr> parse_import_decl() {
-        Token path_tok = consume(TokenKind::Ident, "expected module path");
+        Token path_tok = consume_name("expected module path");
         std::string path(path_tok.text);
         
         while (match(TokenKind::Dot)) {
-            Token next = consume(TokenKind::Ident, "expected identifier");
+            Token next = consume_name("expected identifier");
             path += ".";
             path += next.text;
         }
@@ -1039,175 +2197,125 @@ private:
         return decl;
     }
 
-    std::optional<ast::DeclPtr> parse_project_decl() {
+    std::optional<ast::ProjectDecl> parse_project_decl() {
         Token name_tok = consume_name("expected project name");
         consume(TokenKind::LBrace, "expected '{' after project name");
         
         ast::ProjectDecl proj;
         proj.name = std::string(name_tok.text);
         proj.mode = "dll";
-        
-        while (!check(TokenKind::RBrace) && !at_end()) {
-            if (!check_loop_safeguard("parse_project_decl")) break;
-            std::size_t before = pos_;
-            
-            // property name could be ident or keyword like include
-            std::string key_str;
-            if (check(TokenKind::Include)) {
-                advance();
-                key_str = "include";
-            } else if (check(TokenKind::Ident)) {
-                key_str = std::string(advance().text);
-            } else {
-                error("expected project property name");
-                advance();
-                continue;
-            }
-            
-            consume(TokenKind::Colon, "expected ':' after property name");
-            
-            if (key_str == "entry") {
-                if (check(TokenKind::StringLit)) {
-                    Token val = advance();
-                    auto* sp = std::get_if<std::string>(&val.value);
-                    if (!sp) { error("expected string value for entry"); return std::nullopt; }
-                    proj.entry = *sp;
-                } else if (check(TokenKind::Ident)) {
-                    proj.entry = std::string(advance().text);
-                } else {
-                    error("expected string or identifier for entry");
-                }
-            } else if (key_str == "output") {
-                if (check(TokenKind::StringLit)) {
-                    Token val = advance();
-                    auto* sp = std::get_if<std::string>(&val.value);
-                    if (!sp) { error("expected string value for output"); return std::nullopt; }
-                    proj.output = *sp;
-                } else if (check(TokenKind::Ident)) {
-                    proj.output = std::string(advance().text);
-                } else {
-                    error("expected string or identifier for output");
-                }
-            } else if (key_str == "mode") {
-                if (check(TokenKind::StringLit)) {
-                    Token val = advance();
-                    auto* sp = std::get_if<std::string>(&val.value);
-                    if (!sp) { error("expected string value for mode"); return std::nullopt; }
-                    proj.mode = *sp;
-                } else if (check(TokenKind::Ident)) {
-                    proj.mode = std::string(advance().text);
-                } else {
-                    error("expected string or identifier for mode");
-                }
-            } else if (key_str == "include") {
-                consume(TokenKind::LBracket, "expected '[' for include list");
-                while (!check(TokenKind::RBracket) && !at_end()) {
-                    if (!check_loop_safeguard("parse_project_include")) break;
-                    std::size_t include_before = pos_;
-                    Token path = consume(TokenKind::StringLit, "expected include path string");
-                    auto* inc_ptr = std::get_if<std::string>(&path.value);
-                    if (!inc_ptr) { error("expected string value for include path"); return std::nullopt; }
-                    proj.includes.push_back(*inc_ptr);
-                    if (!check(TokenKind::RBracket)) {
-                        match(TokenKind::Comma);
-                    }
-                    if (pos_ == include_before && !at_end()) {
-                        advance();
-                    }
-                }
-                consume(TokenKind::RBracket, "expected ']' after include list");
-            } else if (key_str == "debug") {
-                if (check(TokenKind::True)) {
+
+        parse_recovering_sequence(
+            "parse_project_decl",
+            [this]() { return check(TokenKind::RBrace); },
+            RecoveryMode::ProjectProperty,
+            [&]() {
+                std::string key;
+                if (check(TokenKind::Include)) {
                     advance();
-                    proj.debug = true;
-                } else if (check(TokenKind::False)) {
-                    advance();
-                    proj.debug = false;
-                } else if (check(TokenKind::Ident)) {
-                    auto val = std::string(advance().text);
-                    proj.debug = (val == "true");
+                    key = "include";
+                } else if (is_contextual_name_token(current(), NameMode::AllowTypeKeywords)) {
+                    key = std::string(advance().text);
                 } else {
-                    error("expected 'true' or 'false' for debug");
+                    error("expected project property name");
+                    return false;
                 }
-            } else if (key_str == "healing") {
-                std::string heal_str;
-                if (check(TokenKind::Ident)) {
-                    heal_str = std::string(advance().text);
-                } else if (check(TokenKind::StringLit)) {
-                    auto heal_tok = advance();
-                    auto* hp = std::get_if<std::string>(&heal_tok.value);
-                    if (!hp) { error("expected string value for healing"); return std::nullopt; }
-                    heal_str = *hp;
+
+                consume(TokenKind::Colon, "expected ':' after property name");
+
+                if (key == "entry") {
+                    auto value = parse_string_or_name_value("entry");
+                    if (!value) {
+                        return false;
+                    }
+                    proj.entry = std::move(*value);
+                } else if (key == "output") {
+                    auto value = parse_string_or_name_value("output");
+                    if (!value) {
+                        return false;
+                    }
+                    proj.output = std::move(*value);
+                } else if (key == "mode") {
+                    auto value = parse_string_or_name_value("mode");
+                    if (!value) {
+                        return false;
+                    }
+                    if (*value != "dll" && *value != "exe") {
+                        error(with_suggestion(
+                            std::format("invalid project mode: '{}', expected 'dll' or 'exe'", *value),
+                            *value,
+                            project_mode_candidates()));
+                    } else {
+                        proj.mode = std::move(*value);
+                    }
+                } else if (key == "include") {
+                    auto values = parse_string_list("include list");
+                    if (!values) {
+                        return false;
+                    }
+                    for (auto& value : *values) {
+                        proj.includes.push_back(std::move(value));
+                    }
+                } else if (key == "debug") {
+                    auto value = parse_bool_value("debug");
+                    if (!value) {
+                        return false;
+                    }
+                    proj.debug = *value;
+                } else if (key == "healing") {
+                    auto value = parse_healing_mode_value();
+                    if (!value) {
+                        return false;
+                    }
+                    proj.healing = *value;
                 } else {
-                    error("expected 'auto', 'freeze', or 'off' for healing");
-                    continue;
+                    error_invalid_project_property(key);
+                    return false;
                 }
-                if (heal_str == "auto") proj.healing = ast::HealingMode::Auto;
-                else if (heal_str == "freeze") proj.healing = ast::HealingMode::Freeze;
-                else if (heal_str == "off") proj.healing = ast::HealingMode::Off;
-                else error(std::format("invalid healing mode: '{}', expected 'auto', 'freeze', or 'off'", heal_str));
-            } else {
-                error(std::format("unknown project property: '{}'", key_str));
-                advance();
-            }
-            
-            match(TokenKind::Comma);
-            if (pos_ == before && !at_end()) {
-                advance();
-            }
-        }
+
+                match(TokenKind::Comma);
+                return true;
+            });
 
         consume(TokenKind::RBrace, "expected '}' after project declaration");
-        
-        auto decl = std::make_unique<ast::Decl>();
-        decl->kind = std::move(proj);
-        return decl;
+        return proj;
     }
 
     std::optional<ast::DeclPtr> parse_extern_decl() {
         if (match(TokenKind::Fn)) {
-            Token name_tok = consume_name("expected function name");
-            consume(TokenKind::LParen, "expected '('");
-            auto params = parse_param_list();
-            consume(TokenKind::RParen, "expected ')'");
-
-            Type ret_type = Type::make_primitive(PrimitiveType::Void);
-            if (match(TokenKind::Arrow) || match(TokenKind::Colon)) {
-                auto t = parse_type();
-                if (t) ret_type = std::move(*t);
+            auto sig = parse_signature_name_params_optional_return("expected function name");
+            if (!sig) {
+                return std::nullopt;
             }
 
             match(TokenKind::Semicolon);
 
-            auto decl = std::make_unique<ast::Decl>();
-            decl->kind = ast::FnDecl{
-                .name = std::string(name_tok.text),
-                .params = std::move(params),
-                .return_type = std::move(ret_type),
-                .body = {},
-                .is_extern = true
-            };
-            return decl;
+            return make_fn_decl(
+                std::move(sig->name),
+                std::move(sig->params),
+                std::move(sig->return_type),
+                std::nullopt,
+                {},
+                ast::DeclAttrs{
+                    .linkage = ast::Linkage::External
+                });
         }
         if (match(TokenKind::Function)) {
-            auto ret_type_opt = parse_type();
-            Type ret_type = ret_type_opt ? std::move(*ret_type_opt) : Type::make_primitive(PrimitiveType::Void);
-
-            Token name_tok = consume_name("expected function name");
-            consume(TokenKind::LParen, "expected '(' after function name");
-            auto params = parse_param_list_v2();
-            consume(TokenKind::RParen, "expected ')' after parameters");
+            auto sig = parse_signature_type_name_params("expected function name");
+            if (!sig) {
+                return std::nullopt;
+            }
             match(TokenKind::Semicolon);
 
-            auto decl = std::make_unique<ast::Decl>();
-            decl->kind = ast::FnDecl{
-                .name = std::string(name_tok.text),
-                .params = std::move(params),
-                .return_type = std::move(ret_type),
-                .body = {},
-                .is_extern = true
-            };
-            return decl;
+            return make_fn_decl(
+                std::move(sig->name),
+                std::move(sig->params),
+                std::move(sig->return_type),
+                std::nullopt,
+                {},
+                ast::DeclAttrs{
+                    .linkage = ast::Linkage::External
+                });
         }
         error("expected 'fn' after 'extern'");
         return std::nullopt;
@@ -1219,18 +2327,30 @@ private:
 
     std::optional<ast::StmtPtr> parse_stmt() {
         switch (mode_) {
-            case SyntaxMode::CStyle:  return parse_stmt_c();
-            case SyntaxMode::English: return parse_stmt_english();
+            case SyntaxMode::CStyle:
+                return parse_stmt_in(StatementMode::CStyle);
+            case SyntaxMode::English:
+                return parse_stmt_in(StatementMode::English);
         }
         return std::nullopt;
     }
 
-    std::vector<ast::StmtPtr> parse_block_stmts() {
-        return parse_block_stmts_impl([this]() { return parse_stmt_c(); }, "parse_block_stmts");
+    std::optional<ast::StmtPtr> parse_stmt_in(StatementMode mode) {
+        switch (mode) {
+            case StatementMode::CStyle:
+                return parse_stmt_c();
+            case StatementMode::V2:
+                return parse_stmt_v2();
+            case StatementMode::English:
+                return parse_stmt_english();
+            case StatementMode::Mixed:
+                return parse_stmt_mixed();
+        }
+        return std::nullopt;
     }
 
-    std::vector<ast::StmtPtr> parse_block_stmts_mixed() {
-        return parse_block_stmts_impl([this]() { return parse_stmt_mixed(); }, "parse_block_stmts_mixed", true);
+    ast::StmtSuite parse_block_stmts_mixed() {
+        return parse_block_stmts(StatementMode::Mixed, "parse_block_stmts_mixed", true);
     }
     
     // figures out which syntax style this statement uses
@@ -1238,6 +2358,8 @@ private:
         if (check(TokenKind::Create)) return parse_stmt_english();
         if (check(TokenKind::Set)) return parse_stmt_english();
         if (check(TokenKind::Call)) return parse_stmt_english();
+        if (looks_like_english_if_stmt()) return parse_stmt_english();
+        if (looks_like_english_while_stmt()) return parse_stmt_english();
         return parse_stmt_v2();
     }
 
@@ -1275,7 +2397,7 @@ private:
             return s;
         }
         if (match(TokenKind::Loop)) {
-            auto s = parse_loop_stmt();
+            auto s = parse_loop_stmt(StatementMode::CStyle);
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
@@ -1294,12 +2416,16 @@ private:
             return stmt;
         }
         if (match(TokenKind::LBrace)) {
-            auto stmts = parse_block_stmts();
+            auto stmts = parse_block_stmts(StatementMode::CStyle, "parse_block_stmts_cstyle");
             consume(TokenKind::RBrace, "expected '}'");
             auto stmt = std::make_unique<ast::Stmt>();
-            stmt->kind = ast::BlockStmt{.stmts = std::move(stmts)};
+            stmt->kind = ast::BlockStmt{.block = ast::Block{.stmts = std::move(stmts)}};
             stmt->span.start = stmt_start;
             return stmt;
+        }
+
+        if (maybe_report_statement_keyword_typo()) {
+            return std::nullopt;
         }
 
         // Expression statement
@@ -1313,16 +2439,25 @@ private:
     }
 
     std::optional<ast::StmtPtr> parse_stmt_english() {
-        if (check(TokenKind::Create) && peek(1).kind == TokenKind::Variable) {
-            advance(); // consume Create
-            advance(); // consume Variable
+        if (match(TokenKind::Create)) {
+            if (check(TokenKind::Variable)) {
+                advance(); // consume Variable
+            } else {
+                if (maybe_report_keyword_typo("variable", "expected 'variable' after 'create'")) {
+                    return std::nullopt;
+                }
+                error("expected 'variable' after 'create'");
+                return std::nullopt;
+            }
             Token name = consume_name("expected variable name");
-            consume(TokenKind::As, "expected 'as'");
+            consume_keyword_spelling(TokenKind::As, "as", "expected 'as'");
             auto type = parse_type();
             
-            std::optional<ast::ExprPtr> init;
+            ast::ExprPtr init;
             if (match(TokenKind::With) && match(TokenKind::Value)) {
-                init = parse_expr();
+                if (auto expr = parse_expr()) {
+                    init = std::move(*expr);
+                }
             }
 
             auto stmt = std::make_unique<ast::Stmt>();
@@ -1335,7 +2470,7 @@ private:
         }
         if (match(TokenKind::Set)) {
             auto target = parse_expr();
-            consume(TokenKind::To, "expected 'to'");
+            consume_keyword_spelling(TokenKind::To, "to", "expected 'to'");
             auto value = parse_expr();
             
             if (target && value) {
@@ -1368,6 +2503,10 @@ private:
             }
         }
 
+        if (maybe_report_statement_keyword_typo()) {
+            return std::nullopt;
+        }
+
         // Expression statement
         auto expr = parse_expr();
         if (!expr) return std::nullopt;
@@ -1385,9 +2524,11 @@ private:
             type = parse_type();
         }
 
-        std::optional<ast::ExprPtr> init;
+        ast::ExprPtr init;
         if (match(TokenKind::Assign)) {
-            init = parse_expr();
+            if (auto expr = parse_expr()) {
+                init = std::move(*expr);
+            }
         }
 
         match(TokenKind::Semicolon);
@@ -1403,9 +2544,11 @@ private:
     }
 
     std::optional<ast::StmtPtr> parse_return_stmt() {
-        std::optional<ast::ExprPtr> value;
+        ast::ExprPtr value;
         if (!check(TokenKind::Semicolon) && !check(TokenKind::RBrace) && !at_end()) {
-            value = parse_expr();
+            if (auto expr = parse_expr()) {
+                value = std::move(*expr);
+            }
         }
         match(TokenKind::Semicolon);
 
@@ -1419,15 +2562,58 @@ private:
         auto cond = parse_expr();
         consume(TokenKind::RParen, "expected ')'");
         
-        consume(TokenKind::LBrace, "expected '{'");
-        auto then_block = parse_block_stmts();
-        consume(TokenKind::RBrace, "expected '}'");
+        auto then_block = parse_stmt_suite_or_single(
+            StatementMode::CStyle,
+            "parse_if_stmt_c_then",
+            "expected '}' after if body");
+        if (!then_block) return std::nullopt;
 
-        std::vector<ast::StmtPtr> else_block;
+        std::optional<ast::StmtSuite> else_block;
         if (match(TokenKind::Else)) {
-            consume(TokenKind::LBrace, "expected '{'");
-            else_block = parse_block_stmts();
-            consume(TokenKind::RBrace, "expected '}'");
+            else_block = parse_stmt_suite_or_single(
+                StatementMode::CStyle,
+                "parse_if_stmt_c_else",
+                "expected '}' after else body");
+            if (!else_block) return std::nullopt;
+        }
+
+        if (!cond) return std::nullopt;
+
+        auto stmt = std::make_unique<ast::Stmt>();
+        stmt->kind = ast::IfStmt{
+            .condition = std::move(*cond),
+            .then_block = std::move(*then_block),
+            .else_block = std::move(else_block)
+        };
+        return stmt;
+    }
+
+    std::optional<ast::StmtPtr> parse_if_stmt_english_chain(bool consume_end_if) {
+        auto cond = parse_expr();
+        consume_keyword_spelling(TokenKind::Then, "then", "expected 'then'");
+        
+        auto then_block = parse_stmt_suite_until_else_or_end(
+            StatementMode::Mixed,
+            "parse_if_stmt_english_then");
+
+        std::optional<ast::StmtSuite> else_block;
+        if (match(TokenKind::Else)) {
+            if (match(TokenKind::If)) {
+                auto nested = parse_if_stmt_english_chain(false);
+                if (!nested) return std::nullopt;
+                ast::StmtBlock else_stmts;
+                else_stmts.push_back(std::move(*nested));
+                else_block = ast::StmtSuite{std::move(else_stmts)};
+            } else {
+                else_block = parse_stmt_suite_until_end(
+                    StatementMode::Mixed,
+                    "parse_if_stmt_english_else");
+            }
+        }
+
+        if (consume_end_if) {
+            consume_keyword_spelling(TokenKind::End, "end", "expected 'end'");
+            consume_optional_keyword_spelling(TokenKind::If, "if", "expected 'if' after 'end'");
         }
 
         if (!cond) return std::nullopt;
@@ -1442,49 +2628,7 @@ private:
     }
 
     std::optional<ast::StmtPtr> parse_if_stmt_english() {
-        auto cond = parse_expr();
-        consume(TokenKind::Then, "expected 'then'");
-        
-        std::vector<ast::StmtPtr> then_block;
-        while (!check(TokenKind::Else) && !check(TokenKind::End) && !at_end()) {
-            if (!check_loop_safeguard("parse_if_stmt_english_then")) {
-                break;
-            }
-            std::size_t before = pos_;
-            auto s = parse_stmt_mixed();
-            if (s) then_block.push_back(std::move(*s));
-            if (pos_ == before && !at_end()) {
-                advance();
-            }
-        }
-
-        std::vector<ast::StmtPtr> else_block;
-        if (match(TokenKind::Else)) {
-            while (!check(TokenKind::End) && !at_end()) {
-                if (!check_loop_safeguard("parse_if_stmt_english_else")) {
-                    break;
-                }
-                std::size_t before = pos_;
-                auto s = parse_stmt_mixed();
-                if (s) else_block.push_back(std::move(*s));
-                if (pos_ == before && !at_end()) {
-                    advance();
-                }
-            }
-        }
-
-        consume(TokenKind::End, "expected 'end'");
-        match(TokenKind::If);
-
-        if (!cond) return std::nullopt;
-
-        auto stmt = std::make_unique<ast::Stmt>();
-        stmt->kind = ast::IfStmt{
-            .condition = std::move(*cond),
-            .then_block = std::move(then_block),
-            .else_block = std::move(else_block)
-        };
-        return stmt;
+        return parse_if_stmt_english_chain(true);
     }
 
     std::optional<ast::StmtPtr> parse_while_stmt_c() {
@@ -1492,36 +2636,27 @@ private:
         auto cond = parse_expr();
         if (!cond) return std::nullopt;
         consume(TokenKind::RParen, "expected ')'");
-        consume(TokenKind::LBrace, "expected '{'");
-        auto body = parse_block_stmts();
-        consume(TokenKind::RBrace, "expected '}'");
+        auto body = parse_stmt_suite_or_single(
+            StatementMode::CStyle,
+            "parse_while_stmt_c_body",
+            "expected '}' after while body");
+        if (!body) return std::nullopt;
 
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::WhileStmt{
             .condition = std::move(*cond),
-            .body = std::move(body)
+            .body = std::move(*body)
         };
         return stmt;
     }
 
     std::optional<ast::StmtPtr> parse_while_stmt_english() {
         auto cond = parse_expr();
-        consume(TokenKind::Do, "expected 'do'");
+        consume_keyword_spelling(TokenKind::Do, "do", "expected 'do'");
         
-        std::vector<ast::StmtPtr> body;
-        while (!check(TokenKind::End) && !at_end()) {
-            if (!check_loop_safeguard("parse_while_stmt_english")) {
-                break;
-            }
-            std::size_t before = pos_;
-            auto s = parse_stmt_mixed();
-            if (s) body.push_back(std::move(*s));
-            if (pos_ == before && !at_end()) {
-                advance();
-            }
-        }
-        consume(TokenKind::End, "expected 'end'");
-        match(TokenKind::While);
+        auto body = parse_stmt_suite_until_end(StatementMode::Mixed, "parse_while_stmt_english");
+        consume_keyword_spelling(TokenKind::End, "end", "expected 'end'");
+        consume_optional_keyword_spelling(TokenKind::While, "while", "expected 'while' after 'end'");
 
         if (!cond) return std::nullopt;
 
@@ -1535,31 +2670,35 @@ private:
 
     std::optional<ast::StmtPtr> parse_for_stmt_c() {
         consume(TokenKind::LParen, "expected '('");
-        Token var = consume(TokenKind::Ident, "expected variable");
+        Token var = consume_name("expected variable");
         consume(TokenKind::In, "expected 'in'");
         auto iter = parse_expr();
         if (!iter) return std::nullopt;
         consume(TokenKind::RParen, "expected ')'");
-        consume(TokenKind::LBrace, "expected '{'");
-        auto body = parse_block_stmts();
-        consume(TokenKind::RBrace, "expected '}'");
+        auto body = parse_stmt_suite_or_single(
+            StatementMode::CStyle,
+            "parse_for_stmt_c_body",
+            "expected '}' after for body");
+        if (!body) return std::nullopt;
 
         auto stmt = std::make_unique<ast::Stmt>();
         stmt->kind = ast::ForStmt{
             .name = std::string(var.text),
             .iterable = std::move(*iter),
-            .body = std::move(body)
+            .body = std::move(*body)
         };
         return stmt;
     }
 
-    std::optional<ast::StmtPtr> parse_loop_stmt() {
-        consume(TokenKind::LBrace, "expected '{'");
-        auto body = (mode_ == SyntaxMode::CStyle) ? parse_block_stmts() : parse_block_stmts_v2();
-        consume(TokenKind::RBrace, "expected '}'");
+    std::optional<ast::StmtPtr> parse_loop_stmt(StatementMode body_mode) {
+        auto body = parse_stmt_suite_or_single(
+            body_mode,
+            body_mode == StatementMode::CStyle ? "parse_loop_stmt_c_body" : "parse_loop_stmt_v2_body",
+            "expected '}' after loop body");
+        if (!body) return std::nullopt;
 
         auto stmt = std::make_unique<ast::Stmt>();
-        stmt->kind = ast::LoopStmt{.body = std::move(body)};
+        stmt->kind = ast::LoopStmt{.body = std::move(*body)};
         return stmt;
     }
 
@@ -1582,11 +2721,17 @@ private:
 
             std::vector<std::unique_ptr<Type>> params;
             if (!check(TokenKind::RParen)) {
-                do {
-                    auto param = parse_type();
-                    if (!param) return std::nullopt;
-                    params.push_back(std::make_unique<Type>(std::move(*param)));
-                } while (match(TokenKind::Comma));
+                bool ok = parse_comma_separated_recovering(
+                    [this]() -> std::optional<Type> {
+                        return parse_type();
+                    },
+                    [this]() { return check(TokenKind::RParen) || at_end(); },
+                    [&](Type param) {
+                        params.push_back(std::make_unique<Type>(std::move(param)));
+                    },
+                    "expected ',' between function type parameters",
+                    [this]() { return current().is_type() || is_contextual_name_token(current(), NameMode::AllowTypeKeywords); });
+                if (!ok) return std::nullopt;
             }
             consume(TokenKind::RParen, "expected ')' after function type params");
 
@@ -1658,7 +2803,7 @@ private:
                 default: return std::nullopt;
             }
             base = Type::make_primitive(pt);
-        } else if (check(TokenKind::Ident)) {
+        } else if (is_contextual_name_token(current(), true)) {
             Token name = advance();
             Type t;
             t.kind = std::string(name.text);
@@ -1837,10 +2982,15 @@ private:
             if (match(TokenKind::LParen)) {
                 std::vector<ast::ExprPtr> args;
                 if (!check(TokenKind::RParen)) {
-                    do {
-                        auto arg = parse_expr();
-                        if (arg) args.push_back(std::move(*arg));
-                    } while (match(TokenKind::Comma));
+                    bool ok = parse_comma_separated_recovering(
+                        [this]() { return parse_expr(); },
+                        [this]() { return check(TokenKind::RParen) || at_end(); },
+                        [&](ast::ExprPtr arg) {
+                            args.push_back(std::move(arg));
+                        },
+                        "expected ',' between arguments",
+                        [this]() { return looks_like_expr_start(); });
+                    if (!ok) return std::nullopt;
                 }
                 consume(TokenKind::RParen, "expected ')'");
 
@@ -1872,7 +3022,7 @@ private:
                     .field = std::string(field.text)
                 };
                 expr = std::move(access);
-                if (check(TokenKind::LBrace) && !field.text.empty() && field.text[0] >= 'A' && field.text[0] <= 'Z') {
+                if (looks_like_struct_literal_after()) {
                     auto qualified_name = expr_to_qualified_name(**expr);
                     if (qualified_name) {
                         return parse_struct_literal(*qualified_name);
@@ -1917,37 +3067,40 @@ private:
     std::optional<ast::ExprPtr> parse_struct_literal(const std::string& struct_name) {
         consume(TokenKind::LBrace, "expected '{' after struct name");
         
-        std::vector<std::pair<std::string, ast::ExprPtr>> fields;
-        
-        while (!check(TokenKind::RBrace) && !at_end()) {
-            if (!check_loop_safeguard("parse_struct_literal")) {
-                break;
-            }
-            std::size_t before = pos_;
-            Token field_name = consume_name("expected field name");
-            consume(TokenKind::Colon, "expected ':' after field name");
-            
-            auto value = parse_expr();
-            if (!value) {
-                error("expected expression for field value");
-                return std::nullopt;
-            }
-            
-            fields.emplace_back(std::string(field_name.text), std::move(*value));
-            
-            if (!check(TokenKind::RBrace)) {
-                if (!match(TokenKind::Comma)) {
-                    if (!check(TokenKind::RBrace)) {
-                        error("expected ',' or '}' after field value");
-                        return std::nullopt;
-                    }
-                }
-            }
+        ast::FieldInitList fields;
 
-            if (pos_ == before && !at_end()) {
-                advance();
-            }
-        }
+        parse_recovering_sequence(
+            "parse_struct_literal",
+            [this]() { return check(TokenKind::RBrace); },
+            RecoveryMode::StructLiteralField,
+            [&]() {
+                Token field_name = consume_name("expected field name");
+                ast::ExprPtr value;
+                if (match(TokenKind::Colon)) {
+                    auto parsed_value = parse_expr();
+                    if (!parsed_value) {
+                        error("expected expression for field value");
+                        return true;
+                    }
+                    value = std::move(*parsed_value);
+                } else {
+                    auto shorthand = std::make_unique<ast::Expr>();
+                    shorthand->kind = ast::IdentExpr{.name = std::string(field_name.text)};
+                    value = std::move(shorthand);
+                }
+
+                fields.push_back(ast::FieldInit{
+                    .name = std::string(field_name.text),
+                    .value = std::move(value)
+                });
+
+                if (!check(TokenKind::RBrace) && !match(TokenKind::Comma)) {
+                    error("expected ',' or '}' after field value");
+                    return false;
+                }
+
+                return true;
+            });
 
         if (at_end()) {
             error("expected '}' after struct literal");
@@ -1978,27 +3131,22 @@ private:
         return std::nullopt;
     }
 
-    // spawn func(args) -> SpawnExpr
+    // spawn callable(args) -> SpawnExpr
     std::optional<ast::ExprPtr> parse_spawn_expr() {
-        Token callee_tok = consume_name("expected function name after 'spawn'");
-        
-        auto callee = std::make_unique<ast::Expr>();
-        callee->kind = ast::IdentExpr{.name = std::string(callee_tok.text)};
-        
-        consume(TokenKind::LParen, "expected '(' after function name in spawn");
-        std::vector<ast::ExprPtr> args;
-        if (!check(TokenKind::RParen)) {
-            do {
-                auto arg = parse_expr();
-                if (arg) args.push_back(std::move(*arg));
-            } while (match(TokenKind::Comma));
+        SourceLoc spawn_loc = previous().loc;
+        auto target = parse_postfix();
+        if (!target) return std::nullopt;
+
+        auto* call = std::get_if<ast::CallExpr>(&(*target)->kind);
+        if (!call) {
+            error_at(spawn_loc, "spawn requires a function call like 'spawn worker()'");
+            return std::nullopt;
         }
-        consume(TokenKind::RParen, "expected ')' after spawn arguments");
         
         auto expr = std::make_unique<ast::Expr>();
         expr->kind = ast::SpawnExpr{
-            .callee = std::move(callee),
-            .args = std::move(args)
+            .callee = std::move(call->callee),
+            .args = std::move(call->args)
         };
         return expr;
     }
@@ -2015,11 +3163,11 @@ private:
     // parallel for i in range(start, end) { body }
     std::optional<ast::StmtPtr> parse_parallel_for() {
         consume(TokenKind::For, "expected 'for' after 'parallel'");
-        Token var = consume(TokenKind::Ident, "expected loop variable");
+        Token var = consume_name("expected loop variable");
         consume(TokenKind::In, "expected 'in'");
         
         // expect range(start, end)
-        Token range_tok = consume(TokenKind::Ident, "expected 'range'");
+        Token range_tok = consume_name("expected 'range'");
         if (range_tok.text != "range") {
             error("parallel for requires range(start, end)");
             return std::nullopt;
@@ -2030,10 +3178,12 @@ private:
         consume(TokenKind::Comma, "expected ',' between range arguments");
         auto end = parse_expr();
         consume(TokenKind::RParen, "expected ')' after range arguments");
-        
-        consume(TokenKind::LBrace, "expected '{'");
-        auto body = parse_block_stmts_v2();
-        consume(TokenKind::RBrace, "expected '}'");
+
+        auto body = parse_stmt_suite_or_single(
+            StatementMode::V2,
+            "parse_parallel_for_body",
+            "expected '}' after parallel for body");
+        if (!body) return std::nullopt;
         
         if (!start || !end) return std::nullopt;
         
@@ -2042,49 +3192,69 @@ private:
             .name = std::string(var.text),
             .start = std::move(*start),
             .end = std::move(*end),
-            .body = std::move(body)
+            .body = std::move(*body)
         };
         return stmt;
     }
 
     std::optional<ast::ExprPtr> parse_atomic_op(const std::string& name) {
-        using Op = ast::AtomicOpExpr::Op;
-        
-        Op op;
-        int expected_args;
-        if (name == "atomic_add") { op = Op::Add; expected_args = 2; }
-        else if (name == "atomic_cas") { op = Op::CAS; expected_args = 3; }
-        else if (name == "atomic_load") { op = Op::Load; expected_args = 1; }
-        else { op = Op::Store; expected_args = 2; }  // atomic_store
-        
         consume(TokenKind::LParen, std::format("expected '(' after '{}'", name));
-        
+
         auto ptr = parse_expr();
         if (!ptr) return std::nullopt;
-        
-        std::vector<ast::ExprPtr> args;
-        while (match(TokenKind::Comma)) {
-            auto arg = parse_expr();
-            if (arg) args.push_back(std::move(*arg));
+
+        if (name == "atomic_load") {
+            consume(TokenKind::RParen, std::format("expected ')' after {} arguments", name));
+            auto expr = std::make_unique<ast::Expr>();
+            expr->kind = ast::AtomicLoadExpr{
+                .ptr = std::move(*ptr)
+            };
+            return expr;
         }
-        
+
+        consume(TokenKind::Comma, std::format("expected ',' after first {} argument", name));
+        auto first_value = parse_expr();
+        if (!first_value) return std::nullopt;
+
+        if (name == "atomic_add") {
+            consume(TokenKind::RParen, std::format("expected ')' after {} arguments", name));
+            auto expr = std::make_unique<ast::Expr>();
+            expr->kind = ast::AtomicAddExpr{
+                .ptr = std::move(*ptr),
+                .value = std::move(*first_value)
+            };
+            return expr;
+        }
+
+        if (name == "atomic_store") {
+            consume(TokenKind::RParen, std::format("expected ')' after {} arguments", name));
+            auto expr = std::make_unique<ast::Expr>();
+            expr->kind = ast::AtomicStoreExpr{
+                .ptr = std::move(*ptr),
+                .value = std::move(*first_value)
+            };
+            return expr;
+        }
+
+        consume(TokenKind::Comma, "expected ',' between atomic_cas expected and desired");
+        auto desired = parse_expr();
+        if (!desired) return std::nullopt;
         consume(TokenKind::RParen, std::format("expected ')' after {} arguments", name));
-        
-        int total_args = 1 + static_cast<int>(args.size());
-        if (total_args != expected_args) {
-            error(std::format("{} expects {} arguments, got {}", name, expected_args, total_args));
-        }
-        
+
         auto expr = std::make_unique<ast::Expr>();
-        expr->kind = ast::AtomicOpExpr{
-            .op = op,
+        expr->kind = ast::AtomicCompareExchangeExpr{
             .ptr = std::move(*ptr),
-            .args = std::move(args)
+            .expected = std::move(*first_value),
+            .desired = std::move(*desired)
         };
         return expr;
     }
 
     std::optional<ast::ExprPtr> parse_primary() {
+        if (check(TokenKind::If)) {
+            error("if expressions are not supported yet; use a statement form or bind the result manually");
+            return std::nullopt;
+        }
         if (match(TokenKind::IntLit)) {
             auto expr = std::make_unique<ast::Expr>();
             std::int64_t val = std::get<std::int64_t>(previous().value);
@@ -2141,7 +3311,7 @@ private:
         }
 
 
-        if (match(TokenKind::Spawn)) {
+        if (match(TokenKind::Spawn) || match(TokenKind::Thread)) {
             return parse_spawn_expr();
         }
 
@@ -2149,8 +3319,9 @@ private:
             return parse_await_expr();
         }
 
-        if (match(TokenKind::Ident)) {
-            std::string name(previous().text);
+        if (is_contextual_name_token(current(), true)) {
+            Token ident_tok = advance();
+            std::string name(ident_tok.text);
             
             // atomic builtins need to be intercepted before normal call handling
             if (name == "atomic_add" || name == "atomic_cas" || 
@@ -2158,8 +3329,8 @@ private:
                 return parse_atomic_op(name);
             }
             
-            // struct literal if uppercase ident followed by {
-            if (check(TokenKind::LBrace) && !name.empty() && name[0] >= 'A' && name[0] <= 'Z') {
+            // struct/class literal when a named type is followed by {
+            if (looks_like_struct_literal_after()) {
                 return parse_struct_literal(name);
             }
             
@@ -2167,27 +3338,6 @@ private:
             expr->kind = ast::IdentExpr{.name = std::move(name)};
             return expr;
         }
-        
-        // type keywords can be used as variable names
-        if (current().is_type()) {
-            Token tok = advance();
-            auto expr = std::make_unique<ast::Expr>();
-            expr->kind = ast::IdentExpr{.name = std::string(tok.text)};
-            return expr;
-        }
-        
-        // malloc/free are keywords but parse as regular function calls
-        if (match(TokenKind::Malloc)) {
-            auto expr = std::make_unique<ast::Expr>();
-            expr->kind = ast::IdentExpr{.name = "malloc"};
-            return expr;
-        }
-        if (match(TokenKind::Free)) {
-            auto expr = std::make_unique<ast::Expr>();
-            expr->kind = ast::IdentExpr{.name = "free"};  
-            return expr;
-        }
-
 
         if (match(TokenKind::LParen)) {
             auto inner = parse_expr();
@@ -2195,13 +3345,23 @@ private:
             return inner;
         }
 
+        if (check(TokenKind::LBrace)) {
+            error("block expressions are not supported yet; use a block statement instead");
+            return std::nullopt;
+        }
+
         if (match(TokenKind::LBracket)) {
             std::vector<ast::ExprPtr> elements;
             if (!check(TokenKind::RBracket)) {
-                do {
-                    auto elem = parse_expr();
-                    if (elem) elements.push_back(std::move(*elem));
-                } while (match(TokenKind::Comma));
+                bool ok = parse_comma_separated_recovering(
+                    [this]() { return parse_expr(); },
+                    [this]() { return check(TokenKind::RBracket) || at_end(); },
+                    [&](ast::ExprPtr elem) {
+                        elements.push_back(std::move(elem));
+                    },
+                    "expected ',' between array elements",
+                    [this]() { return looks_like_expr_start(); });
+                if (!ok) return std::nullopt;
             }
             consume(TokenKind::RBracket, "expected ']'");
 

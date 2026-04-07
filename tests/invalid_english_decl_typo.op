@@ -1,0 +1,3 @@
+defnie function main returning i64
+    return 0
+end function

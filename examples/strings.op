@@ -32,8 +32,6 @@ function void analyze(str text) {
 }
 
 function int main() {
-    alloc_console()
-
     analyze("Hello World 123!")
     analyze("opus v0.1.0 -- systems lang")
     analyze("48 89 5C 24 08")

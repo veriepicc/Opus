@@ -1,0 +1,45 @@
+import text
+
+// Filesystem-style helpers over the builtin file/string layer.
+// Ownership:
+// - fs_read_text/fs_read_or return heap strings; caller must free.
+
+function str fs_read_text(str file_path) {
+    return read_file(file_path)
+}
+
+function int fs_write_text(str file_path, str body) {
+    return write_file(file_path, body)
+}
+
+function bool fs_write_ok(str file_path, str body) {
+    return fs_write_text(file_path, body) != 0
+}
+
+function str fs_read_or(str file_path, str fallback) {
+    let content = fs_read_text(file_path)
+    if content == 0 {
+        return text_clone(fallback)
+    }
+    return content
+}
+
+function bool fs_starts_with(str file_path, str prefix) {
+    let content = fs_read_text(file_path)
+    if content == 0 {
+        return false
+    }
+    let ok = text_starts_with(content, prefix)
+    free(content)
+    return ok
+}
+
+function bool fs_contains(str file_path, str needle) {
+    let content = fs_read_text(file_path)
+    if content == 0 {
+        return false
+    }
+    let ok = text_contains(content, needle)
+    free(content)
+    return ok
+}

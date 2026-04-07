@@ -36,7 +36,7 @@ std::expected<ProjectConfig, std::string> load_project(const std::filesystem::pa
     auto tokens = lexer.tokenize_all();
     
     Parser parser(std::move(tokens), SyntaxMode::CStyle);
-    auto result = parser.parse_module(project_path.stem().string());
+    auto result = parser.parse_project_file();
     
     if (!result) {
         std::string errors;
@@ -47,36 +47,30 @@ std::expected<ProjectConfig, std::string> load_project(const std::filesystem::pa
     }
     
     ProjectConfig config;
-    config.project_dir = project_path.parent_path();
-    
-    bool found = false;
-    for (const auto& decl : result->decls) {
-        if (!decl->is<ast::ProjectDecl>()) {
-            return std::unexpected("unexpected top-level declaration in opus.project");
-        }
+    std::error_code project_dir_ec;
+    auto project_dir = std::filesystem::weakly_canonical(project_path.parent_path(), project_dir_ec);
+    config.project_dir = project_dir_ec ? project_path.parent_path().lexically_normal() : project_dir;
 
-        if (found) {
-            return std::unexpected("multiple project declarations found in opus.project");
-        }
-
-        const auto& proj = decl->as<ast::ProjectDecl>();
-        config.name = proj.name;
-        config.entry = proj.entry;
-        config.output = proj.output;
-        config.mode = proj.mode;
-        config.includes = proj.includes;
-        config.debug = proj.debug;
-        config.healing = proj.healing;
-        found = true;
-    }
-    
-    if (!found) {
-        return std::unexpected("no project declaration found in opus.project");
-    }
+    const auto& proj = *result;
+    config.name = proj.name;
+    config.entry = proj.entry;
+    config.output = proj.output;
+    config.mode = proj.mode;
+    config.includes = proj.includes;
+    config.debug = proj.debug;
+    config.healing = proj.healing;
     
     // default: debug builds get auto healing, release gets none
     if (!config.healing.has_value()) {
         config.healing = config.debug ? ast::HealingMode::Auto : ast::HealingMode::Off;
+    }
+
+    for (auto& include_path : config.includes) {
+        std::filesystem::path resolved = include_path;
+        if (resolved.is_relative()) {
+            resolved = config.project_dir / resolved;
+        }
+        include_path = resolved.lexically_normal().string();
     }
     
     return config;

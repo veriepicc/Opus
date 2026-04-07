@@ -1,0 +1,5 @@
+import http
+
+function int main() {
+    return http_debug_fetch_stage("https://example.com")
+}

@@ -1,0 +1,6 @@
+import test_import_lib as lib
+
+function int main() {
+    let h = spawn lib.square(9)
+    return await h
+}

@@ -1,0 +1,15 @@
+class MixedFields {
+    int value
+    other: int
+}
+
+function int main() {
+    let item = MixedFields { value: 19, other: 23 }
+    if item.value != 19 {
+        return 1
+    }
+    if item.other != 23 {
+        return 2
+    }
+    return 0
+}

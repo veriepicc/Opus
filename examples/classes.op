@@ -6,10 +6,7 @@ class Player {
     name: str,
 
     function void take_damage(int amount) {
-        // armor absorbs half
-        let absorbed = amount * self.armor / 100
-        let actual = amount - absorbed
-        self.health = self.health - actual
+        self.health = self.health - (amount - (amount * self.armor / 100))
         if self.health < 0 {
             self.health = 0
         }
@@ -41,8 +38,6 @@ class Player {
 }
 
 function int main() {
-    alloc_console()
-
     var warrior = Player { health: 100, armor: 60, name: "warrior" }
     var mage = Player { health: 100, armor: 10, name: "mage" }
 

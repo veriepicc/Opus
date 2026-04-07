@@ -1,0 +1,33 @@
+import fs
+import json
+
+function int main() {
+    let src = fs_read_text("tests/test_json_file_input.json")
+    if src == 0 {
+        return 1
+    }
+
+    let root = json_parse(src)
+    if root == 0 {
+        free(src)
+        return 2
+    }
+
+    let id = json_get_string(src, "_id")
+    if id == 0 {
+        json_free(root)
+        free(src)
+        return 3
+    }
+
+    let ok = string_equals(id, "69cff3e530c00f17bab6c9c0")
+    free(id)
+    json_free(root)
+    free(src)
+
+    if ok == 0 {
+        return 4
+    }
+
+    return 0
+}

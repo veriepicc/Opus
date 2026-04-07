@@ -1,0 +1,8 @@
+class Counter {
+    int value
+}
+
+function int main() {
+    let item = Countr { value: 7 }
+    return 0
+}

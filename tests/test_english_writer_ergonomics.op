@@ -1,0 +1,22 @@
+define function add with left as i64, right as i64, returning i64 => left + right
+
+define function main returning i64
+    let total = add(20, 22,)
+    var counter = 0
+    var mark = 0
+    while counter < 2 do
+        counter = counter + 1
+    end while
+    if total != 42 then
+        return 1
+    else if total == 42 then
+        mark = 1
+    end if
+    if counter != 2 then
+        return 2
+    end if
+    if mark != 1 then
+        return 3
+    end if
+    return 0
+end function

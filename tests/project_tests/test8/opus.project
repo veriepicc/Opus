@@ -1,0 +1,6 @@
+project Test8 {
+    entry: "app/main.op"
+    output: "Test8.exe"
+    mode: "exe"
+    include: ["modules"]
+}

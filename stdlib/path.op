@@ -1,0 +1,74 @@
+import text
+
+// Lightweight path helpers for common tooling tasks.
+// Ownership:
+// - path_join2/path_basename/path_dirname/path_ext/path_stem return heap strings; caller must free.
+
+function int path_last_sep(str source) {
+    var i = string_length(source) - 1
+    while i >= 0 {
+        let ch = char_at(source, i)
+        if ch == 47 or ch == 92 {
+            return i
+        }
+        i--
+    }
+    return -1
+}
+
+function str path_join2(str left, str right) {
+    if text_is_empty(left) {
+        return text_clone(right)
+    }
+    if text_is_empty(right) {
+        return text_clone(left)
+    }
+
+    let last = char_at(left, string_length(left) - 1)
+    if last == 47 or last == 92 {
+        return string_append(left, right)
+    }
+    return text_join3(left, "/", right)
+}
+
+function str path_basename(str source) {
+    let idx = path_last_sep(source)
+    if idx < 0 {
+        return text_clone(source)
+    }
+    return string_substring(source, idx + 1, string_length(source) - idx - 1)
+}
+
+function str path_dirname(str source) {
+    let idx = path_last_sep(source)
+    if idx < 0 {
+        return text_clone("")
+    }
+    if idx == 0 {
+        return string_substring(source, 0, 1)
+    }
+    return string_substring(source, 0, idx)
+}
+
+function str path_ext(str source) {
+    let base = path_basename(source)
+    let dot = text_rfind_char(base, 46)
+    if dot < 0 {
+        free(base)
+        return text_clone("")
+    }
+    let out = string_substring(base, dot + 1, string_length(base) - dot - 1)
+    free(base)
+    return out
+}
+
+function str path_stem(str source) {
+    let base = path_basename(source)
+    let dot = text_rfind_char(base, 46)
+    if dot < 0 {
+        return base
+    }
+    let out = string_substring(base, 0, dot)
+    free(base)
+    return out
+}

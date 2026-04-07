@@ -1,0 +1,4 @@
+define function main returning i64
+    cretae variable count as i64
+    return 0
+end function

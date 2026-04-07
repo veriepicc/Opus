@@ -1,0 +1,49 @@
+import ascii
+import text
+
+// Small formatting helpers that make ordinary output code much less repetitive.
+// Ownership:
+// - every fmt_* function returning str returns a heap string; caller must free.
+
+function str fmt_bool(bool flag) {
+    if flag {
+        return text_clone("true")
+    }
+    return text_clone("false")
+}
+
+function str fmt_int(int number) {
+    return int_to_string(number)
+}
+
+function str fmt_int_pad_left(int number, int width) {
+    let raw = int_to_string(number)
+    let out = text_pad_left(raw, width, "0")
+    free(raw)
+    return out
+}
+
+function str fmt_pair(str key, str val) {
+    let left = string_append(key, ": ")
+    let out = string_append(left, val)
+    free(left)
+    return out
+}
+
+function str fmt_csv3(str a, str b, str c) {
+    let ab = text_join3(a, ",", b)
+    let out = text_join3(ab, ",", c)
+    free(ab)
+    return out
+}
+
+function str fmt_wrap(str val, str left, str right) {
+    return text_surround(val, left, right)
+}
+
+function str fmt_hex_byte(int byte_value) {
+    let body = ascii_hex_byte(byte_value)
+    let out = string_append("0x", body)
+    free(body)
+    return out
+}

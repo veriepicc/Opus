@@ -1,0 +1,106 @@
+import json
+
+function int main() {
+    let source = "{\"name\":\"opus\",\"fast\":true,\"count\":42,\"nothing\":null,\"arr\":[1,2,3],\"obj\":{\"x\":\"y\"},\"esc\":\"line\\nquote\\\"slash\\\\A\\u0042\"}"
+    let root = json_parse(source)
+    if root == 0 {
+        return 1
+    }
+
+    if !json_is_object(root) {
+        json_free(root)
+        return 2
+    }
+
+    let name_value = json_object_get(root, "name")
+    if name_value == 0 {
+        json_free(root)
+        return 3
+    }
+    let name_text = json_string(name_value)
+    if string_equals(name_text, "opus") == 0 {
+        free(name_text)
+        json_free(root)
+        return 4
+    }
+    free(name_text)
+
+    let fast_value = json_object_get(root, "fast")
+    if !json_bool_value(fast_value, false) {
+        json_free(root)
+        return 5
+    }
+
+    let count_value = json_object_get(root, "count")
+    if json_int(count_value, -1) != 42 {
+        json_free(root)
+        return 6
+    }
+
+    let null_value = json_object_get(root, "nothing")
+    if !json_is_null(null_value) {
+        json_free(root)
+        return 7
+    }
+
+    let arr_value = json_object_get(root, "arr")
+    if json_array_len(arr_value) != 3 {
+        json_free(root)
+        return 8
+    }
+    if json_int(json_array_at(arr_value, 1), -1) != 2 {
+        json_free(root)
+        return 9
+    }
+
+    let obj_value = json_object_get(root, "obj")
+    let x_value = json_object_get(obj_value, "x")
+    let x_text = json_string(x_value)
+    if string_equals(x_text, "y") == 0 {
+        free(x_text)
+        json_free(root)
+        return 10
+    }
+    free(x_text)
+
+    let esc_value = json_object_get(root, "esc")
+    let esc_text = json_string(esc_value)
+    if string_equals(esc_text, "line\nquote\"slash\\AB") == 0 {
+        free(esc_text)
+        json_free(root)
+        return 11
+    }
+    free(esc_text)
+
+    let compact = json_stringify(root)
+    if string_equals(compact, source) == 0 {
+        free(compact)
+        json_free(root)
+        return 12
+    }
+    free(compact)
+
+    let compat_name = json_get_string(source, "name")
+    if string_equals(compat_name, "opus") == 0 {
+        free(compat_name)
+        json_free(root)
+        return 13
+    }
+    free(compat_name)
+
+    if json_get_int(source, "count", -1) != 42 {
+        json_free(root)
+        return 14
+    }
+    if !json_get_bool(source, "fast", false) {
+        json_free(root)
+        return 15
+    }
+    if !json_has_key(source, "obj") {
+        json_free(root)
+        return 16
+    }
+
+    json_free(root)
+    return 0
+}

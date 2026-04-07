@@ -1,0 +1,17 @@
+fn legacy_value(seed: i64) -> i64 {
+    return seed;
+}
+
+function int modern_value(int seed) {
+    return seed
+}
+
+function int main() {
+    if legacy_value(19) != 19 {
+        return 1
+    }
+    if modern_value(23) != 23 {
+        return 2
+    }
+    return 0
+}

@@ -6,20 +6,20 @@ struct Vec2 {
 }
 
 struct Rect {
-    ptr origin;
+    Vec2 origin;
     int width;
     int height;
 }
 
-function int area(ptr r) {
+function int area(*Rect r) {
     return r.width * r.height
 }
 
-function int perimeter(ptr r) {
+function int perimeter(*Rect r) {
     return 2 * (r.width + r.height)
 }
 
-function void print_rect(ptr r) {
+function void print_rect(*Rect r) {
     print("rect at (")
     print_int(r.origin.x)
     print(", ")
@@ -36,8 +36,6 @@ function void print_rect(ptr r) {
 }
 
 function int main() {
-    alloc_console()
-
     let p1 = Vec2 { x: 10, y: 20 }
     let p2 = Vec2 { x: 0, y: 0 }
 

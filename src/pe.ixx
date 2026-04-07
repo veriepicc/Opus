@@ -1,4 +1,4 @@
-// pe - dll generator
+// pe - native image generator
 
 module;
 
@@ -15,6 +15,7 @@ module;
 export module opus.pe;
 
 import opus.ast;
+import opus.types;
 import std;
 
 export namespace opus::pe {
@@ -45,6 +46,11 @@ constexpr const char* iat_functions[] = {
     "WaitForMultipleObjects",       // 21
     "GetSystemInfo",                // 22
     "CloseHandle",                  // 23
+    "CreateFileA",                  // 24
+    "ReadFile",                     // 25
+    "WriteFile",                    // 26
+    "GetFileSize",                  // 27
+    "LoadLibraryA",                 // 28
 };
 
 constexpr std::size_t iat_func_count = sizeof(iat_functions) / sizeof(iat_functions[0]);
@@ -80,6 +86,11 @@ namespace iat_idx {
     constexpr std::size_t WaitForMultipleObjects = 21;
     constexpr std::size_t GetSystemInfo          = 22;
     constexpr std::size_t CloseHandle            = 23;
+    constexpr std::size_t CreateFileA            = 24;
+    constexpr std::size_t ReadFile               = 25;
+    constexpr std::size_t WriteFile              = 26;
+    constexpr std::size_t GetFileSize            = 27;
+    constexpr std::size_t LoadLibraryA           = 28;
 }
 
 // backward compat - old pe::iat::FuncName constants still work
@@ -108,6 +119,11 @@ namespace iat {
     constexpr std::size_t WaitForMultipleObjects = iat_slot(iat_idx::WaitForMultipleObjects);
     constexpr std::size_t GetSystemInfo          = iat_slot(iat_idx::GetSystemInfo);
     constexpr std::size_t CloseHandle            = iat_slot(iat_idx::CloseHandle);
+    constexpr std::size_t CreateFileA            = iat_slot(iat_idx::CreateFileA);
+    constexpr std::size_t ReadFile               = iat_slot(iat_idx::ReadFile);
+    constexpr std::size_t WriteFile              = iat_slot(iat_idx::WriteFile);
+    constexpr std::size_t GetFileSize            = iat_slot(iat_idx::GetFileSize);
+    constexpr std::size_t LoadLibraryA           = iat_slot(iat_idx::LoadLibraryA);
 }
 
 // named types for what used to be anonymous pairs
@@ -130,11 +146,11 @@ struct GenerateConfig {
     std::string debug_source;
     std::vector<LineMapEntry> line_map;
     ast::HealingMode healing_mode = ast::HealingMode::Off;
-    bool exe_mode = false;
+    OutputKind output_kind = OutputKind::Dll;
     bool writable_text = false;
 };
 
-class DllGenerator {
+class PeImageGenerator {
 public:
     // startup layout - sizes of each routine in .text before user code
     // these are padded slot sizes, not exact byte counts
@@ -176,9 +192,9 @@ public:
         bool has_bp_table;
     };
 
-    static Layout compute_layout(bool debug_mode, bool exe_mode = false) {
+    static Layout compute_layout(bool debug_mode, OutputKind output_kind = OutputKind::Dll) {
         Layout layout{};
-        std::size_t crash_offset = exe_mode ? EXE_CRASH_HANDLER_OFFSET : CRASH_HANDLER_OFFSET;
+        std::size_t crash_offset = output_is_exe(output_kind) ? EXE_CRASH_HANDLER_OFFSET : CRASH_HANDLER_OFFSET;
         if (debug_mode) {
             layout.crash_handler_size = CRASH_HANDLER_SIZE_DEBUG;
             layout.repl_handler_size = REPL_HANDLER_SIZE_DEBUG;
@@ -231,7 +247,7 @@ public:
         bool debug_mode = cfg.healing_mode != ast::HealingMode::Off;
         
         // compute layout based on build config
-        auto layout = compute_layout(debug_mode, cfg.exe_mode);
+        auto layout = compute_layout(debug_mode, cfg.output_kind);
         
         constexpr std::size_t text_rva = 0x1000;
         std::size_t estimated_code_size = user_code.size() + layout.startup_code_size;
@@ -269,7 +285,21 @@ public:
         }
         
         auto imports = build_imports(rdata_rva, data_rva);
-        auto text = build_code(user_code, cfg.main_offset, cfg.alloc_console, text_rva, rdata_rva, imports, srcmap_rva, has_debug ? src_rva : 0, data_rva, cfg.healing_mode, layout, cfg.exe_mode);
+        auto text = build_code(
+            user_code,
+            cfg.main_offset,
+            cfg.alloc_console,
+            text_rva,
+            rdata_rva,
+            imports,
+            srcmap_rva,
+            has_debug ? src_rva : 0,
+            data_rva,
+            cfg.healing_mode,
+            layout,
+            cfg.output_kind,
+            has_debug
+        );
         
         std::size_t text_file_sz = align_up(text.size(), kFileAlign);
         std::size_t rdata_file_sz = align_up(imports.rdata.size(), kFileAlign);
@@ -328,7 +358,7 @@ public:
         fh.TimeDateStamp = static_cast<DWORD>(std::time(nullptr));
         fh.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER64);
         fh.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_LARGE_ADDRESS_AWARE;
-        if (!cfg.exe_mode) fh.Characteristics |= IMAGE_FILE_DLL;
+        if (output_is_dll(cfg.output_kind)) fh.Characteristics |= IMAGE_FILE_DLL;
         append(dll, fh);
         
         IMAGE_OPTIONAL_HEADER64 opt = {};
@@ -345,7 +375,7 @@ public:
         opt.MajorSubsystemVersion = 6;
         opt.SizeOfImage = static_cast<DWORD>(image_size);
         opt.SizeOfHeaders = static_cast<DWORD>(kHeaderSize);
-        opt.Subsystem = cfg.exe_mode ? IMAGE_SUBSYSTEM_WINDOWS_CUI : IMAGE_SUBSYSTEM_WINDOWS_GUI;
+        opt.Subsystem = output_is_exe(cfg.output_kind) ? IMAGE_SUBSYSTEM_WINDOWS_CUI : IMAGE_SUBSYSTEM_WINDOWS_GUI;
         opt.DllCharacteristics = IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE | IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
         opt.SizeOfStackReserve = 0x100000;
         opt.SizeOfStackCommit = 0x1000;
@@ -674,6 +704,7 @@ private:
         std::size_t iat_set_title;
         std::size_t iat_get_std_handle;
         std::size_t iat_write_console;
+        std::size_t iat_write_file;
         std::size_t iat_sleep;
         std::size_t iat_add_veh;
         std::size_t str_title_rva;
@@ -706,6 +737,7 @@ private:
         result.iat_set_title       = data_rva + iat_slot(iat_idx::SetConsoleTitleA);
         result.iat_get_std_handle  = data_rva + iat_slot(iat_idx::GetStdHandle);
         result.iat_write_console   = data_rva + iat_slot(iat_idx::WriteConsoleA);
+        result.iat_write_file      = data_rva + iat_slot(iat_idx::WriteFile);
         result.iat_sleep           = data_rva + iat_slot(iat_idx::Sleep);
         result.iat_add_veh         = data_rva + iat_slot(iat_idx::AddVectoredExceptionHandler);
         
@@ -770,7 +802,8 @@ private:
         std::size_t data_rva = 0,
         ast::HealingMode healing_mode = ast::HealingMode::Off,
         const Layout& layout = compute_layout(true),
-        bool exe_mode = false
+        OutputKind output_kind = OutputKind::Dll,
+        bool emit_slot_report = false
     ) {
         std::vector<std::uint8_t> code;
         
@@ -778,13 +811,13 @@ private:
         std::size_t user_code_offset = layout.startup_code_size;
         
         // offsets for runtime routines depend on mode
-        std::size_t print_off = exe_mode ? EXE_PRINT_OFFSET : DLL_PRINT_OFFSET;
-        std::size_t set_title_off = exe_mode ? EXE_SET_TITLE_OFFSET : DLL_SET_TITLE_OFFSET;
-        std::size_t alloc_console_off = exe_mode ? EXE_ALLOC_CONSOLE_OFFSET : DLL_ALLOC_CONSOLE_OFFSET;
-        std::size_t print_hex_off = exe_mode ? EXE_PRINT_HEX_OFFSET : DLL_PRINT_HEX_OFFSET;
-        std::size_t crash_handler_off = exe_mode ? EXE_CRASH_HANDLER_OFFSET : CRASH_HANDLER_OFFSET;
-        
-        if (exe_mode) {
+        std::size_t print_off = output_is_exe(output_kind) ? EXE_PRINT_OFFSET : DLL_PRINT_OFFSET;
+        std::size_t set_title_off = output_is_exe(output_kind) ? EXE_SET_TITLE_OFFSET : DLL_SET_TITLE_OFFSET;
+        std::size_t alloc_console_off = output_is_exe(output_kind) ? EXE_ALLOC_CONSOLE_OFFSET : DLL_ALLOC_CONSOLE_OFFSET;
+        std::size_t print_hex_off = output_is_exe(output_kind) ? EXE_PRINT_HEX_OFFSET : DLL_PRINT_HEX_OFFSET;
+        std::size_t crash_handler_off = output_is_exe(output_kind) ? EXE_CRASH_HANDLER_OFFSET : CRASH_HANDLER_OFFSET;
+
+        if (output_is_exe(output_kind)) {
             // exe entry: call main, pass return value to ExitProcess
             emit8(code, 0x55);                                     // push rbp
             emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);    // mov rbp, rsp
@@ -888,23 +921,23 @@ private:
         while (code.size() < print_off) emit8(code, 0xCC);
         
         // === print_impl ===
-        std::size_t print_start = code.size();
+        [[maybe_unused]] std::size_t print_start = code.size();
         build_dll_print_impl(code, text_rva, rdata_rva, imports);
-        std::size_t print_bytes = code.size() - print_start;
+        [[maybe_unused]] std::size_t print_bytes = code.size() - print_start;
         
         while (code.size() < set_title_off) emit8(code, 0xCC);
         
         // === set_title_impl ===
-        std::size_t title_start = code.size();
+        [[maybe_unused]] std::size_t title_start = code.size();
         build_dll_set_title_impl(code, text_rva, rdata_rva, imports);
-        std::size_t title_bytes = code.size() - title_start;
+        [[maybe_unused]] std::size_t title_bytes = code.size() - title_start;
         
         while (code.size() < alloc_console_off) emit8(code, 0xCC);
         
         // === alloc_console_impl ===
-        std::size_t alloc_start = code.size();
+        [[maybe_unused]] std::size_t alloc_start = code.size();
         build_dll_alloc_console_impl(code, text_rva, rdata_rva, imports);
-        std::size_t alloc_bytes = code.size() - alloc_start;
+        [[maybe_unused]] std::size_t alloc_bytes = code.size() - alloc_start;
         
         while (code.size() < print_hex_off) emit8(code, 0xCC);
         
@@ -920,7 +953,7 @@ private:
         while (code.size() < crash_handler_off) emit8(code, 0xCC);
         
         // === crash handler (VEH) ===
-        std::size_t crash_start = code.size();
+        [[maybe_unused]] std::size_t crash_start = code.size();
         if (healing_mode != ast::HealingMode::Off) {
             build_crash_handler(code, text_rva, rdata_rva, imports, user_code_offset, print_off, print_hex_off, srcmap_rva, src_rva, data_rva, crash_handler_off, layout.crash_handler_size, healing_mode);
         } else {
@@ -954,20 +987,21 @@ private:
             // freeze so the user can see the output
             emit8(code, 0xEB); emit8(code, 0xFE);                                     // jmp $
         }
-        std::size_t crash_bytes = code.size() - crash_start;
+        [[maybe_unused]] std::size_t crash_bytes = code.size() - crash_start;
         
         while (code.size() < user_code_offset) emit8(code, 0xCC);
 
-        // slot usage report
-        std::println(std::cerr, "\033[36m[pe]\033[0m slot usage ({}):", exe_mode ? "exe" : "dll");
-        std::println(std::cerr, "  print_impl:    {:>4}/{} bytes", print_bytes, DLL_PRINT_SIZE);
-        std::println(std::cerr, "  set_title:     {:>4}/{} bytes", title_bytes, DLL_SET_TITLE_SIZE);
-        std::println(std::cerr, "  alloc_console: {:>4}/{} bytes", alloc_bytes, DLL_ALLOC_CONSOLE_SIZE);
-        std::println(std::cerr, "  print_hex:     {:>4}/{} bytes", hex_bytes, DLL_PRINT_HEX_SIZE);
-        std::println(std::cerr, "  crash_handler: {:>4}/{} bytes", crash_bytes, layout.crash_handler_size);
-        std::size_t total_alloc = layout.startup_code_size;
-        std::println(std::cerr, "  startup total: {:>4} bytes (0x{:X})", total_alloc, total_alloc);
-        
+        if (emit_slot_report) {
+            std::println(std::cerr, "\033[36m[pe]\033[0m slot usage ({}):", output_is_exe(output_kind) ? "exe" : "dll");
+            std::println(std::cerr, "  print_impl:    {:>4}/{} bytes", print_bytes, DLL_PRINT_SIZE);
+            std::println(std::cerr, "  set_title:     {:>4}/{} bytes", title_bytes, DLL_SET_TITLE_SIZE);
+            std::println(std::cerr, "  alloc_console: {:>4}/{} bytes", alloc_bytes, DLL_ALLOC_CONSOLE_SIZE);
+            std::println(std::cerr, "  print_hex:     {:>4}/{} bytes", hex_bytes, DLL_PRINT_HEX_SIZE);
+            std::println(std::cerr, "  crash_handler: {:>4}/{} bytes", crash_bytes, layout.crash_handler_size);
+            std::size_t total_alloc = layout.startup_code_size;
+            std::println(std::cerr, "  startup total: {:>4} bytes (0x{:X})", total_alloc, total_alloc);
+        }
+
         // === user code ===
         code.insert(code.end(), user_code.begin(), user_code.end());
         return code;
@@ -1011,14 +1045,14 @@ private:
         emit8(code, static_cast<std::uint8_t>(jmp_back));
         // .done: r8 now contains the length
         
-        // WriteConsoleA(handle, str, len, NULL, NULL)
+        // WriteFile(handle, str, len, &written, NULL)
         emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10] (handle)
         emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x55); emit8(code, 0xF8);  // mov rdx, [rbp-8] (string)
         // r8 already has the length!
-        emit8(code, 0x45); emit8(code, 0x31); emit8(code, 0xC9);  // xor r9d, r9d
+        emit8(code, 0x4C); emit8(code, 0x8D); emit8(code, 0x4D); emit8(code, 0xEC);  // lea r9, [rbp-0x14]
         emit8(code, 0x48); emit8(code, 0xC7); emit8(code, 0x44); emit8(code, 0x24); emit8(code, 0x20);
         emit32(code, 0);
-        emit_call_iat(code, text_rva, imports.iat_write_console);
+        emit_call_iat(code, text_rva, imports.iat_write_file);
 
         // add rsp, 0x30; pop rbp; ret
         emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xC4); emit8(code, 0x30);
@@ -1138,14 +1172,14 @@ private:
         // null terminate: [rbp - 0x22 + 16] = [rbp - 0x12]
         emit8(code, 0xC6); emit8(code, 0x45); emit8(code, 0xEE); emit8(code, 0x00);  // mov byte [rbp-0x12], 0
 
-        // WriteConsoleA(handle, buf, 16, NULL, NULL)
+        // WriteFile(handle, buf, 16, &written, NULL)
         emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10]
         emit8(code, 0x48); emit8(code, 0x8D); emit8(code, 0x55); emit8(code, 0xDE);  // lea rdx, [rbp-0x22]
         emit8(code, 0x41); emit8(code, 0xB8); emit32(code, 16);                    // mov r8d, 16
-        emit8(code, 0x45); emit8(code, 0x31); emit8(code, 0xC9);                    // xor r9d, r9d
+        emit8(code, 0x4C); emit8(code, 0x8D); emit8(code, 0x4D); emit8(code, 0xEC);  // lea r9, [rbp-0x14]
         emit8(code, 0x48); emit8(code, 0xC7); emit8(code, 0x44); emit8(code, 0x24); emit8(code, 0x20);
         emit32(code, 0);                                                       // mov qword [rsp+0x20], 0
-        emit_call_iat(code, text_rva, imports.iat_write_console);
+        emit_call_iat(code, text_rva, imports.iat_write_file);
 
         emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xC4); emit8(code, 0x50);  // add rsp, 0x50
         emit8(code, 0x5D);                                                     // pop rbp

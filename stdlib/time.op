@@ -1,0 +1,24 @@
+// Time and delay helpers layered over the native builtins.
+
+function int time_tick_ms() {
+    return get_tick_count()
+}
+
+function void time_sleep_ms(int ms) {
+    if ms <= 0 {
+        return
+    }
+    sleep(ms)
+}
+
+function int time_elapsed_ms(int start_tick) {
+    let now = time_tick_ms()
+    if now < start_tick {
+        return 0
+    }
+    return now - start_tick
+}
+
+function bool time_after_ms(int start_tick, int duration_ms) {
+    return time_elapsed_ms(start_tick) >= duration_ms
+}

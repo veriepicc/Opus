@@ -3,8 +3,8 @@
 function void bubble_sort(ptr arr, int len) {
     for i in range(0, len) {
         for j in range(0, len - i - 1) {
-            let a = arr[j]
-            let b = arr[j + 1]
+            let a = array_get(arr, j)
+            let b = array_get(arr, j + 1)
             if a > b {
                 array_set(arr, j, b)
                 array_set(arr, j + 1, a)
@@ -16,7 +16,7 @@ function void bubble_sort(ptr arr, int len) {
 function void print_array(ptr arr, int len) {
     print("[")
     for i in range(0, len) {
-        print_int(arr[i])
+        print_int(array_get(arr, i))
         if i < len - 1 {
             print(", ")
         }
@@ -25,10 +25,7 @@ function void print_array(ptr arr, int len) {
 }
 
 function int main() {
-    alloc_console()
-
     let data = array_new(10)
-    // fill with unsorted values
     array_set(data, 0, 64)
     array_set(data, 1, 25)
     array_set(data, 2, 12)

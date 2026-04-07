@@ -9,7 +9,6 @@ function int burn() {
 }
 
 function int main() {
-    alloc_console()
     print("=== parallel benchmark ===\n")
     print("8 iterations, 10M ops each\n\n")
 

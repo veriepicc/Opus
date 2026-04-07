@@ -1,0 +1,6 @@
+project Test9 {
+    entry: "main.op"
+    output: "Test9.exe"
+    mode: "exe"
+    include: ["dir1", "dir2"]
+}

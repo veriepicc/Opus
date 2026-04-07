@@ -1,0 +1,42 @@
+// Process and runtime host helpers.
+
+using MessageBoxAFn = fn(ptr, str, str, int) -> int
+
+function int process_id() {
+    return get_current_process_id()
+}
+
+function ptr process_handle() {
+    return get_current_process()
+}
+
+function int process_last_error() {
+    return get_last_error()
+}
+
+function ptr process_load_library(str lib_path) {
+    return load_library(lib_path)
+}
+
+function ptr process_get_symbol(ptr module_handle, str symbol_name) {
+    return get_proc(module_handle, symbol_name)
+}
+
+function int process_msgbox(str title, str body, int flags) {
+    let user32 = load_library("user32.dll")
+    if user32 == 0 {
+        return 0
+    }
+
+    let raw = get_proc(user32, "MessageBoxA")
+    if raw == 0 {
+        return 0
+    }
+
+    let message_box = raw as MessageBoxAFn
+    return message_box(0, body, title, flags)
+}
+
+function void process_exit(int code) {
+    exit(code)
+}

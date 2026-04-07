@@ -1,0 +1,62 @@
+import simd
+
+function int main() {
+    if has_avx512f() == 0 {
+        return 0
+    }
+
+    let idx = malloc(64)
+    let factor = malloc(64)
+    let ones = malloc(64)
+    let step = malloc(64)
+    let x = malloc(64)
+    let y = malloc(64)
+    let accum = malloc(64)
+    if idx == 0 or factor == 0 or ones == 0 or step == 0 or x == 0 or y == 0 or accum == 0 {
+        return 1
+    }
+
+    memset(idx, 0, 64)
+    memset(factor, 0, 64)
+    memset(ones, 0, 64)
+    memset(step, 0, 64)
+    memset(x, 0, 64)
+    memset(y, 0, 64)
+    memset(accum, 0, 64)
+
+    var lane = 0
+    while lane < 16 {
+        mem_write_i32(idx + lane * 4, lane)
+        lane++
+    }
+
+    intx16_splat(factor, 8)
+    intx16_splat(ones, 1)
+    intx16_splat(step, 16)
+
+    var i = 0
+    while i < 8 {
+        intx16_mul(x, idx, factor)
+        intx16_add(y, x, ones)
+        intx16_add(accum, accum, y)
+        intx16_add(idx, idx, step)
+        i++
+    }
+
+    var result = 0
+    lane = 0
+    while lane < 16 {
+        result = result + mem_read_i32(accum + lane * 4)
+        lane++
+    }
+
+    free(idx)
+    free(factor)
+    free(ones)
+    free(step)
+    free(x)
+    free(y)
+    free(accum)
+
+    return result - 65152
+}

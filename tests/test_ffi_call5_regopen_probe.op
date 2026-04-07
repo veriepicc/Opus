@@ -1,0 +1,24 @@
+import http
+import mem
+import process
+
+function int main() {
+    let module_handle = process_load_library("advapi32.dll")
+    if module_handle == 0 {
+        return 1
+    }
+
+    let open_key_fn = process_get_symbol(module_handle, "RegOpenKeyExW")
+    if open_key_fn == 0 {
+        return 2
+    }
+
+    let subkey = http_utf16z("Software")
+    let out_handle = mem.make_zero(8)
+    if subkey == 0 or out_handle == 0 {
+        return 3
+    }
+
+    process_exit(ffi_call5(open_key_fn, -2147483647, subkey, 0, 131097, out_handle))
+    return 99
+}

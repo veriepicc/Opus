@@ -1,15 +1,13 @@
 // spawn/await and parallel for
 
+import mem
+
 function int compute(int x) {
-    // simulate work
     sleep(50)
     return x * x
 }
 
 function int main() {
-    alloc_console()
-
-    // spawn individual threads
     print("--- spawn/await ---\n")
     let h1 = spawn compute(3)
     let h2 = spawn compute(7)
@@ -23,17 +21,16 @@ function int main() {
     print("7^2 = ") print_int(r2)
     print("11^2 = ") print_int(r3)
 
-    // parallel sum with atomics
     print("\n--- parallel for ---\n")
     let sum = malloc(8)
-    mem_write(sum, 0)
+    mem.write(sum, 0)
 
     parallel for i in range(1, 101) {
         atomic_add(sum, i)
     }
 
     print("sum 1..100 = ")
-    print_int(mem_read(sum))
+    print_int(mem.read(sum))
 
     free(sum)
     return 0

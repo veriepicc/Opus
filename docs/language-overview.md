@@ -1,632 +1,189 @@
 # Language Overview
 
-Opus is a compiled systems programming language targeting Windows x64. It compiles `.op` source files directly to native machine code - no LLVM, no bytecode, no VM. The compiler generates valid PE executables and DLLs from scratch.
+Opus is designed to stay expressive at the source level while keeping the underlying compiler and runtime model understandable.
 
-## At a Glance
+## Core ideas
 
-- Compiles to native x64 machine code
-- Two output modes: standalone EXE or injectable DLL
-- JIT mode for quick testing (`--run`)
-- Flexible syntax: C-style, Rust-style, and English can coexist in one file
-- Semicolons are optional
-- Manual memory management (`malloc`/`free`), no garbage collector
-- Direct native interop through typed function pointers and `extern fn`
-- ~7ms compile times
+- direct native code generation
+- EXE by default, DLL with `--dll`
+- `--run` builds and runs a temporary EXE
+- semicolons are optional
+- multiple declaration styles can coexist in one file
+- a module-first standard library is preferred for new code
+- the implementation aims to stay honest about what it is doing
 
-## Entry Point
-
-Every Opus program needs a `main` function:
+## Entry point
 
 ```c
 function int main() {
-    alloc_console()
-    print("running!\n")
+    print("running\n")
     return 0
 }
 ```
 
-In EXE mode, call `alloc_console()` at the top of `main()` to get a console window. In DLL mode, it creates a console attached to the host process.
+## Function declaration styles
 
-## Syntax Styles
-
-Opus supports multiple syntax styles. You can pick one and stick with it, or mix them freely in the same file - the lexer handles everything.
-
-### C-Style (primary, v2.0)
-
-The recommended style. Familiar if you know C, C++, Java, or JavaScript:
+### Modern `function`
 
 ```c
-function int add(int a, int b) {
-    return a + b
-}
-
-function int main() {
-    alloc_console()
-    let result = add(10, 20)
-    print_dec(result)
-    print("\n")
-    return 0
+function int add(int left, int right) {
+    return left + right
 }
 ```
 
-### Short Forms
-
-`func` and `fn` are aliases for `function`. `ret` is an alias for `return`:
+### `fn`
 
 ```c
-func int square(int x) {
-    ret x * x
-}
-
-fn int cube(int x) {
-    return x * x * x
+fn add(left: int, right: int) -> int {
+    return left + right
 }
 ```
 
-### Rust-Style (legacy)
-
-The `fn` keyword with colon-typed parameters and arrow return types also works:
+### Type-first
 
 ```c
-fn add(a: i32, b: i32) -> i32 {
-    return a + b
+int add(int left, int right) {
+    return left + right
 }
 ```
 
-### Type-First (no keyword)
-
-You can omit the function keyword entirely and lead with the return type:
+### English
 
 ```c
-int add(int a, int b) {
-    return a + b
-}
-```
-
-### English Syntax
-
-For the adventurous. Uses natural language keywords:
-
-```c
-define function add with parameter a as i32, parameter b as i32 returning i32
-    return a + b
+define function add with left as i64, right as i64 returning i64
+    return left + right
 end function
 ```
 
-### Mixing Styles
-
-All styles can coexist in one file. The lexer auto-detects per token:
+### Expression bodies
 
 ```c
-// c-style function
-function int compute(int x) {
-    return x * x + 1
-}
-
-// short form
-fn int helper(int n) {
-    ret n + 1
-}
-
-// type-first
-int add(int a, int b) {
-    return a + b
-}
-
-function int main() {
-    alloc_console()
-    let a = compute(5)
-    let b = helper(a)
-    let c = add(a, b)
-    print_dec(c)
-    print("\n")
-    return 0
-}
+function int add(int left, int right) => left + right
+fn add(left: int, right: int) -> int => left + right
+int add(int left, int right) => left + right
 ```
+
+This mix is deliberate: the language accepts multiple declaration styles without treating them as separate sub-languages.
 
 ## Variables
 
 ```c
-// immutable (cannot be reassigned)
-let x = 42
-let name = "opus"
-
-// mutable (can be reassigned)
+let answer = 42
 var counter = 0
-counter = counter + 1
-
-// typed declaration
-var p: Player = malloc(8)
-
-// auto type inference
-let result = add(10, 20)
+auto total = add(10, 20)
+int local_copy = answer
 ```
 
-| Keyword | Meaning |
-|---------|---------|
-| `let` | Immutable variable |
-| `var` | Mutable variable |
-| `const` | Constant |
-| `auto` | Type-inferred (C++ style) |
+- `let` is immutable
+- `var` is mutable
+- `auto` is mutable with inference
+- type-first local declarations also work
 
-### Global Variables
-
-Top-level `let` and `var` declarations work with literal initializers:
-
-```c
-let MAX_HEALTH = 100
-let GRAVITY = 10
-
-function int main() {
-    alloc_console()
-    print_dec(MAX_HEALTH)
-    print("\n")
-    return 0
-}
-```
-
-## Type System
-
-### Primitive Types
-
-| Type | Description | Size |
-|------|-------------|------|
-| `int` | Signed 32-bit integer | 4 bytes |
-| `bool` | Boolean (`true`/`false`) | 1 byte |
-| `void` | No value | 0 bytes |
-| `ptr` | Raw pointer | 8 bytes |
-| `str` | String (pointer to null-terminated data) | 8 bytes |
-
-### Sized Integer Types (Rust-style)
-
-| Signed | Unsigned | Size |
-|--------|----------|------|
-| `i8` | `u8` | 1 byte |
-| `i16` | `u16` | 2 bytes |
-| `i32` | `u32` | 4 bytes |
-| `i64` | `u64` | 8 bytes |
-| `i128` | `u128` | 16 bytes |
-
-`isize` and `usize` are aliases for `i64` and `u64` respectively.
-
-### Floating Point
-
-| Type | Size |
-|------|------|
-| `f32` | 4 bytes |
-| `f64` | 8 bytes |
-
-### Number Literals
-
-```c
-let decimal = 42
-let hex = 0xFF
-let binary = 0b1010
-let float_val = 3.14
-```
-
-### Boolean Literals
-
-```c
-let a = true
-let b = false
-let c = yes       // alias for true
-let d = no        // alias for false
-```
-
-## Control Flow
-
-### If / Else
-
-No parentheses required around the condition:
-
-```c
-if x > 0 {
-    print("positive\n")
-} else if x < 0 {
-    print("negative\n")
-} else {
-    print("zero\n")
-}
-```
-
-### While Loop
-
-```c
-var i = 0
-while i < 10 {
-    print_dec(i)
-    print("\n")
-    i = i + 1
-}
-```
-
-### For Loop with Range
-
-```c
-// range(start, end) - iterates from start to end-1
-for i in range(0, 10) {
-    print_dec(i)
-    print("\n")
-}
-
-// range(n) - shorthand for range(0, n)
-for i in range(5) {
-    print_dec(i)
-    print("\n")
-}
-
-// bounds can be variables or expressions
-let n = 100
-for i in range(0, n) {
-    // ...
-}
-```
-
-### Infinite Loop
-
-```c
-loop {
-    if done {
-        break
-    }
-}
-```
-
-### Break and Continue
-
-```c
-for i in range(0, 100) {
-    if i == 50 {
-        break          // exit the loop
-    }
-    if i % 2 == 0 {
-        continue       // skip to next iteration (alias: cont)
-    }
-    print_dec(i)
-    print("\n")
-}
-```
-
-## Operators
-
-### Arithmetic
-`+`, `-`, `*`, `/`, `%`
-
-### Comparison
-`==`, `!=`, `<`, `>`, `<=`, `>=`
-
-### Logical
-`&&` (or `and`), `||` (or `or`), `!` (or `not`)
-
-### Bitwise
-`&`, `|`, `^`, `~`, `<<`, `>>`
-
-### Assignment
-`=`, `+=`, `-=`, `*=`, `/=`
-
-### Increment / Decrement
-`++`, `--` (both prefix and postfix)
-
-## Strings
-
-Strings are null-terminated C strings. `print()` does not add a newline - use `\n`:
-
-```c
-print("Hello, World!\n")
-print("Tab:\tValue\n")
-print("Line 1\nLine 2\n")
-```
-
-### Escape Sequences
-
-| Sequence | Character |
-|----------|-----------|
-| `\n` | Newline |
-| `\t` | Tab |
-| `\r` | Carriage return |
-| `\\` | Backslash |
-| `\"` | Double quote |
-| `\0` | Null byte |
-
-### String Operations
-
-```c
-let len = string_length("hello")              // 5
-let joined = string_append("foo", "bar")      // "foobar" (heap allocated)
-let eq = string_equals("a", "a")              // 1
-let sub = string_substring("hello", 1, 3)     // "ell" (heap allocated)
-let s = int_to_string(42)                     // "42" (heap allocated)
-```
-
-Heap-allocated strings from `string_append`, `string_substring`, and `int_to_string` must be freed by the caller.
-
-## Comments
-
-```c
-// single line comment
-
-/* multi-line
-   comment */
-```
-
-## Structs and Classes
-
-Structs are plain data. Classes can have methods:
+## Structs, classes, and enums
 
 ```c
 struct Point {
-    x: int,
-    y: int,
-}
-
-class Player {
-    health: int,
-    speed: int,
-
-    function void takeDamage(int amount) {
-        self.health = self.health - amount
-    }
-
-    function int getHealth() {
-        return self.health
-    }
+    int x
+    y: int
 }
 ```
-
-Instances are heap-allocated:
 
 ```c
-var p: Player = malloc(16)
-p.health = 100
-p.speed = 50
+class Counter {
+    int value
 
-p.takeDamage(30)
-let hp = p.getHealth()
-
-free(p)
+    fn bump(delta: int) -> int => self.value + delta
+}
 ```
-
-Each field is 8 bytes. Methods compile to global functions (`Player_takeDamage`, `Player_getHealth`) with the instance pointer passed implicitly via `self`.
-
-See [Classes & Structs](classes.md) for the full reference.
-
-## Enums
 
 ```c
-enum Direction {
-    North,        // 0
-    South,        // 1
-    East,         // 2
-    West = 10,    // 10
-    Northwest,    // 11
-}
-
-function int main() {
-    alloc_console()
-    let dir = Direction.West
-    print_dec(dir)
-    print("\n")
-
-    if dir == 10 {
-        print("going west\n")
-    }
-    return 0
+enum State {
+    Idle,
+    Running,
+    Dead,
 }
 ```
 
-Values auto-increment from 0. Explicit values are supported, and subsequent variants continue from the last explicit value.
-
-## Type Aliases and Function Types
-
-Opus supports named type aliases through `using`, including function signatures. This is the
-preferred way to describe native call targets cleanly.
+Literals:
 
 ```c
-using VertexFn = fn(ptr, f32, f32, f32) -> void
-using MessageBeepFn = fn(int) -> int
+let p = Point { x: 10, y: 20 }
+let pair = Pair { left, right }
+```
 
-function void demo(ptr sig_vertex, ptr tess) {
-    let add_vertex = sig_vertex as VertexFn
-    add_vertex(tess, 44.0f, 20.0f, 0.0f)
+## Imports and projects
+
+```c
+import math
+```
+
+```c
+project Demo {
+    entry: "app/main.op"
+    output: "Demo.exe"
+    mode: "exe"
+    include: ["modules"]
 }
 ```
 
-This style replaces the older wrapper-heavy `ffi_call*` approach for normal native calls.
+## Memory
 
-## Memory Model
-
-Opus uses manual memory management. There is no garbage collector (planned for future versions with configurable modes).
-
-### Allocation
+For new code, prefer the `mem` module:
 
 ```c
 import mem
 
-// allocate raw bytes
-let ptr = mem.make_zero(64)
-
-// write and read pointer-sized cells
-mem.write(ptr, 0xDEADBEEF)
-let val = mem.read(ptr)
-
-// width-specific reads/writes when width matters
-mem.write32(ptr + 8, 42)
-let small = mem.read32(ptr + 8)
-
-// free when done
-free(ptr)
-```
-
-For new code, prefer the `mem` module surface over raw builtin names like `mem_write_i32`.
-
-### Arrays
-
-Heap-allocated arrays with a 16-byte header (length + capacity). Elements are 8 bytes each:
-
-```c
-let arr = array_new(10)
-array_set(arr, 0, 42)
-array_set(arr, 1, 100)
-
-let v = arr[0]              // index syntax works for reads
-let n = array_len(arr)      // 2
-
-array_free(arr)
+function int main() {
+    let buf = malloc(16)
+    mem.write32(buf, 123)
+    let value = mem.read32(buf)
+    free(buf)
+    return value
+}
 ```
 
 ## Concurrency
 
-### Spawn / Await
+Supported surface:
 
-Fire off a function on a new thread and wait for the result:
+- `spawn func(args)`
+- `await handle`
+- `parallel for i in range(start, end)`
+- `atomic_load`, `atomic_store`, `atomic_add`, `atomic_cas`
 
 ```c
-function int compute(int x) {
-    return x * x + 1
+function int work(int x) {
+    return x * x
 }
 
 function int main() {
-    let handle = spawn compute(7)
-    print("thread spawned\n")
-
+    let handle = spawn work(7)
     let result = await handle
-    print("result: ")
-    print_dec(result)
-    print("\n")
+    print_int(result)
     return 0
 }
 ```
 
-### Parallel For
-
-Split loop iterations across CPU cores automatically:
-
-```c
-// allocate shared memory
-let sum_ptr = malloc(8)
-mem.write(sum_ptr, 0)
-
-parallel for i in range(0, 100) {
-    let val = mem.read(arr + i * 8)
-    atomic_add(sum_ptr, val)
-}
-
-let total = mem.read(sum_ptr)
-```
-
-Use `atomic_add` for safe concurrent writes to shared memory.
-
-## FFI (Windows API)
-
-Opus can call Windows API functions directly. The preferred style is:
-
-- resolve a symbol
-- cast it to a named function type
-- call it normally
+## FFI
 
 ```c
 using GetPidFn = fn() -> int
 
-let kernel32 = get_module("kernel32.dll")
-let raw = get_proc(kernel32, "GetCurrentProcessId")
-let get_pid = raw as GetPidFn
-
-let pid = get_pid()
-print_dec(pid)
-print("\n")
-```
-
-Imported APIs can also be declared directly:
-
-```c
-extern fn GetTickCount() -> int
-```
-
-The older `ffi_call*` helpers still exist for compatibility, but they are no longer the
-intended public FFI surface for normal native calls.
-
-Higher-level builtins like `msgbox`, `virtual_protect`, and `load_library` still wrap common
-Win32 calls. See [Built-in Functions](builtins.md) for the full list.
-
-## Hex String Literals
-
-For embedding raw bytes (useful for shellcode, patterns, signatures):
-
-```c
-let pattern = hex"48 89 5C 24 08 57 48 83 EC 20"
-```
-
-This creates a byte buffer containing the literal hex values.
-
-## Imports
-
-Split code across files with `import`:
-
-```c
-// math.op
-function int square(int x) {
-    return x * x
-}
-```
-
-```c
-// main.op
-import math
-
 function int main() {
-    alloc_console()
-    let r = square(5)
-    print_dec(r)
-    print("\n")
+    let kernel32 = get_module("kernel32.dll")
+    let get_pid = get_proc(kernel32, "GetCurrentProcessId") as GetPidFn
+    print_int(get_pid())
     return 0
 }
 ```
 
-For larger projects, use an `opus.project` file to manage multiple source directories. See [Getting Started](getting-started.md#multi-file-projects).
+## Parser quality
 
-## REPL
+The parser now handles many common mistakes more gracefully than it used to, including:
 
-Start an interactive session:
+- declaration starter typos
+- English keyword typos
+- statement keyword typos
+- missing commas in common list forms
 
-```
-> opus repl
-
-   ____
-  / __ \____  __  _______
- / / / / __ \/ / / / ___/
-/ /_/ / /_/ / /_/ (__  )
-\____/ .___/\__,_/____/
-    /_/
-
-A Simple Programming Language
-===================================
-```
-
-Type expressions and statements to evaluate them immediately.
-
-## Keyword Aliases
-
-Opus is flexible about keywords. Many have short forms or alternative spellings:
-
-| Primary | Aliases |
-|---------|---------|
-| `function` | `func`, `fn` |
-| `return` | `ret` |
-| `continue` | `cont` |
-| `struct` | `structure` |
-| `extern` | `external` |
-| `malloc` | `alloc` |
-| `true` | `yes` |
-| `false` | `no` |
-| `spawn` | - |
-| `await` | - |
-| `thread` | `async` |
-
-## What's Next
-
-- [Language Reference](reference.md) - complete syntax details
-- [Built-in Functions](builtins.md) - the full standard library
-- [Classes & Structs](classes.md) - OOP features
-- [DLL Mode](dll.md) - generating injectable DLLs
-- [Debugger](debugger.md) - crash handler and self-healing runtime
+The goal is not to accept everything; it is to reject bad code in a way that is still understandable and useful.

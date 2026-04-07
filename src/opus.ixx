@@ -27,7 +27,7 @@ export namespace opus {
 
 // runtime builtins
 
-// string table is shared between host and jit code
+// string table is shared by compiler-side runtime helpers
 inline std::mutex& get_string_table_mutex() {
     static std::mutex mutex;
     return mutex;
@@ -38,15 +38,9 @@ inline std::vector<std::string>& get_string_table() {
     return table;
 }
 
-inline std::int64_t& get_jit_global_base_slot() {
-    static std::int64_t slot = 0;
-    return slot;
-}
-
 inline void reset_runtime_state() {
     std::lock_guard lock(get_string_table_mutex());
     get_string_table().clear();
-    get_jit_global_base_slot() = 0;
 }
 
 extern "C" void opus_print_int(std::int64_t value) {
@@ -300,128 +294,6 @@ extern "C" std::int64_t opus_get_proc(std::int64_t module, std::int64_t name_han
     return reinterpret_cast<std::int64_t>(proc);
 }
 
-// legacy ffi wrappers kept for compatibility while code migrates to typed function pointers
-// preferred style is: using Fn = fn(...)->...; let f = addr as Fn; f(...)
-extern "C" std::int64_t opus_ffi_call0(std::int64_t fn_ptr) {
-    if (fn_ptr == 0) return 0;
-    using Fn = std::int64_t(*)();
-    return reinterpret_cast<Fn>(fn_ptr)();
-}
-
-extern "C" std::int64_t opus_ffi_call1(std::int64_t fn_ptr, std::int64_t a1) {
-    if (fn_ptr == 0) return 0;
-    using Fn = std::int64_t(*)(std::int64_t);
-    return reinterpret_cast<Fn>(fn_ptr)(a1);
-}
-
-extern "C" std::int64_t opus_ffi_call2(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2) {
-    if (fn_ptr == 0) return 0;
-    using Fn = std::int64_t(*)(std::int64_t, std::int64_t);
-    return reinterpret_cast<Fn>(fn_ptr)(a1, a2);
-}
-
-extern "C" std::int64_t opus_ffi_call3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3) {
-    if (fn_ptr == 0) return 0;
-    using Fn = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t);
-    return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3);
-}
-
-extern "C" std::int64_t opus_ffi_call4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4) {
-    if (fn_ptr == 0) return 0;
-    using Fn = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t);
-    return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3, a4);
-}
-
-extern "C" std::int64_t opus_ffi_call_this_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2) {
-    if (fn_ptr == 0) return 0;
-    using Fn = void(*)(std::int64_t, std::int32_t);
-    reinterpret_cast<Fn>(fn_ptr)(this_ptr, static_cast<std::int32_t>(a2));
-    return 0;
-}
-
-extern "C" std::int64_t opus_ffi_call_this_ptr(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2) {
-    if (fn_ptr == 0) return 0;
-    using Fn = void*(*)(void*, void*);
-    return reinterpret_cast<std::int64_t>(
-        reinterpret_cast<Fn>(fn_ptr)(
-            reinterpret_cast<void*>(this_ptr),
-            reinterpret_cast<void*>(a2)
-        )
-    );
-}
-
-extern "C" std::int64_t opus_ffi_call_this_i32_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3) {
-    if (fn_ptr == 0) return 0;
-    using Fn = void(*)(std::int64_t, std::int32_t, std::int32_t);
-    reinterpret_cast<Fn>(fn_ptr)(this_ptr, static_cast<std::int32_t>(a2), static_cast<std::int32_t>(a3));
-    return 0;
-}
-
-extern "C" std::int64_t opus_ffi_call_this_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t flag) {
-    if (fn_ptr == 0) return 0;
-    using Fn = void(*)(std::int64_t, bool);
-    reinterpret_cast<Fn>(fn_ptr)(this_ptr, flag != 0);
-    return 0;
-}
-
-extern "C" std::int64_t opus_ffi_call_this_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t flag) {
-    if (fn_ptr == 0) return 0;
-    using Fn = void(*)(std::int64_t, std::int32_t, bool);
-    reinterpret_cast<Fn>(fn_ptr)(this_ptr, static_cast<std::int32_t>(a2), flag != 0);
-    return 0;
-}
-
-extern "C" std::int64_t opus_ffi_call_this_i32_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3, std::int64_t flag) {
-    if (fn_ptr == 0) return 0;
-    using Fn = void(*)(std::int64_t, std::int32_t, std::int32_t, bool);
-    reinterpret_cast<Fn>(fn_ptr)(this_ptr, static_cast<std::int32_t>(a2), static_cast<std::int32_t>(a3), flag != 0);
-    return 0;
-}
-
-extern "C" std::int64_t opus_ffi_call5(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5) {
-    if (fn_ptr == 0) return 0;
-    using Fn = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t);
-    return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3, a4, a5);
-}
-
-extern "C" std::int64_t opus_ffi_call6(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5, std::int64_t a6) {
-    if (fn_ptr == 0) return 0;
-    using Fn = std::int64_t(*)(std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t);
-    return reinterpret_cast<Fn>(fn_ptr)(a1, a2, a3, a4, a5, a6);
-}
-
-extern "C" std::int64_t opus_ffi_call2_f32x3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec3_ptr) {
-    if (fn_ptr == 0 || vec3_ptr == 0) return 0;
-    const float* v = reinterpret_cast<const float*>(vec3_ptr);
-    using Fn = void(*)(std::int64_t, float, float, float);
-    reinterpret_cast<Fn>(fn_ptr)(a1, v[0], v[1], v[2]);
-    return 0;
-}
-
-extern "C" std::int64_t opus_ffi_call2_f32x4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec4_ptr) {
-    if (fn_ptr == 0 || vec4_ptr == 0) return 0;
-    const float* v = reinterpret_cast<const float*>(vec4_ptr);
-    using Fn = void(*)(std::int64_t, float, float, float, float);
-    reinterpret_cast<Fn>(fn_ptr)(a1, v[0], v[1], v[2], v[3]);
-    return 0;
-}
-
-extern "C" std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text_handle, std::int64_t flags) {
-    std::string title;
-    std::string text;
-    {
-        std::lock_guard lock(get_string_table_mutex());
-        auto& table = get_string_table();
-        if (title_handle >= 0 && title_handle < static_cast<std::int64_t>(table.size())) {
-            title = table[title_handle];
-        }
-        if (text_handle >= 0 && text_handle < static_cast<std::int64_t>(table.size())) {
-            text = table[text_handle];
-        }
-    }
-    return MessageBoxA(nullptr, text.c_str(), title.c_str(), static_cast<UINT>(flags));
-}
-
 extern "C" std::int64_t opus_get_last_error() {
     return static_cast<std::int64_t>(GetLastError());
 }
@@ -503,62 +375,18 @@ extern "C" std::int64_t opus_get_current_process_id() {
     return static_cast<std::int64_t>(GetCurrentProcessId());
 }
 
-extern "C" std::int64_t opus_thread_spawn(std::int64_t entry_ptr, std::int64_t ctx_ptr) {
-    HANDLE handle = CreateThread(
-        nullptr,
-        0,
-        reinterpret_cast<LPTHREAD_START_ROUTINE>(entry_ptr),
-        reinterpret_cast<void*>(ctx_ptr),
-        0,
-        nullptr
-    );
-    return reinterpret_cast<std::int64_t>(handle);
-}
-
-extern "C" std::int64_t opus_thread_wait(std::int64_t handle, std::int64_t timeout_ms) {
-    if (handle == 0) return static_cast<std::int64_t>(WAIT_FAILED);
-    return static_cast<std::int64_t>(WaitForSingleObject(
-        reinterpret_cast<HANDLE>(handle),
-        static_cast<DWORD>(timeout_ms)
-    ));
-}
-
-extern "C" std::int64_t opus_close_handle(std::int64_t handle) {
-    if (handle == 0) return 0;
-    return CloseHandle(reinterpret_cast<HANDLE>(handle)) ? 1 : 0;
-}
-
 #else
 // non-windows stubs
 extern "C" std::int64_t opus_get_module(std::int64_t name_handle) { return 0; }
 extern "C" std::int64_t opus_get_module_str(const char* name) { return 0; }
 extern "C" std::int64_t opus_load_library(std::int64_t name_handle) { return 0; }
 extern "C" std::int64_t opus_get_proc(std::int64_t module, std::int64_t name_handle) { return 0; }
-extern "C" std::int64_t opus_ffi_call0(std::int64_t fn_ptr) { return 0; }
-extern "C" std::int64_t opus_ffi_call1(std::int64_t fn_ptr, std::int64_t a1) { return 0; }
-extern "C" std::int64_t opus_ffi_call2(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2) { return 0; }
-extern "C" std::int64_t opus_ffi_call3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3) { return 0; }
-extern "C" std::int64_t opus_ffi_call4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4) { return 0; }
-extern "C" std::int64_t opus_ffi_call5(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5) { return 0; }
-extern "C" std::int64_t opus_ffi_call6(std::int64_t fn_ptr, std::int64_t a1, std::int64_t a2, std::int64_t a3, std::int64_t a4, std::int64_t a5, std::int64_t a6) { return 0; }
-extern "C" std::int64_t opus_ffi_call_this_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2) { return 0; }
-extern "C" std::int64_t opus_ffi_call_this_ptr(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2) { return 0; }
-extern "C" std::int64_t opus_ffi_call_this_i32_i32(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3) { return 0; }
-extern "C" std::int64_t opus_ffi_call_this_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t flag) { return 0; }
-extern "C" std::int64_t opus_ffi_call_this_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t flag) { return 0; }
-extern "C" std::int64_t opus_ffi_call_this_i32_i32_bool(std::int64_t fn_ptr, std::int64_t this_ptr, std::int64_t a2, std::int64_t a3, std::int64_t flag) { return 0; }
-extern "C" std::int64_t opus_ffi_call2_f32x3(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec3_ptr) { return 0; }
-extern "C" std::int64_t opus_ffi_call2_f32x4(std::int64_t fn_ptr, std::int64_t a1, std::int64_t vec4_ptr) { return 0; }
-extern "C" std::int64_t opus_msgbox(std::int64_t title_handle, std::int64_t text_handle, std::int64_t flags) { return 0; }
 extern "C" std::int64_t opus_get_last_error() { return 0; }
 extern "C" std::int64_t opus_virtual_protect(std::int64_t address, std::int64_t size, std::int64_t new_protect) { return -1; }
 extern "C" std::int64_t opus_read_process_memory(std::int64_t process, std::int64_t address, std::int64_t buffer, std::int64_t size) { return -1; }
 extern "C" std::int64_t opus_write_process_memory(std::int64_t process, std::int64_t address, std::int64_t buffer, std::int64_t size) { return -1; }
 extern "C" std::int64_t opus_get_current_process() { return 0; }
 extern "C" std::int64_t opus_get_current_process_id() { return 0; }
-extern "C" std::int64_t opus_thread_spawn(std::int64_t entry_ptr, std::int64_t ctx_ptr) { return 0; }
-extern "C" std::int64_t opus_thread_wait(std::int64_t handle, std::int64_t timeout_ms) { return -1; }
-extern "C" std::int64_t opus_close_handle(std::int64_t handle) { return 0; }
 #endif
 
 // layout: arr[0] = length, arr[1..n] = elements
@@ -622,131 +450,11 @@ extern "C" void opus_print_char(std::int64_t ch) {
 
 // self-hosting helpers
 
-extern "C" std::int64_t opus_string_equals(std::int64_t h1, std::int64_t h2) {
-    std::lock_guard lock(get_string_table_mutex());
-    auto& table = get_string_table();
-    if (h1 < 0 || h1 >= static_cast<std::int64_t>(table.size())) return 0;
-    if (h2 < 0 || h2 >= static_cast<std::int64_t>(table.size())) return 0;
-    return table[h1] == table[h2] ? 1 : 0;
-}
-
-extern "C" std::int64_t opus_string_substring(std::int64_t handle, std::int64_t start, std::int64_t len) {
-    std::lock_guard lock(get_string_table_mutex());
-    auto& table = get_string_table();
-    if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) return -1;
-    const auto& str = table[handle];
-    if (start < 0 || start >= static_cast<std::int64_t>(str.size())) return -1;
-    
-    std::int64_t actual_len = std::min(len, static_cast<std::int64_t>(str.size()) - start);
-    // build substring before push_back to avoid any iterator invalidation risk
-    auto new_str = str.substr(start, actual_len);
-    std::int64_t new_handle = static_cast<std::int64_t>(table.size());
-    table.push_back(std::move(new_str));
-    return new_handle;
-}
-
-extern "C" std::int64_t opus_is_alpha(std::int64_t ch) {
-    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' ? 1 : 0;
-}
-
-extern "C" std::int64_t opus_is_digit(std::int64_t ch) {
-    return (ch >= '0' && ch <= '9') ? 1 : 0;
-}
-
-extern "C" std::int64_t opus_is_alnum(std::int64_t ch) {
-    return opus_is_alpha(ch) || opus_is_digit(ch) ? 1 : 0;
-}
-
-extern "C" std::int64_t opus_is_whitespace(std::int64_t ch) {
-    return (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') ? 1 : 0;
-}
-
-extern "C" std::int64_t opus_string_starts_with(std::int64_t str_handle, std::int64_t prefix_handle) {
-    std::lock_guard lock(get_string_table_mutex());
-    auto& table = get_string_table();
-    if (str_handle < 0 || str_handle >= static_cast<std::int64_t>(table.size())) return 0;
-    if (prefix_handle < 0 || prefix_handle >= static_cast<std::int64_t>(table.size())) return 0;
-    return table[str_handle].starts_with(table[prefix_handle]) ? 1 : 0;
-}
-
-extern "C" void opus_exit(std::int64_t code) {
-    std::exit(static_cast<int>(code));
-}
-
-extern "C" std::int64_t opus_write_bytes(std::int64_t filename_handle, std::int64_t arr_ptr, std::int64_t len) {
-    std::string path;
-    {
-        std::lock_guard lock(get_string_table_mutex());
-        auto& table = get_string_table();
-        if (filename_handle < 0 || filename_handle >= static_cast<std::int64_t>(table.size())) return -1;
-        path = table[filename_handle];
-    }
-    
-    std::int64_t* arr = reinterpret_cast<std::int64_t*>(arr_ptr);
-    if (!arr || len < 0) return -1;
-    std::int64_t arr_len = arr[0];
-    if (arr_len < 0 || len > arr_len) return -1;
-    
-    std::ofstream file(path, std::ios::binary);
-    if (!file) return -1;
-    
-    for (std::int64_t i = 0; i < len; ++i) {
-        char byte = static_cast<char>(arr[i + 1]);  // +1 because arr[0] is length
-        file.write(&byte, 1);
-    }
-    return len;
-}
-
 // byte buffer ops for x64 codegen
 // layout: arr[-1] = capacity, arr[0] = length, arr[1..n] = data
 // this is compatible with the regular array layout from arr[0] onward,
 // so array_get/array_set/array_len/write_bytes all still work
-extern "C" std::int64_t opus_buffer_new(std::int64_t capacity) {
-    if (capacity < 0) return 0;
-    // allocate capacity + 2 slots: one for capacity, one for length, rest for data
-    std::int64_t* raw = static_cast<std::int64_t*>(
-        std::malloc(static_cast<std::size_t>(capacity + 2) * sizeof(std::int64_t)));
-    if (!raw) return 0;
-    raw[0] = capacity;  // hidden capacity slot
-    // return pointer to arr[1] so arr[0] = length from callers perspective
-    std::int64_t* arr = raw + 1;
-    arr[0] = 0;  // length starts at 0
-    for (std::int64_t i = 1; i <= capacity; ++i) {
-        arr[i] = 0;
-    }
-    return reinterpret_cast<std::int64_t>(arr);
-}
-
-extern "C" void opus_buffer_push(std::int64_t arr_ptr, std::int64_t byte) {
-    std::int64_t* arr = reinterpret_cast<std::int64_t*>(arr_ptr);
-    if (!arr) return;
-    std::int64_t len = arr[0];
-    std::int64_t cap = arr[-1];
-    if (len >= cap) return;  // bounds check
-    arr[len + 1] = byte;
-    arr[0] = len + 1;
-}
-
-extern "C" std::int64_t opus_buffer_len(std::int64_t arr_ptr) {
-    return opus_array_len(arr_ptr);
-}
-
-extern "C" std::int64_t opus_parse_int(std::int64_t handle) {
-    std::string value;
-    {
-        std::lock_guard lock(get_string_table_mutex());
-        auto& table = get_string_table();
-        if (handle < 0 || handle >= static_cast<std::int64_t>(table.size())) return 0;
-        value = table[handle];
-    }
-    try {
-        return std::stoll(value);
-    } catch (...) {
-        return 0;
-    }
-}
-
-// pointers to runtime functions, passed into jit code
+// runtime functions used by compiler-side lowering
 struct RuntimeFunctions {
     // core i/o
     RtVoidI64   print_int = &opus_print_int;
@@ -762,10 +470,6 @@ struct RuntimeFunctions {
     // memory
     RtI64I64    malloc_fn = &opus_malloc;
     RtVoidI64   free_fn = &opus_free;
-    RtI64I64I64 thread_spawn = &opus_thread_spawn;
-    RtI64I64I64 thread_wait = &opus_thread_wait;
-    RtI64I64    close_handle = &opus_close_handle;
-    std::int64_t* jit_global_base_slot = &get_jit_global_base_slot();
 
     // arrays
     RtI64I64    array_new = &opus_array_new;
@@ -779,51 +483,10 @@ struct RuntimeFunctions {
     RtI64I64    int_to_string = &opus_int_to_string;
     RtVoidI64   print_char = &opus_print_char;
 
-    // self-hosting helpers
-    RtI64I64I64 string_equals = &opus_string_equals;
-    RtI64I64I64I64 string_substring = &opus_string_substring;
-    RtI64I64    is_alpha = &opus_is_alpha;
-    RtI64I64    is_digit = &opus_is_digit;
-    RtI64I64    is_alnum = &opus_is_alnum;
-    RtI64I64    is_whitespace = &opus_is_whitespace;
-    RtI64I64I64 string_starts_with = &opus_string_starts_with;
-    RtVoidI64   exit_fn = &opus_exit;
-    RtI64I64I64I64 write_bytes = &opus_write_bytes;
-    RtI64I64    buffer_new = &opus_buffer_new;
-    RtVoidI64I64 buffer_push = &opus_buffer_push;
-    RtI64I64    buffer_len = &opus_buffer_len;
-    RtI64I64    parse_int = &opus_parse_int;
-
-    // raw memory access
-    RtI64I64    mem_read_i8 = &opus_mem_read_i8;
-    RtI64I64    mem_read_i16 = &opus_mem_read_i16;
-    RtI64I64    mem_read_i32 = &opus_mem_read_i32;
-    RtI64I64    mem_read_i64 = &opus_mem_read_i64;
-    RtDblI64    mem_read_f32 = &opus_mem_read_f32;
-    RtDblI64    mem_read_f64 = &opus_mem_read_f64;
-    RtI64I64    mem_read_ptr = &opus_mem_read_ptr;
-    RtVoidI64I64 mem_write_i8 = &opus_mem_write_i8;
-    RtVoidI64I64 mem_write_i16 = &opus_mem_write_i16;
-    RtVoidI64I64 mem_write_i32 = &opus_mem_write_i32;
-    RtVoidI64I64 mem_write_i64 = &opus_mem_write_i64;
-    RtVoidI64Dbl mem_write_f32 = &opus_mem_write_f32;
-    RtVoidI64Dbl mem_write_f64 = &opus_mem_write_f64;
-    RtVoidI64I64 mem_write_ptr = &opus_mem_write_ptr;
-    RtVoidI64I64I64 mem_copy = &opus_mem_copy;
-    RtVoidI64I64I64 mem_set = &opus_mem_set;
-
     // ffi
     RtI64I64    get_module = &opus_get_module;
     RtI64I64    load_library = &opus_load_library;
     RtI64I64I64 get_proc = &opus_get_proc;
-    RtI64I64    ffi_call0 = &opus_ffi_call0;
-    RtI64I64I64 ffi_call1 = &opus_ffi_call1;
-    RtI64I64I64I64 ffi_call2 = &opus_ffi_call2;
-    RtI64I64I64I64I64 ffi_call3 = &opus_ffi_call3;
-    RtI64I64I64I64I64I64 ffi_call4 = &opus_ffi_call4;
-    RtI64I64I64I64I64I64I64 ffi_call5 = &opus_ffi_call5;
-    std::int64_t(*ffi_call6)(std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t) = &opus_ffi_call6;
-    RtI64I64I64I64 msgbox = &opus_msgbox;
     std::int64_t(*get_last_error)() = &opus_get_last_error;
     RtI64I64I64I64 virtual_protect = &opus_virtual_protect;
     std::int64_t(*get_current_process)() = &opus_get_current_process;
@@ -843,9 +506,9 @@ struct CompileOptions {
     std::string_view filename = "<input>";
     std::string project_root;
     std::vector<std::string> import_search_paths;
-    bool dll_mode = false;
+    OutputKind output_kind = OutputKind::Raw;
     ast::HealingMode healing_mode = ast::HealingMode::Off;
-    bool exe_mode = false;
+    bool debug_info = false;
 };
 
 class Compiler {
@@ -875,9 +538,9 @@ public:
         auto filename = opts.filename;
         auto project_root = opts.project_root;
         auto import_search_paths = opts.import_search_paths;
-        auto dll_mode = opts.dll_mode;
+        auto output_kind = opts.output_kind;
         auto healing_mode = opts.healing_mode;
-        auto exe_mode = opts.exe_mode;
+        [[maybe_unused]] auto debug_info = opts.debug_info;
         Result result;
 
         Lexer lexer(source, filename);
@@ -920,10 +583,6 @@ public:
             .write_file = rt.write_file,
             .malloc_fn = rt.malloc_fn,
             .free_fn = rt.free_fn,
-            .thread_spawn = rt.thread_spawn,
-            .thread_wait = rt.thread_wait,
-            .close_handle = rt.close_handle,
-            .jit_global_base_slot = rt.jit_global_base_slot,
             .array_new = rt.array_new,
             .array_get = rt.array_get,
             .array_set = rt.array_set,
@@ -932,64 +591,26 @@ public:
             .string_append = rt.string_append,
             .int_to_string = rt.int_to_string,
             .print_char = rt.print_char,
-            .string_equals = rt.string_equals,
-            .string_substring = rt.string_substring,
-            .is_alpha = rt.is_alpha,
-            .is_digit = rt.is_digit,
-            .is_alnum = rt.is_alnum,
-            .is_whitespace = rt.is_whitespace,
-            .string_starts_with = rt.string_starts_with,
-            .exit_fn = rt.exit_fn,
-            .write_bytes = rt.write_bytes,
-            .buffer_new = rt.buffer_new,
-            .buffer_push = rt.buffer_push,
-            .buffer_len = rt.buffer_len,
-            .parse_int = rt.parse_int,
-            .mem_read_i8 = rt.mem_read_i8,
-            .mem_read_i16 = rt.mem_read_i16,
-            .mem_read_i32 = rt.mem_read_i32,
-            .mem_read_i64 = rt.mem_read_i64,
-            .mem_read_f32 = rt.mem_read_f32,
-            .mem_read_f64 = rt.mem_read_f64,
-            .mem_read_ptr = rt.mem_read_ptr,
-            .mem_write_i8 = rt.mem_write_i8,
-            .mem_write_i16 = rt.mem_write_i16,
-            .mem_write_i32 = rt.mem_write_i32,
-            .mem_write_i64 = rt.mem_write_i64,
-            .mem_write_f32 = rt.mem_write_f32,
-            .mem_write_f64 = rt.mem_write_f64,
-            .mem_write_ptr = rt.mem_write_ptr,
-            .mem_copy = rt.mem_copy,
-            .mem_set = rt.mem_set,
             .get_module = rt.get_module,
             .load_library = rt.load_library,
             .get_proc = rt.get_proc,
-            .ffi_call0 = rt.ffi_call0,
-            .ffi_call1 = rt.ffi_call1,
-            .ffi_call2 = rt.ffi_call2,
-            .ffi_call3 = rt.ffi_call3,
-            .ffi_call4 = rt.ffi_call4,
-            .ffi_call5 = rt.ffi_call5,
-            .ffi_call6 = rt.ffi_call6,
-            .msgbox = rt.msgbox,
             .get_last_error = rt.get_last_error,
             .virtual_protect = rt.virtual_protect,
             .get_current_process = rt.get_current_process,
             .get_current_process_id = rt.get_current_process_id,
         });
         
-        codegen.set_dll_mode(dll_mode || exe_mode);
+        codegen.set_output_kind(output_kind);
         
         codegen.set_source_path(std::string(filename));
         codegen.set_project_root(project_root);
         codegen.set_import_search_paths(import_search_paths);
         
         // pe layout needs to know startup code size so codegen offsets are correct
-        if (dll_mode || exe_mode) {
+        if (output_is_native_image(output_kind)) {
             bool debug_mode = healing_mode != ast::HealingMode::Off;
-            auto layout = pe::DllGenerator::compute_layout(debug_mode, exe_mode);
+            auto layout = pe::PeImageGenerator::compute_layout(debug_mode, output_kind);
             codegen.set_user_code_offset(layout.startup_code_size);
-            if (exe_mode) codegen.set_exe_mode();
         }
         
         if (!codegen.generate(mod)) {
@@ -1006,7 +627,7 @@ public:
             result.function_offsets[name] = info.code_offset;
         }
         
-        if (dll_mode || exe_mode) {
+        if (output_is_native_image(output_kind)) {
             result.iat_fixups = codegen.get_iat_fixups();
             result.line_map = codegen.get_line_map();
             result.needs_writable_text = codegen.has_global_slot();
@@ -1018,12 +639,17 @@ public:
 
     std::expected<std::int64_t, std::string> compile_and_run(const CompileOptions& opts) {
         reset_runtime_state();
-        auto result = compile(opts);
+        auto run_opts = opts;
+        run_opts.output_kind = OutputKind::Exe;
+        auto result = compile(run_opts);
         
         if (!result.success) {
             std::string errors;
             for (const auto& e : result.errors) {
                 errors += e + "\n";
+            }
+            if (errors.empty()) {
+                errors = "compilation failed without a diagnostic";
             }
             return std::unexpected(errors);
         }
@@ -1034,27 +660,123 @@ public:
         }
 
         #ifdef _WIN32
-        x64::ExecutableMemory exec(result.code.size());
-        // copy_from expects a CodeBuffer but we have raw bytes here,
-        // so we memcpy directly then finalize for W^X
-        std::memcpy(exec.ptr(), result.code.data(), result.code.size());
-        exec.finalize();
+        pe::PeImageGenerator exe_gen;
+        auto exe_bytes = exe_gen.generate({
+            .code = result.code,
+            .main_offset = it->second,
+            .alloc_console = false,
+            .iat_fixups = result.iat_fixups,
+            .debug_source = opts.debug_info ? std::string(opts.source) : std::string{},
+            .line_map = opts.debug_info ? result.line_map : std::vector<pe::LineMapEntry>{},
+            .healing_mode = opts.healing_mode,
+            .output_kind = OutputKind::Exe,
+            .writable_text = result.needs_writable_text,
+        });
 
-        auto init_it = result.function_offsets.find("__opus_init");
-        if (init_it != result.function_offsets.end()) {
-            using InitFn = void(*)();
-            auto init_fn = reinterpret_cast<InitFn>(
-                static_cast<std::uint8_t*>(exec.ptr()) + init_it->second
-            );
-            init_fn();
+        auto temp_dir = std::filesystem::temp_directory_path();
+        char temp_name[MAX_PATH]{};
+        if (GetTempFileNameA(temp_dir.string().c_str(), "opu", 0, temp_name) == 0) {
+            return std::unexpected("failed to create temp file for --run");
         }
 
-        using MainFn = std::int64_t(*)();
-        auto main_fn = reinterpret_cast<MainFn>(
-            static_cast<std::uint8_t*>(exec.ptr()) + it->second
+        auto temp_path = std::filesystem::path(temp_name);
+        auto exe_path = temp_path;
+        exe_path.replace_extension(".exe");
+
+        std::error_code ec;
+        std::filesystem::remove(temp_path, ec);
+        std::filesystem::remove(exe_path, ec);
+
+        {
+            std::ofstream out(exe_path, std::ios::binary);
+            if (!out) {
+                return std::unexpected(std::format("cannot write temp executable: {}", exe_path.string()));
+            }
+            out.write(reinterpret_cast<const char*>(exe_bytes.data()), static_cast<std::streamsize>(exe_bytes.size()));
+            out.close();
+            if (!out) {
+                return std::unexpected(std::format("failed writing temp executable: {}", exe_path.string()));
+            }
+        }
+
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+
+        HANDLE child_out_read = nullptr;
+        HANDLE child_out_write = nullptr;
+        if (!CreatePipe(&child_out_read, &child_out_write, &sa, 0)) {
+            std::filesystem::remove(exe_path, ec);
+            return std::unexpected("failed to create output pipe for --run");
+        }
+        SetHandleInformation(child_out_read, HANDLE_FLAG_INHERIT, 0);
+
+        std::string command_line = std::format("\"{}\"", exe_path.string());
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = child_out_write;
+        si.hStdError = child_out_write;
+
+        PROCESS_INFORMATION pi{};
+        BOOL launched = CreateProcessA(
+            exe_path.string().c_str(),
+            command_line.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            0,
+            nullptr,
+            nullptr,
+            &si,
+            &pi
         );
-        
-        return main_fn();
+
+        if (!launched) {
+            auto err = GetLastError();
+            CloseHandle(child_out_read);
+            CloseHandle(child_out_write);
+            std::filesystem::remove(exe_path, ec);
+            return std::unexpected(std::format(
+                "failed to launch temp executable (error {})",
+                static_cast<unsigned long>(err)
+            ));
+        }
+
+        CloseHandle(child_out_write);
+
+        std::thread output_pump([child_out_read]() {
+            char buffer[4096];
+            DWORD bytes_read = 0;
+            while (ReadFile(child_out_read, buffer, sizeof(buffer), &bytes_read, nullptr) && bytes_read > 0) {
+                std::cout.write(buffer, static_cast<std::streamsize>(bytes_read));
+                std::cout.flush();
+            }
+            CloseHandle(child_out_read);
+        });
+
+        WaitForSingleObject(pi.hProcess, INFINITE);
+
+        DWORD exit_code = 0;
+        if (!GetExitCodeProcess(pi.hProcess, &exit_code)) {
+            auto err = GetLastError();
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            output_pump.join();
+            std::filesystem::remove(exe_path, ec);
+            return std::unexpected(std::format(
+                "failed to read temp executable exit code (error {})",
+                static_cast<unsigned long>(err)
+            ));
+        }
+
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        output_pump.join();
+        std::filesystem::remove(exe_path, ec);
+
+        return static_cast<std::int64_t>(exit_code);
         #else
         return std::unexpected("execution not supported on this platform");
         #endif

@@ -1,0 +1,10 @@
+import http
+
+function int main() {
+    let parsed = http_parse_url("https://example.com")
+    if parsed == 0 {
+        return 1
+    }
+    let host_text = parsed.host
+    return string_length(host_text)
+}

@@ -1,0 +1,18 @@
+class Counter {
+    int value
+}
+
+function int main() {
+    let counter = Counter { value: 41 }
+    counter.value = counter.value + 1
+    if counter.value != 42 {
+        return 1
+    }
+
+    counter.value += 8
+    if counter.value != 50 {
+        return 2
+    }
+
+    return 0
+}

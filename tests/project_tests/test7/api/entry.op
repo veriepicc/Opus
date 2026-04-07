@@ -1,0 +1,5 @@
+import helper.math;
+
+function int run(int a, int b) {
+    return sum(a, b)
+}

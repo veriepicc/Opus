@@ -1,0 +1,23 @@
+import http
+
+function int main() {
+    let parsed = http_parse_url("https://example.com")
+    if parsed == 0 {
+        return 1
+    }
+
+    let host_text = parsed.host
+    let host_len = string_length(host_text)
+    let host_w = http_make_zero((host_len + 1) * 2)
+    if host_w == 0 {
+        return 2
+    }
+
+    var i = 0
+    while i < host_len {
+        mem_write_i16(host_w + i * 2, char_at(host_text, i))
+        i++
+    }
+
+    return 3
+}

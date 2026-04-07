@@ -1,0 +1,83 @@
+struct Pair {
+    int left
+    int right
+}
+
+struct pair_helper {
+    int value
+}
+
+fn add_legacy(left: int, right: int,) -> int => left + right
+
+fn add_legacy_type_first(int left, int right,) -> int => left + right
+
+function int add_modern(int left, int right,) => left + right
+
+function int add_named_style(left: int, right: int,) => left + right
+
+class Accumulator {
+    int base
+
+    fn bump(delta: int,) -> int => self.base + delta
+
+    fn bump_type_first(int delta,) -> int => self.base + delta
+
+    int mix(int a, int b,) => self.base + a + b
+
+    function int mix_named(a: int, b: int,) => self.base + a + b
+}
+
+function int main() {
+    let left = 10
+    let right = 20
+    let pair = Pair { left, right, }
+    let lower = pair_helper { value: 33 }
+    let nums = [1, 2, 3,]
+    auto acc = Accumulator { base: pair.left }
+    var sum = 0
+
+    if add_legacy(nums[0], nums[1],) != 3 {
+        return 1
+    }
+    if add_modern(nums[1], nums[2],) != 5 {
+        return 2
+    }
+    if add_legacy_type_first(nums[0], nums[2],) != 4 {
+        return 12
+    }
+    if add_named_style(nums[0], nums[2],) != 4 {
+        return 9
+    }
+    if pair.right != 20 {
+        return 3
+    }
+    if lower.value != 33 {
+        return 11
+    }
+    if acc.bump(pair.right,) != 30 {
+        return 4
+    }
+    if acc.bump_type_first(pair.right,) != 30 {
+        return 13
+    }
+    if acc.mix(4, 5,) != 19 {
+        return 5
+    }
+    if acc.mix_named(4, 5,) != 19 {
+        return 10
+    }
+
+    if nums[0] != 1
+        return 6
+
+    while sum < 3
+        sum += 1
+
+    if sum != 3
+        return 7
+
+    parallel for i in range(0, 2)
+        let copy = i
+
+    return 0
+}

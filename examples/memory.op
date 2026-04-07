@@ -1,22 +1,20 @@
 // raw memory operations
 
-function int main() {
-    alloc_console()
+import mem
 
-    // allocate and write different sizes
+function int main() {
     let buf = malloc(64)
 
-    mem_write(buf, 0xDEADBEEFCAFEBABE)
-    mem_write_i32(buf + 8, 0x1337)
-    mem_write_i16(buf + 12, 0xFF)
-    mem_write_i8(buf + 14, 42)
+    mem.write(buf, 0xDEADBEEFCAFEBABE)
+    mem.write32(buf + 8, 0x1337)
+    mem.write16(buf + 12, 0xFF)
+    mem.write8(buf + 14, 42)
 
-    print("64-bit: ") print_hex(mem_read(buf))
-    print("32-bit: ") print_hex(mem_read_i32(buf + 8))
-    print("16-bit: ") print_int(mem_read_i16(buf + 12))
-    print("8-bit:  ") print_int(mem_read_i8(buf + 14))
+    print("64-bit: ") print_hex(mem.read(buf))
+    print("32-bit: ") print_hex(mem.read32(buf + 8))
+    print("16-bit: ") print_int(mem.read16(buf + 12))
+    print("8-bit:  ") print_int(mem.read8(buf + 14))
 
-    // memcpy demo
     let copy = malloc(64)
     memcpy(copy, buf, 64)
 
@@ -25,10 +23,9 @@ function int main() {
         print("\nbuffers match after memcpy\n")
     }
 
-    // zero it out
     memset(copy, 0, 64)
     print("after memset: ")
-    print_hex(mem_read(copy))
+    print_hex(mem.read(copy))
 
     free(buf)
     free(copy)

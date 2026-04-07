@@ -1,0 +1,194 @@
+import ascii
+import fmt
+import fs
+import json
+import path
+import process
+import rand
+import algo
+import text
+import time
+import vec
+
+function int main() {
+    if !ascii_is_alpha(65) {
+        return 1
+    }
+    if ascii_to_lower(65) != 97 {
+        return 2
+    }
+
+    let byte_hex = ascii_hex_byte(255)
+    if string_equals(byte_hex, "FF") == 0 {
+        return 3
+    }
+
+    let pair = fmt_pair("bench", "fast")
+    if string_equals(pair, "bench: fast") == 0 {
+        return 4
+    }
+
+    let csv = fmt_csv3("opus", "beats", "msvc")
+    if string_equals(csv, "opus,beats,msvc") == 0 {
+        return 5
+    }
+
+    let padded = fmt_int_pad_left(42, 5)
+    if string_equals(padded, "00042") == 0 {
+        return 6
+    }
+
+    let hex_full = fmt_hex_byte(26)
+    if string_equals(hex_full, "0x1A") == 0 {
+        return 7
+    }
+
+    let joined = path_join2("mods/ui", "clickgui.op")
+    if string_equals(joined, "mods/ui/clickgui.op") == 0 {
+        return 8
+    }
+
+    let base = path_basename("mods/ui/clickgui.op")
+    if string_equals(base, "clickgui.op") == 0 {
+        return 9
+    }
+
+    let ext = path_ext("mods/ui/clickgui.op")
+    if string_equals(ext, "op") == 0 {
+        return 10
+    }
+
+    let stem = path_stem("mods/ui/clickgui.op")
+    if string_equals(stem, "clickgui") == 0 {
+        return 11
+    }
+
+    let trimmed = text_trim("  opus  ")
+    if string_equals(trimmed, "opus") == 0 {
+        return 12
+    }
+
+    var items = vec_new(4)
+    items = vec_push(items, 7)
+    items = vec_push(items, 11)
+    items = vec_push(items, 13)
+    if vec_get(items, 1) != 11 {
+        return 13
+    }
+    if !vec_contains(items, 13) {
+        return 14
+    }
+
+    let min_val = algo_min_i64(12, 4)
+    if min_val != 4 {
+        return 15
+    }
+
+    let max_val = algo_max_i64(12, 4)
+    if max_val != 12 {
+        return 16
+    }
+
+    let abs_val = algo_abs_i64(-77)
+    if abs_val != 77 {
+        return 17
+    }
+
+    if !algo_contains_i64(items.data, items.size, 11) {
+        return 18
+    }
+
+    let t0 = time_tick_ms()
+    time_sleep_ms(1)
+    let elapsed = time_elapsed_ms(t0)
+    if elapsed < 0 {
+        return 19
+    }
+    if !time_after_ms(t0, 0) {
+        return 20
+    }
+
+    rand_seed(12345)
+    let r0 = rand_next()
+    let r1 = rand_next()
+    rand_seed(12345)
+    if rand_next() != r0 {
+        return 21
+    }
+    if rand_next() != r1 {
+        return 22
+    }
+    let rr = rand_range(10, 20)
+    if rr < 10 or rr >= 20 {
+        return 23
+    }
+    let pick = rand_pick2(7, 11)
+    if pick != 7 and pick != 11 {
+        return 24
+    }
+
+    if process_id() <= 0 {
+        return 25
+    }
+    if process_handle() == 0 {
+        return 26
+    }
+
+    let json_path = "tests/tmp_stdlib_fs.json"
+    let json_src = "{\"name\":\"opus\",\"fast\":true,\"count\":42}"
+    if !fs_write_ok(json_path, json_src) {
+        return 27
+    }
+
+    let read_back = fs_read_text(json_path)
+    if read_back == 0 {
+        return 28
+    }
+    if string_equals(read_back, json_src) == 0 {
+        free(read_back)
+        return 29
+    }
+    if !fs_contains(json_path, "\"fast\":true") {
+        free(read_back)
+        return 30
+    }
+    if !fs_starts_with(json_path, "{\"name\"") {
+        free(read_back)
+        return 31
+    }
+
+    let jname = json_get_string(read_back, "name")
+    if string_equals(jname, "opus") == 0 {
+        free(jname)
+        free(read_back)
+        return 32
+    }
+    free(jname)
+
+    if json_get_int(read_back, "count", -1) != 42 {
+        free(read_back)
+        return 33
+    }
+    if !json_get_bool(read_back, "fast", false) {
+        free(read_back)
+        return 34
+    }
+    if !json_has_key(read_back, "count") {
+        free(read_back)
+        return 35
+    }
+    free(read_back)
+
+    vec_free(items)
+    free(byte_hex)
+    free(pair)
+    free(csv)
+    free(padded)
+    free(hex_full)
+    free(joined)
+    free(base)
+    free(ext)
+    free(stem)
+    free(trimmed)
+    return 0
+}

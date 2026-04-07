@@ -1,0 +1,603 @@
+// DONOTUSE: ffi_call0..7 are radioactive compat junk until typed abi control replaces them
+
+struct HttpUrl {
+    secure: int,
+    port: int,
+    host: str,
+    path: str,
+}
+
+struct HttpResponse {
+    status: int,
+    body: str,
+}
+
+struct HttpWideParts {
+    user_agent_w: ptr,
+    method_w: ptr,
+    host_w: ptr,
+    path_w: ptr,
+}
+
+using WinHttpConnectFn = fn(ptr, ptr, int, int) -> ptr
+
+function str http_empty_text() {
+    return string_substring("", 0, 0)
+}
+
+function ptr http_make_zero(int size) {
+    let block = malloc(size)
+    if block == 0 {
+        return 0
+    }
+    memset(block, 0, size)
+    return block
+}
+
+function bool http_is_digit(int ch) {
+    return ch >= 48 and ch <= 57
+}
+
+function int http_len(str text_value) {
+    return string_length(text_value)
+}
+
+function bool http_eq(str left, str right) {
+    return string_equals(left, right) != 0
+}
+
+function bool http_is_empty(str text_value) {
+    return string_length(text_value) == 0
+}
+
+function str http_clone(str text_value) {
+    return string_substring(text_value, 0, string_length(text_value))
+}
+
+function str http_slice(str text_value, int start_idx, int slice_len) {
+    return string_substring(text_value, start_idx, slice_len)
+}
+
+function str http_prefix(str text_value, int slice_len) {
+    return string_substring(text_value, 0, slice_len)
+}
+
+function str http_join2(str left, str right) {
+    return string_append(left, right)
+}
+
+function int http_find(str text_value, str needle) {
+    let text_len_val = string_length(text_value)
+    let needle_len = string_length(needle)
+    if needle_len == 0 {
+        return 0
+    }
+    if needle_len > text_len_val {
+        return -1
+    }
+
+    var i = 0
+    while i <= text_len_val - needle_len {
+        var j = 0
+        var matched = true
+        while j < needle_len {
+            if char_at(text_value, i + j) != char_at(needle, j) {
+                matched = false
+                break
+            }
+            j++
+        }
+        if matched {
+            return i
+        }
+        i++
+    }
+
+    return -1
+}
+
+function int http_rfind_char(str text_value, int ch) {
+    var i = string_length(text_value)
+    while i > 0 {
+        i--
+        if char_at(text_value, i) == ch {
+            return i
+        }
+    }
+    return -1
+}
+
+function HttpUrl http_url_new() {
+    var parsed: HttpUrl = malloc(32)
+    if parsed == 0 {
+        return 0
+    }
+    parsed.secure = 1
+    parsed.port = 443
+    parsed.host = 0
+    parsed.path = 0
+    return parsed
+}
+
+function void http_url_free(HttpUrl parsed) {
+    if parsed == 0 {
+        return
+    }
+    if parsed.host != 0 {
+        free(parsed.host)
+    }
+    if parsed.path != 0 {
+        free(parsed.path)
+    }
+    free(parsed)
+}
+
+function HttpResponse http_response_new(int status, str body_text) {
+    var response: HttpResponse = malloc(16)
+    if response == 0 {
+        if body_text != 0 {
+            free(body_text)
+        }
+        return 0
+    }
+    response.status = status
+    response.body = body_text
+    return response
+}
+
+function HttpWideParts http_wide_parts_new() {
+    var parts: HttpWideParts = malloc(32)
+    if parts == 0 {
+        return 0
+    }
+    parts.user_agent_w = 0
+    parts.method_w = 0
+    parts.host_w = 0
+    parts.path_w = 0
+    return parts
+}
+
+function void http_wide_parts_free(HttpWideParts parts) {
+    if parts == 0 {
+        return
+    }
+    if parts.user_agent_w != 0 {
+        free(parts.user_agent_w)
+    }
+    if parts.method_w != 0 {
+        free(parts.method_w)
+    }
+    if parts.host_w != 0 {
+        free(parts.host_w)
+    }
+    if parts.path_w != 0 {
+        free(parts.path_w)
+    }
+    free(parts)
+}
+
+function HttpResponse http_fail_response() {
+    return http_response_new(0, http_empty_text())
+}
+
+function void http_response_free(HttpResponse response) {
+    if response == 0 {
+        return
+    }
+    if response.body != 0 {
+        free(response.body)
+    }
+    free(response)
+}
+
+function bool http_ok(HttpResponse response) {
+    if response == 0 {
+        return false
+    }
+    return response.status >= 200 and response.status < 300
+}
+
+function int http_parse_port(str text_value) {
+    let len = http_len(text_value)
+    if len <= 0 {
+        return -1
+    }
+
+    var value = 0
+    var i = 0
+    while i < len {
+        let ch = char_at(text_value, i)
+        if !http_is_digit(ch) {
+            return -1
+        }
+        value = value * 10 + (ch - 48)
+        i++
+    }
+
+    return value
+}
+
+function ptr http_utf16z(str text_value) {
+    let len = http_len(text_value)
+    let out = http_make_zero((len + 1) * 2)
+    if out == 0 {
+        return 0
+    }
+
+    var i = 0
+    while i < len {
+        mem_write_i16(out + i * 2, char_at(text_value, i))
+        i++
+    }
+
+    return out
+}
+
+function ptr http_url_host_utf16(HttpUrl parsed) {
+    if parsed == 0 or parsed.host == 0 {
+        return 0
+    }
+
+    let host_text = parsed.host
+    let host_len = string_length(host_text)
+    let out = http_make_zero((host_len + 1) * 2)
+    if out == 0 {
+        return 0
+    }
+
+    var i = 0
+    while i < host_len {
+        mem_write_i16(out + i * 2, char_at(host_text, i))
+        i++
+    }
+
+    return out
+}
+
+function ptr http_url_path_utf16(HttpUrl parsed) {
+    if parsed == 0 or parsed.path == 0 {
+        return 0
+    }
+
+    let path_text = parsed.path
+    let path_len = string_length(path_text)
+    let out = http_make_zero((path_len + 1) * 2)
+    if out == 0 {
+        return 0
+    }
+
+    var i = 0
+    while i < path_len {
+        mem_write_i16(out + i * 2, char_at(path_text, i))
+        i++
+    }
+
+    return out
+}
+
+function ptr http_open_session(ptr open_fn, ptr set_timeouts_fn) {
+    let user_agent_w = http_utf16z("Opus/WinHTTP")
+    if user_agent_w == 0 {
+        return 0
+    }
+
+    let session = ffi_call5(open_fn, user_agent_w, 1, 0, 0, 0)
+    free(user_agent_w)
+    if session != 0 {
+        ffi_call5(set_timeouts_fn, session, 3000, 3000, 3000, 3000)
+    }
+    return session
+}
+
+function ptr http_open_connection(ptr connect_fn, ptr session, HttpUrl parsed) {
+    let host_w = http_url_host_utf16(parsed)
+    if host_w == 0 {
+        return 0
+    }
+
+    return host_w
+}
+
+function ptr http_open_get_request(ptr open_request_fn, ptr connection, HttpUrl parsed) {
+    let method_w = http_utf16z("GET")
+    if method_w == 0 {
+        return 0
+    }
+
+    let path_w = http_url_path_utf16(parsed)
+    if path_w == 0 {
+        free(method_w)
+        return 0
+    }
+
+    var request_flags = 0
+    if parsed.secure != 0 {
+        request_flags = 8388608
+    }
+
+    let request = ffi_call7(open_request_fn, connection, method_w, path_w, 0, 0, 0, request_flags)
+    free(path_w)
+    free(method_w)
+    return request
+}
+
+function str http_bytes_to_text(ptr bytes, int len) {
+    let copy = http_make_zero(len + 1)
+    if copy == 0 {
+        return http_empty_text()
+    }
+    memcpy(copy, bytes, len)
+    let out = make_string(copy)
+    free(copy)
+    return out
+}
+
+function str http_take_path(str url, int start_idx, int stop_idx) {
+    if start_idx >= stop_idx {
+        return http_clone("/")
+    }
+
+    let first = char_at(url, start_idx)
+    if first == 47 {
+        return http_slice(url, start_idx, stop_idx - start_idx)
+    }
+
+    let suffix = http_slice(url, start_idx, stop_idx - start_idx)
+    let out = http_join2("/", suffix)
+    free(suffix)
+    return out
+}
+
+function HttpUrl http_parse_url(str url) {
+    let parsed = http_url_new()
+    if parsed == 0 {
+        return 0
+    }
+
+    let url_len = http_len(url)
+    var start = 0
+
+    if url_len >= 8 and
+       char_at(url, 0) == 104 and
+       char_at(url, 1) == 116 and
+       char_at(url, 2) == 116 and
+       char_at(url, 3) == 112 and
+       char_at(url, 4) == 115 and
+       char_at(url, 5) == 58 and
+       char_at(url, 6) == 47 and
+       char_at(url, 7) == 47 {
+        parsed.secure = 1
+        parsed.port = 443
+        start = 8
+    } else if url_len >= 7 and
+              char_at(url, 0) == 104 and
+              char_at(url, 1) == 116 and
+              char_at(url, 2) == 116 and
+              char_at(url, 3) == 112 and
+              char_at(url, 4) == 58 and
+              char_at(url, 5) == 47 and
+              char_at(url, 6) == 47 {
+        parsed.secure = 0
+        parsed.port = 80
+        start = 7
+    }
+
+    if start >= url_len {
+        http_url_free(parsed)
+        return 0
+    }
+
+    var host_end = start
+    while host_end < url_len {
+        if char_at(url, host_end) == 47 {
+            break
+        }
+        host_end++
+    }
+
+    if host_end <= start {
+        http_url_free(parsed)
+        return 0
+    }
+
+    parsed.host = string_substring(url, start, host_end - start)
+    if parsed.host == 0 or string_length(parsed.host) == 0 {
+        http_url_free(parsed)
+        return 0
+    }
+
+    parsed.path = http_take_path(url, host_end, url_len)
+    if parsed.path == 0 {
+        http_url_free(parsed)
+        return 0
+    }
+
+    return parsed
+}
+
+function void http_close_if(ptr close_fn, ptr handle_value) {
+    if handle_value != 0 {
+        ffi_call1(close_fn, handle_value)
+    }
+}
+
+function int http_query_status(ptr request_handle, ptr query_headers) {
+    let status_ptr = http_make_zero(8)
+    let size_ptr = http_make_zero(8)
+    if status_ptr == 0 or size_ptr == 0 {
+        if status_ptr != 0 {
+            free(status_ptr)
+        }
+        if size_ptr != 0 {
+            free(size_ptr)
+        }
+        return 0
+    }
+
+    mem_write_i32(size_ptr, 4)
+    var status = 0
+    let ok = ffi_call6(
+        query_headers,
+        request_handle,
+        19 + 536870912,
+        0,
+        status_ptr,
+        size_ptr,
+        0)
+    if ok != 0 {
+        status = mem_read_i32(status_ptr)
+    }
+
+    free(status_ptr)
+    free(size_ptr)
+    return status
+}
+
+function str http_read_body(ptr request_handle, ptr query_data_available, ptr read_data) {
+    let available_ptr = http_make_zero(8)
+    let read_count_ptr = http_make_zero(8)
+    let chunk_ptr = http_make_zero(4097)
+    if available_ptr == 0 or read_count_ptr == 0 or chunk_ptr == 0 {
+        if available_ptr != 0 {
+            free(available_ptr)
+        }
+        if read_count_ptr != 0 {
+            free(read_count_ptr)
+        }
+        if chunk_ptr != 0 {
+            free(chunk_ptr)
+        }
+        return http_empty_text()
+    }
+
+    var body = http_empty_text()
+    while true {
+        mem_write_i32(available_ptr, 0)
+        if ffi_call2(query_data_available, request_handle, available_ptr) == 0 {
+            free(body)
+            body = http_empty_text()
+            break
+        }
+
+        let available = mem_read_i32(available_ptr)
+        if available <= 0 {
+            break
+        }
+
+        var to_read = available
+        if to_read > 4096 {
+            to_read = 4096
+        }
+
+        mem_write_i32(read_count_ptr, 0)
+        if ffi_call4(read_data, request_handle, chunk_ptr, to_read, read_count_ptr) == 0 {
+            free(body)
+            body = http_empty_text()
+            break
+        }
+
+        let chunk_len = mem_read_i32(read_count_ptr)
+        if chunk_len <= 0 {
+            break
+        }
+
+        mem_write_i8(chunk_ptr + chunk_len, 0)
+        let chunk_text = http_bytes_to_text(chunk_ptr, chunk_len)
+        let next_body = string_append(body, chunk_text)
+        free(body)
+        free(chunk_text)
+        body = next_body
+    }
+
+    free(available_ptr)
+    free(read_count_ptr)
+    free(chunk_ptr)
+    return body
+}
+
+function int http_debug_fetch_stage(str url) {
+    let parsed = http_parse_url(url)
+    if parsed == 0 {
+        return 901
+    }
+
+    let module_handle = load_library("winhttp.dll")
+    if module_handle == 0 {
+        return 902
+    }
+
+    let open_fn = get_proc(module_handle, "WinHttpOpen")
+    let connect_fn = get_proc(module_handle, "WinHttpConnect")
+    let open_request_fn = get_proc(module_handle, "WinHttpOpenRequest")
+    let send_request_fn = get_proc(module_handle, "WinHttpSendRequest")
+    let receive_response_fn = get_proc(module_handle, "WinHttpReceiveResponse")
+    let query_data_available_fn = get_proc(module_handle, "WinHttpQueryDataAvailable")
+    let query_headers_fn = get_proc(module_handle, "WinHttpQueryHeaders")
+    let read_data_fn = get_proc(module_handle, "WinHttpReadData")
+    let set_timeouts_fn = get_proc(module_handle, "WinHttpSetTimeouts")
+    let close_handle_fn = get_proc(module_handle, "WinHttpCloseHandle")
+
+    if open_fn == 0 or connect_fn == 0 or open_request_fn == 0 or send_request_fn == 0 or
+       receive_response_fn == 0 or query_data_available_fn == 0 or query_headers_fn == 0 or read_data_fn == 0 or
+       set_timeouts_fn == 0 or close_handle_fn == 0 {
+        return 903
+    }
+
+    let host_w = http_url_host_utf16(parsed)
+    if host_w == 0 {
+        return 904
+    }
+    return 905
+
+    let user_agent_w = http_utf16z("Opus/WinHTTP")
+    let method_w = http_utf16z("GET")
+    let path_w = http_url_path_utf16(parsed)
+    if user_agent_w == 0 or method_w == 0 or path_w == 0 {
+        return 906
+    }
+
+    let session = ffi_call5(open_fn, user_agent_w, 1, 0, 0, 0)
+    if session == 0 {
+        return 905
+    }
+    ffi_call5(set_timeouts_fn, session, 3000, 3000, 3000, 3000)
+
+    let connection = ffi_call4(connect_fn, session, host_w, parsed.port, 0)
+    if connection == 0 {
+        return 906
+    }
+
+    var request_flags = 0
+    if parsed.secure != 0 {
+        request_flags = 8388608
+    }
+
+    let request = ffi_call7(open_request_fn, connection, method_w, path_w, 0, 0, 0, request_flags)
+    if request == 0 {
+        return 907
+    }
+    if ffi_call7(send_request_fn, request, 0, 0, 0, 0, 0, 0) == 0 {
+        return 908
+    }
+    if ffi_call2(receive_response_fn, request, 0) == 0 {
+        return 909
+    }
+
+    return http_query_status(request, query_headers_fn)
+}
+
+function HttpResponse http_fetch(str url) {
+    return http_response_new(http_debug_fetch_stage(url), http_empty_text())
+}
+
+function str http_get(str url) {
+    let response = http_fetch(url)
+    if response == 0 {
+        return http_empty_text()
+    }
+
+    let body_text = response.body
+    response.body = 0
+    free(response)
+    return body_text
+}

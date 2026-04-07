@@ -1,0 +1,5 @@
+define function main returning i64
+    while 0 do
+        return 0
+    end whlie
+end function

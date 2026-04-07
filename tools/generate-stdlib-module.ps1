@@ -32,6 +32,7 @@ if (-not (Test-Path $outputDir)) {
 }
 
 $files = Get-ChildItem -Path $stdlibRoot -Filter *.op -Recurse | Sort-Object FullName
+$maxChunkChars = 8192
 
 $builder = New-Object System.Text.StringBuilder
 [void]$builder.AppendLine("// generated file - do not edit by hand")
@@ -52,12 +53,29 @@ foreach ($file in $files) {
     }
     $delimiter = "OP" + $safeName
     $content = Get-Content -Path $file.FullName -Raw
-    [void]$builder.AppendLine("        {""$moduleName"", R""$delimiter(")
-    [void]$builder.Append($content)
-    if (-not $content.EndsWith("`n")) {
-        [void]$builder.AppendLine()
+    [void]$builder.Append("        {""$moduleName"", ")
+
+    if ($content.Length -eq 0) {
+        [void]$builder.AppendLine('std::string{}},')
+        continue
     }
-    [void]$builder.AppendLine(")$delimiter""},")
+
+    $offset = 0
+    $firstChunk = $true
+    while ($offset -lt $content.Length) {
+        $count = [Math]::Min($maxChunkChars, $content.Length - $offset)
+        $piece = $content.Substring($offset, $count)
+        if (-not $firstChunk) {
+            [void]$builder.AppendLine()
+            [void]$builder.Append("            ")
+        }
+        [void]$builder.Append("R""$delimiter(")
+        [void]$builder.Append($piece)
+        [void]$builder.Append(")$delimiter""")
+        $offset += $count
+        $firstChunk = $false
+    }
+    [void]$builder.AppendLine("},")
 }
 
 [void]$builder.AppendLine("    };")
