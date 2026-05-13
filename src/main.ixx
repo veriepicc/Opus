@@ -23,15 +23,20 @@ Usage:
   opus [options] <file.op>
   opus repl
   opus build [path]
+  opus inspect <file.op> [--line N] [--json]
 
 Output:
   default       standalone .exe
   --dll         native Windows DLL
   --run, -r     build a temporary exe and run it
+  --timings     print compile/build timing breakdown
+  --quiet, -q   suppress normal compile output
+  --fast        skip project discovery for single-file compiles
 
 Project:
   build         find opus.project and build it
   build <path>  build a specific opus.project
+  inspect       compile a file fast and report function bytes/metadata
 
 Help:
   --help, -h    show this message
@@ -85,6 +90,28 @@ void print_banner() {
     return {};
 }
 
+[[nodiscard]] static std::expected<std::string, std::string> read_text_file(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        return std::unexpected(std::format("cannot open file: {}", path.string()));
+    }
+
+    auto end = file.tellg();
+    if (end < 0) {
+        return std::unexpected(std::format("cannot size file: {}", path.string()));
+    }
+
+    std::string text(static_cast<std::size_t>(end), '\0');
+    file.seekg(0, std::ios::beg);
+    if (!text.empty()) {
+        file.read(text.data(), static_cast<std::streamsize>(text.size()));
+    }
+    if (!file && !text.empty()) {
+        return std::unexpected(std::format("cannot read file: {}", path.string()));
+    }
+    return text;
+}
+
 [[nodiscard]] static std::filesystem::path normalize_path(const std::filesystem::path& path) {
     std::error_code ec;
     auto canonical = std::filesystem::weakly_canonical(path, ec);
@@ -109,8 +136,13 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
 }
 
 [[nodiscard]] static std::vector<std::string> default_import_search_paths(const std::filesystem::path& compiler_exe) {
+    static std::unordered_map<std::string, std::vector<std::string>> cache;
     std::vector<std::string> paths;
-    auto dir = normalize_path(compiler_exe).parent_path();
+    auto normalized_compiler = normalize_path(compiler_exe).generic_string();
+    if (auto it = cache.find(normalized_compiler); it != cache.end()) {
+        return it->second;
+    }
+    auto dir = std::filesystem::path(normalized_compiler).parent_path();
     for (int i = 0; i < 8 && !dir.empty(); ++i) {
         auto candidate = dir / "stdlib";
         if (std::filesystem::exists(candidate / "mem.op")) {
@@ -122,12 +154,16 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
         }
         dir = parent;
     }
+    cache[normalized_compiler] = paths;
     return paths;
 }
 
 [[nodiscard]] static std::optional<std::size_t> require_main_offset(
     const opus::Compiler::Result& result
 ) {
+    if (result.main_offset) {
+        return result.main_offset;
+    }
     if (auto it = result.function_offsets.find("main"); it != result.function_offsets.end()) {
         return it->second;
     }
@@ -140,16 +176,321 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
     return opus::OutputKind::Raw;
 }
 
-[[nodiscard]] int run_file(const std::string& filename, bool run_immediately, opus::OutputKind output_kind, const std::filesystem::path& compiler_exe) {
-    std::ifstream file(filename);
-    if (!file) {
-        std::print(std::cerr, "\033[1;91merror\033[0m: cannot open file: \033[1m{}\033[0m\n", filename);
+static void print_timing_block(std::string_view title, const std::vector<opus::TimingEntry>& timings) {
+    if (timings.empty()) {
+        return;
+    }
+    std::println("\n\033[1;95m{} timings:\033[0m", title);
+    for (const auto& timing : timings) {
+        std::println("  {:<30} {:>8.3f} ms", timing.name, timing.ms);
+    }
+}
+
+[[nodiscard]] static std::string json_escape(std::string_view value) {
+    std::string out;
+    out.reserve(value.size() + 16);
+    for (char ch : value) {
+        switch (ch) {
+            case '\\': out += "\\\\"; break;
+            case '"': out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(ch) < 0x20) {
+                    out += std::format("\\u{:04X}", static_cast<unsigned int>(static_cast<unsigned char>(ch)));
+                } else {
+                    out += ch;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] static std::string bytes_to_hex_string(std::span<const std::uint8_t> bytes) {
+    if (bytes.empty()) {
+        return {};
+    }
+
+    std::string out;
+    out.reserve(bytes.size() * 3);
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        if (i != 0) {
+            out.push_back(' ');
+        }
+        out += std::format("{:02X}", bytes[i]);
+    }
+    return out;
+}
+
+[[nodiscard]] static std::string bytes_to_hex_dump(std::span<const std::uint8_t> bytes, std::size_t base_offset = 0) {
+    if (bytes.empty()) {
+        return "(no bytes)";
+    }
+
+    std::string out;
+    for (std::size_t offset = 0; offset < bytes.size(); offset += 16) {
+        auto slice = bytes.subspan(offset, std::min<std::size_t>(16, bytes.size() - offset));
+        out += std::format("{:04X}  ", base_offset + offset);
+
+        for (std::size_t i = 0; i < 16; ++i) {
+            if (i < slice.size()) {
+                out += std::format("{:02X}", slice[i]);
+            } else {
+                out += "  ";
+            }
+            if (i != 15) {
+                out.push_back(' ');
+            }
+            if (i == 7) {
+                out.push_back(' ');
+            }
+        }
+
+        out += " |";
+        for (std::uint8_t byte : slice) {
+            out.push_back((byte >= 32 && byte <= 126) ? static_cast<char>(byte) : '.');
+        }
+        for (std::size_t i = slice.size(); i < 16; ++i) {
+            out.push_back(' ');
+        }
+        out += "|\n";
+    }
+    return out;
+}
+
+[[nodiscard]] static const opus::FunctionArtifact* choose_inspect_function(
+    const opus::Compiler::Result& result,
+    const std::filesystem::path& file_path,
+    std::optional<std::uint32_t> selected_line
+) {
+    const auto normalized_target = normalize_path(file_path).generic_string();
+    const opus::FunctionArtifact* best = nullptr;
+
+    for (const auto& fn : result.functions) {
+        if (fn.is_extern || fn.code_size == 0) {
+            continue;
+        }
+        auto normalized_source = normalize_path(fn.source_file).generic_string();
+        if (!normalized_source.empty() && normalized_source != normalized_target) {
+            continue;
+        }
+
+        if (!selected_line) {
+            if (fn.name == "main") {
+                return &fn;
+            }
+            if (!best) {
+                best = &fn;
+            }
+            continue;
+        }
+
+        const auto line = *selected_line;
+        const auto start = fn.source_line_start;
+        const auto end = fn.source_line_end == 0 ? fn.source_line_start : fn.source_line_end;
+        if (line < start || line > end) {
+            continue;
+        }
+
+        if (!best) {
+            best = &fn;
+            continue;
+        }
+
+        const auto best_span = (best->source_line_end == 0 ? best->source_line_start : best->source_line_end) - best->source_line_start;
+        const auto fn_span = end - start;
+        if (fn_span <= best_span) {
+            best = &fn;
+        }
+    }
+
+    return best;
+}
+
+[[nodiscard]] int inspect_file(const std::string& filename, std::optional<std::uint32_t> selected_line, bool json_output, bool timings, const std::filesystem::path& compiler_exe) {
+    auto source_result = read_text_file(filename);
+    if (!source_result) {
+        if (json_output) {
+            std::println(R"({{"success":false,"error":"cannot open file"}})");
+        } else {
+            std::print(std::cerr, "\033[1;91merror\033[0m: cannot open file: \033[1m{}\033[0m\n", filename);
+        }
+        return 1;
+    }
+    std::string source = std::move(*source_result);
+
+    opus::Compiler compiler;
+    auto import_search_paths = default_import_search_paths(compiler_exe);
+    auto source_path = normalize_path(filename);
+    auto source_root = source_path.has_parent_path() ? source_path.parent_path().generic_string() : std::string{};
+
+    if (source_path.has_parent_path()) {
+        if (auto project_file = opus::find_project_file(source_path.parent_path())) {
+            if (auto config_result = opus::load_project(*project_file)) {
+                const auto& config = *config_result;
+                source_root = std::filesystem::weakly_canonical(config.project_dir).string();
+                for (const auto& include_path : config.includes) {
+                    if (std::find(import_search_paths.begin(), import_search_paths.end(), include_path) == import_search_paths.end()) {
+                        import_search_paths.push_back(include_path);
+                    }
+                }
+            }
+        }
+    }
+
+    auto result = compiler.compile({
+        .source = source,
+        .filename = filename,
+        .project_root = source_root,
+        .import_search_paths = import_search_paths,
+        .output_kind = opus::OutputKind::Exe,
+        .healing_mode = opus::ast::HealingMode::Off,
+        .debug_info = false,
+        .collect_line_map = true,
+        .collect_function_artifacts = true,
+        .collect_timings = timings,
+    });
+
+    if (!result.success) {
+        if (json_output) {
+            std::string joined;
+            for (std::size_t i = 0; i < result.errors.size(); ++i) {
+                if (i != 0) joined += "\n";
+                joined += result.errors[i];
+            }
+            std::println("{{\"success\":false,\"error\":\"{}\"}}", json_escape(joined));
+        } else {
+            for (const auto& err : result.errors) {
+                std::println("{}", err);
+            }
+        }
         return 1;
     }
 
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string source = buffer.str();
+    const auto* selected_fn = choose_inspect_function(result, source_path, selected_line);
+
+    if (!json_output) {
+        std::println("Compiled {} bytes", result.code.size());
+        if (selected_fn) {
+            std::println("Selected function: {} ({} bytes)", selected_fn->name, selected_fn->code_size);
+            auto start = selected_fn->code_offset;
+            if (start > result.code.size()) {
+                start = result.code.size();
+            }
+            auto remaining = result.code.size() - start;
+            auto size = selected_fn->code_size;
+            if (size > remaining) {
+                size = remaining;
+            }
+            auto bytes = std::span<const std::uint8_t>(result.code).subspan(start, size);
+            std::print("{}", bytes_to_hex_dump(bytes, start));
+        }
+        return 0;
+    }
+
+    std::print("{{\"success\":true,\"file\":\"{}\",\"line\":{},\"code_size\":{},\"code_hex\":\"{}\",\"line_map\":[",
+        json_escape(source_path.generic_string()),
+        selected_line.value_or(0),
+        result.code.size(),
+        json_escape(bytes_to_hex_string(result.code)));
+
+    for (std::size_t i = 0; i < result.line_map.size(); ++i) {
+        const auto& entry = result.line_map[i];
+        if (i != 0) std::print(",");
+        std::print("{{\"code_offset\":{},\"line\":{}}}", entry.code_offset, entry.line);
+    }
+
+    std::print("],\"functions\":[");
+
+    for (std::size_t i = 0; i < result.functions.size(); ++i) {
+        const auto& fn = result.functions[i];
+        if (i != 0) std::print(",");
+        std::print(
+            "{{\"name\":\"{}\",\"source_file\":\"{}\",\"source_line_start\":{},\"source_line_end\":{},\"code_offset\":{},\"code_size\":{},\"is_extern\":{}}}",
+            json_escape(fn.name),
+            json_escape(normalize_path(fn.source_file).generic_string()),
+            fn.source_line_start,
+            fn.source_line_end,
+            fn.code_offset,
+            fn.code_size,
+            fn.is_extern ? "true" : "false"
+        );
+    }
+
+    std::print("],\"selected_function\":");
+    if (!selected_fn) {
+        std::print("null");
+    } else {
+        auto safe_offset = selected_fn->code_offset;
+        if (safe_offset > result.code.size()) {
+            safe_offset = result.code.size();
+        }
+        auto safe_size = selected_fn->code_size;
+        auto remaining = result.code.size() - safe_offset;
+        if (safe_size > remaining) {
+            safe_size = remaining;
+        }
+        auto bytes = std::span<const std::uint8_t>(result.code).subspan(safe_offset, safe_size);
+        std::vector<opus::pe::LineMapEntry> selected_line_map;
+        for (const auto& entry : result.line_map) {
+            if (entry.code_offset < safe_offset) {
+                continue;
+            }
+            if (entry.code_offset >= safe_offset + safe_size) {
+                continue;
+            }
+            selected_line_map.push_back(entry);
+        }
+        std::print(
+            "{{\"name\":\"{}\",\"source_file\":\"{}\",\"source_line_start\":{},\"source_line_end\":{},\"code_offset\":{},\"code_size\":{},\"bytes_hex\":\"{}\",\"hex_dump\":\"{}\",\"line_map\":[",
+            json_escape(selected_fn->name),
+            json_escape(normalize_path(selected_fn->source_file).generic_string()),
+            selected_fn->source_line_start,
+            selected_fn->source_line_end,
+            selected_fn->code_offset,
+            selected_fn->code_size,
+            json_escape(bytes_to_hex_string(bytes)),
+            json_escape(bytes_to_hex_dump(bytes, selected_fn->code_offset))
+        );
+        for (std::size_t i = 0; i < selected_line_map.size(); ++i) {
+            const auto& entry = selected_line_map[i];
+            if (i != 0) {
+                std::print(",");
+            }
+            std::print("{{\"code_offset\":{},\"line\":{}}}", entry.code_offset, entry.line);
+        }
+        std::print("]}}");
+    }
+    std::println("}}");
+    return 0;
+}
+
+[[nodiscard]] int run_file(const std::string& filename, bool run_immediately, opus::OutputKind output_kind, bool quiet, bool timings, bool fast_mode, const std::filesystem::path& compiler_exe) {
+    auto now = [] { return std::chrono::steady_clock::now(); };
+    auto elapsed_ms = [](auto start, auto end) {
+        return std::chrono::duration<double, std::milli>(end - start).count();
+    };
+    auto total_start = now();
+    std::vector<opus::TimingEntry> stage_timings;
+    auto add_stage_timing = [&](std::string_view name, double ms) {
+        stage_timings.push_back(opus::TimingEntry{
+            .name = std::string(name),
+            .ms = ms
+        });
+    };
+
+    auto read_start = now();
+    auto source_result = read_text_file(filename);
+    if (!source_result) {
+        std::print(std::cerr, "\033[1;91merror\033[0m: cannot open file: \033[1m{}\033[0m\n", filename);
+        return 1;
+    }
+    std::string source = std::move(*source_result);
+    if (timings) {
+        add_stage_timing("driver.read_source", elapsed_ms(read_start, now()));
+    }
 
     opus::Compiler compiler;
     auto import_search_paths = default_import_search_paths(compiler_exe);
@@ -158,7 +499,8 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
     bool project_debug = false;
     auto project_healing = opus::ast::HealingMode::Off;
 
-    if (source_path.has_parent_path()) {
+    auto discovery_start = now();
+    if (!fast_mode && source_path.has_parent_path()) {
         if (auto project_file = opus::find_project_file(source_path.parent_path())) {
             if (auto config_result = opus::load_project(*project_file)) {
                 const auto& config = *config_result;
@@ -173,8 +515,12 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
             }
         }
     }
+    if (timings) {
+        add_stage_timing("driver.project_discovery", elapsed_ms(discovery_start, now()));
+    }
 
     if (run_immediately) {
+        auto compile_run_start = now();
         auto result = compiler.compile_and_run({
             .source = source,
             .filename = filename,
@@ -182,7 +528,14 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
             .import_search_paths = import_search_paths,
             .healing_mode = project_healing,
             .debug_info = project_debug,
+            .collect_timings = timings,
+            .collect_function_offsets = !quiet,
         });
+        if (timings) {
+            add_stage_timing("driver.compile_and_run", elapsed_ms(compile_run_start, now()));
+            add_stage_timing("driver.total", elapsed_ms(total_start, now()));
+            print_timing_block("driver", stage_timings);
+        }
         if (result) {
             std::println("Program returned: {}", *result);
             return 0;
@@ -191,6 +544,7 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
             return 1;
         }
     } else {
+        auto compile_start = now();
         auto result = compiler.compile({
             .source = source,
             .filename = filename,
@@ -199,8 +553,16 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
             .output_kind = output_kind,
             .healing_mode = project_healing,
             .debug_info = project_debug,
+            .collect_timings = timings,
+            .collect_function_offsets = !quiet,
         });
+        if (timings) {
+            add_stage_timing("driver.compile_call", elapsed_ms(compile_start, now()));
+        }
         if (result.success) {
+            for (const auto& warning : result.warnings) {
+                std::println("\033[1;93mwarning:\033[0m {}", warning);
+            }
             std::string outname = filename;
             if (outname.ends_with(".op")) {
                 outname = outname.substr(0, outname.size() - 3);
@@ -215,6 +577,7 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
                 }
                 
                 opus::pe::PeImageGenerator dll_gen;
+                auto pe_start = now();
                 auto dll_bytes = dll_gen.generate({
                     .code = result.code,
                     .main_offset = *main_offset,
@@ -226,21 +589,36 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
                     .output_kind = opus::OutputKind::Dll,
                     .writable_text = result.needs_writable_text,
                 });
-                
-                auto pe_errors = opus::pe::PeImageGenerator::validate_pe(dll_bytes);
-                for (const auto& err : pe_errors) {
-                    std::println("\033[1;93mPE warning:\033[0m {}", err);
+                if (timings) {
+                    add_stage_timing("driver.pe_generate", elapsed_ms(pe_start, now()));
                 }
                 
+                if (!quiet) {
+                    auto validate_start = now();
+                    auto pe_errors = opus::pe::PeImageGenerator::validate_pe(dll_bytes);
+                    for (const auto& err : pe_errors) {
+                        std::println("\033[1;93mPE warning:\033[0m {}", err);
+                    }
+                    if (timings) {
+                        add_stage_timing("driver.pe_validate", elapsed_ms(validate_start, now()));
+                    }
+                }
+                
+                auto write_start = now();
                 auto write_err = write_binary_file(outname, dll_bytes.data(), dll_bytes.size());
                 if (!write_err.empty()) {
                     std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", write_err);
                     return 1;
                 }
+                if (timings) {
+                    add_stage_timing("driver.write_binary", elapsed_ms(write_start, now()));
+                }
                 
-                std::println("Generated DLL: {} ({} bytes)", outname, dll_bytes.size());
-                std::println("  Entry point: DllMain -> calls main()");
-                std::println("  Inject with LoadLibrary or any injector");
+                if (!quiet) {
+                    std::println("Generated DLL: {} ({} bytes)", outname, dll_bytes.size());
+                    std::println("  Entry point: DllMain -> calls main()");
+                    std::println("  Inject with LoadLibrary or any injector");
+                }
                 
             } else {
                 outname += ".exe";
@@ -251,6 +629,7 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
                 }
                 
                 opus::pe::PeImageGenerator exe_gen;
+                auto pe_start = now();
                 auto exe_bytes = exe_gen.generate({
                     .code = result.code,
                     .main_offset = *main_offset,
@@ -262,27 +641,49 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
                     .output_kind = opus::OutputKind::Exe,
                     .writable_text = result.needs_writable_text,
                 });
-                
-                auto pe_errors = opus::pe::PeImageGenerator::validate_pe(exe_bytes);
-                for (const auto& err : pe_errors) {
-                    std::println("\033[1;93mPE warning:\033[0m {}", err);
+                if (timings) {
+                    add_stage_timing("driver.pe_generate", elapsed_ms(pe_start, now()));
                 }
                 
+                if (!quiet) {
+                    auto validate_start = now();
+                    auto pe_errors = opus::pe::PeImageGenerator::validate_pe(exe_bytes);
+                    for (const auto& err : pe_errors) {
+                        std::println("\033[1;93mPE warning:\033[0m {}", err);
+                    }
+                    if (timings) {
+                        add_stage_timing("driver.pe_validate", elapsed_ms(validate_start, now()));
+                    }
+                }
+                
+                auto write_start = now();
                 auto write_err = write_binary_file(outname, exe_bytes.data(), exe_bytes.size());
                 if (!write_err.empty()) {
                     std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", write_err);
                     return 1;
                 }
+                if (timings) {
+                    add_stage_timing("driver.write_binary", elapsed_ms(write_start, now()));
+                }
                 
-                std::println("Generated EXE: {} ({} bytes)", outname, exe_bytes.size());
-                std::println("  Entry point: exe startup -> calls main()");
+                if (!quiet) {
+                    std::println("Generated EXE: {} ({} bytes)", outname, exe_bytes.size());
+                    std::println("  Entry point: exe startup -> calls main()");
+                }
             }
             
-            std::println("Functions:");
-            for (const auto& [name, offset] : result.function_offsets) {
-                std::println("  {} @ 0x{:x}", name, offset);
+            if (!quiet) {
+                std::println("Functions:");
+                for (const auto& [name, offset] : result.function_offsets) {
+                    std::println("  {} @ 0x{:x}", name, offset);
+                }
             }
-            
+
+            if (timings) {
+                add_stage_timing("driver.total", elapsed_ms(total_start, now()));
+                print_timing_block("driver", stage_timings);
+            }
+
             return 0;
         } else {
             if (result.errors.empty()) {
@@ -324,7 +725,20 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
     }
 }
 
-[[nodiscard]] int build_project(std::optional<std::string> project_path_arg, const std::filesystem::path& compiler_exe) {
+[[nodiscard]] int build_project(std::optional<std::string> project_path_arg, bool timings, const std::filesystem::path& compiler_exe) {
+    auto now = [] { return std::chrono::steady_clock::now(); };
+    auto elapsed_ms = [](auto start, auto end) {
+        return std::chrono::duration<double, std::milli>(end - start).count();
+    };
+    auto total_start = now();
+    std::vector<opus::TimingEntry> stage_timings;
+    auto add_stage_timing = [&](std::string_view name, double ms) {
+        stage_timings.push_back(opus::TimingEntry{
+            .name = std::string(name),
+            .ms = ms
+        });
+    };
+
     std::filesystem::path project_file;
     
     if (project_path_arg) {
@@ -340,7 +754,11 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
     
     std::println("Loading project: {}", project_file.string());
     
+    auto load_project_start = now();
     auto config_result = opus::load_project(project_file);
+    if (timings) {
+        add_stage_timing("driver.load_project", elapsed_ms(load_project_start, now()));
+    }
     if (!config_result) {
         std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", config_result.error());
         return 1;
@@ -357,15 +775,16 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
     std::println("Entry: {}", config.entry);
     
     std::filesystem::path entry_path = config.project_dir / config.entry;
-    std::ifstream in(entry_path);
-    if (!in) {
+    auto source_result = read_text_file(entry_path);
+    if (!source_result) {
         std::print(std::cerr, "\033[1;91merror\033[0m: cannot read entry file: {}\n", entry_path.string());
         return 1;
     }
-    
-    std::stringstream buffer;
-    buffer << in.rdbuf();
-    std::string source = buffer.str();
+    auto read_start = now();
+    std::string source = std::move(*source_result);
+    if (timings) {
+        add_stage_timing("driver.read_source", elapsed_ms(read_start, now()));
+    }
     std::vector<std::string> import_search_paths = default_import_search_paths(compiler_exe);
     for (const auto& include_path : config.includes) {
         import_search_paths.push_back(include_path);
@@ -378,6 +797,7 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
         std::print(std::cerr, "\033[1;91merror\033[0m: invalid project mode '{}'; expected 'dll' or 'exe'\n", config.mode);
         return 1;
     }
+    auto compile_start = now();
     auto result = compiler.compile({
         .source = source,
         .filename = entry_path.string(),
@@ -386,9 +806,16 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
         .output_kind = output_kind,
         .healing_mode = config.healing.value_or(opus::ast::HealingMode::Off),
         .debug_info = config.debug,
+        .collect_timings = timings,
     });
+    if (timings) {
+        add_stage_timing("driver.compile_call", elapsed_ms(compile_start, now()));
+    }
     
     if (result.success) {
+        for (const auto& warning : result.warnings) {
+            std::println("\033[1;93mwarning:\033[0m {}", warning);
+        }
         std::string outname = config.output;
         if (outname.empty()) {
             outname = config.name;
@@ -410,6 +837,7 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
             std::string debug_source = config.debug ? source : "";
             
             opus::pe::PeImageGenerator pe_gen;
+            auto pe_start = now();
             auto pe_bytes = pe_gen.generate({
                 .code = result.code,
                 .main_offset = *main_offset,
@@ -421,16 +849,27 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
                 .output_kind = output_kind,
                 .writable_text = result.needs_writable_text,
             });
+            if (timings) {
+                add_stage_timing("driver.pe_generate", elapsed_ms(pe_start, now()));
+            }
             
+            auto validate_start = now();
             auto pe_errors = opus::pe::PeImageGenerator::validate_pe(pe_bytes);
             for (const auto& err : pe_errors) {
                 std::println("\033[1;93mPE warning:\033[0m {}", err);
             }
+            if (timings) {
+                add_stage_timing("driver.pe_validate", elapsed_ms(validate_start, now()));
+            }
             
+            auto write_start = now();
             auto write_err = write_binary_file(output_path.string(), pe_bytes.data(), pe_bytes.size());
             if (!write_err.empty()) {
                 std::print(std::cerr, "\033[1;91merror\033[0m: {}\n", write_err);
                 return 1;
+            }
+            if (timings) {
+                add_stage_timing("driver.write_binary", elapsed_ms(write_start, now()));
             }
             
             std::println("\n\033[1;92mBuild successful!\033[0m");
@@ -458,7 +897,12 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
         for (const auto& [name, offset] : result.function_offsets) {
             std::println("  {} @ 0x{:x}", name, offset);
         }
-        
+
+        if (timings) {
+            add_stage_timing("driver.total", elapsed_ms(total_start, now()));
+            print_timing_block("driver", stage_timings);
+        }
+
         return 0;
     } else {
         std::println("\n\033[1;91mBuild failed!\033[0m");
@@ -500,13 +944,51 @@ export int main(int argc, char* argv[]) {
 
         if (command == "build") {
             std::optional<std::string> project_path;
+            bool timings = false;
             if (argc > 2) {
-                project_path = argv[2];
+                for (int i = 2; i < argc; ++i) {
+                    std::string arg = argv[i];
+                    if (arg == "--timings") {
+                        timings = true;
+                    } else if (!arg.starts_with("-") && !project_path) {
+                        project_path = arg;
+                    }
+                }
             }
-            return build_project(project_path, compiler_exe);
+            return build_project(project_path, timings, compiler_exe);
+        }
+
+        if (command == "inspect") {
+            std::string filename;
+            std::optional<std::uint32_t> selected_line;
+            bool json_output = false;
+            bool timings = false;
+
+            for (int i = 2; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "--json") {
+                    json_output = true;
+                } else if (arg == "--timings") {
+                    timings = true;
+                } else if (arg == "--line" && i + 1 < argc) {
+                    selected_line = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+                } else if (!arg.starts_with("-") && filename.empty()) {
+                    filename = arg;
+                }
+            }
+
+            if (filename.empty()) {
+                std::println(std::cerr, "Error: no input file specified for inspect");
+                return 1;
+            }
+
+            return inspect_file(filename, selected_line, json_output, timings, compiler_exe);
         }
 
         bool run = false;
+        bool quiet = false;
+        bool timings = false;
+        bool fast_mode = false;
         auto output_kind = opus::OutputKind::Exe;
         std::string filename;
         
@@ -514,6 +996,12 @@ export int main(int argc, char* argv[]) {
             std::string arg = argv[i];
             if (arg == "--run" || arg == "-r") {
                 run = true;
+            } else if (arg == "--timings") {
+                timings = true;
+            } else if (arg == "--fast") {
+                fast_mode = true;
+            } else if (arg == "--quiet" || arg == "-q") {
+                quiet = true;
             } else if (arg == "--dll") {
                 output_kind = opus::OutputKind::Dll;
             } else if (!arg.starts_with("-")) {
@@ -526,7 +1014,7 @@ export int main(int argc, char* argv[]) {
             return 1;
         }
 
-        return run_file(filename, run, output_kind, compiler_exe);
+        return run_file(filename, run, output_kind, quiet, timings, fast_mode, compiler_exe);
     } catch (const std::exception& ex) {
         std::print(std::cerr, "\033[1;91minternal error\033[0m: uncaught exception: {}\n", ex.what());
         return 1;

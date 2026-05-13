@@ -39,6 +39,12 @@ fn add(left: int, right: int) -> int {
 }
 ```
 
+Small `fn` helpers can also omit the return type when it is obvious from the body:
+
+```c
+fn add(left: int, right: int) => left + right
+```
+
 ### Type-first
 
 ```c
@@ -60,6 +66,7 @@ end function
 ```c
 function int add(int left, int right) => left + right
 fn add(left: int, right: int) -> int => left + right
+fn add(left: int, right: int) => left + right
 int add(int left, int right) => left + right
 ```
 
@@ -79,12 +86,36 @@ int local_copy = answer
 - `auto` is mutable with inference
 - type-first local declarations also work
 
-## Structs, classes, and enums
+## Structs, views, classes, and enums
 
 ```c
 struct Point {
     int x
     y: int
+}
+```
+
+```c
+view RuntimeState {
+    target: ptr @ 0
+    hits: int @ 8
+    ready: bool @ 12
+}
+```
+
+Views also accept named offsets from constants and enums:
+
+```c
+enum RuntimeOffset {
+    Target = 0,
+    Hits = 8,
+    Ready = 12,
+}
+
+view RuntimeState {
+    target: ptr @ RuntimeOffset.Target
+    hits: int @ RuntimeOffset.Hits
+    ready: bool @ RuntimeOffset.Ready
 }
 ```
 
@@ -109,6 +140,14 @@ Literals:
 ```c
 let p = Point { x: 10, y: 20 }
 let pair = Pair { left, right }
+```
+
+Views bind over existing memory instead of allocating inline values:
+
+```c
+let block = malloc(16)
+let rt = block as RuntimeState
+rt.hits = 42
 ```
 
 ## Imports and projects
@@ -141,6 +180,9 @@ function int main() {
     return value
 }
 ```
+
+When the code is really "pointer plus fixed offsets", pair `mem` with a `view` instead of writing wrapper spam like `function ptr state()` or `runtime_read_ptr(block, Slot.State)` helpers everywhere.
+If those offsets already live in one SDK or offset file, use named constants or enum variants instead of duplicating raw numbers across view declarations.
 
 ## Concurrency
 

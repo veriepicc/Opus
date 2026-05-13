@@ -82,6 +82,11 @@ public:
     }
 
     [[nodiscard]] std::size_t pos() const { return code_.size(); }
+
+    void truncate(std::size_t size) {
+        assert(size <= code_.size() && "truncate: size out of bounds");
+        code_.resize(size);
+    }
     
     std::uint8_t* data() { return code_.data(); }
     const std::uint8_t* data() const { return code_.data(); }
@@ -100,7 +105,11 @@ public:
     [[nodiscard]] std::size_t create_label() { return pos(); }
     
     [[nodiscard]] std::int32_t rel32(std::size_t from, std::size_t to) {
-        return static_cast<std::int32_t>(to - from - 4);
+        auto delta = static_cast<std::int64_t>(to) - static_cast<std::int64_t>(from) - 4;
+        assert(delta >= (std::numeric_limits<std::int32_t>::min)() &&
+               delta <= (std::numeric_limits<std::int32_t>::max)() &&
+               "rel32 displacement out of range");
+        return static_cast<std::int32_t>(delta);
     }
 
 private:
@@ -320,6 +329,12 @@ public:
         buf_.emit8(modrm(0b11, Reg(EXT_IDIV), src));
     }
 
+    void div(Reg src) {
+        buf_.emit8(rex(true, Reg::RAX, src));
+        buf_.emit8(0xF7);
+        buf_.emit8(modrm(0b11, Reg(EXT_DIV), src));
+    }
+
     // cqo - sign-extend RAX into RDX:RAX
     void cqo() {
         buf_.emit8(0x48);
@@ -501,16 +516,14 @@ public:
 
     // smart divide - uses shift for power of 2, idiv otherwise
     void idiv_smart(Reg dst, std::int64_t divisor, bool is_signed) {
+        (void)dst;
         assert(dst == Reg::RAX && "idiv result must be in RAX");
+        assert(divisor != 0 && "division by zero");
         
         // power of two → shift
-        if (is_power_of_two(divisor)) {
+        if (!is_signed && divisor > 0 && is_power_of_two(divisor)) {
             int shift = log2_pow2(static_cast<std::uint64_t>(divisor));
-            if (is_signed) {
-                sar_imm(Reg::RAX, static_cast<std::uint8_t>(shift));
-            } else {
-                shr_imm(Reg::RAX, static_cast<std::uint8_t>(shift));
-            }
+            shr_imm(Reg::RAX, static_cast<std::uint8_t>(shift));
             return;
         }
         
@@ -519,7 +532,9 @@ public:
         if (is_signed) {
             cqo();  // sign-extend RAX into RDX:RAX
         } else {
-            xor_(Reg::RDX, Reg::RDX);  // zero RDX for unsigned
+            xor_32(Reg::RDX, Reg::RDX);  // zero RDX for unsigned
+            div(Reg::R11);
+            return;
         }
         idiv(Reg::R11);
     }
@@ -555,20 +570,17 @@ public:
         add(dst, Reg::R11);
     }
 
-    // smart move - uses xor for 0, or for -1, shorter encodings when possible
+    // smart move - keep mov semantics and prefer smaller immediates
     void mov_smart(Reg dst, std::int64_t imm) {
         // move 0 → xor reg, reg (3 bytes vs 10 for mov imm64)
         if (imm == 0) {
-            xor_32(dst, dst);  // 32-bit xor zero-extends to 64
+            mov_imm32(dst, 0);
             return;
         }
         
         // move -1 → or reg, -1 (4 bytes vs 10)
         if (imm == -1) {
-            buf_.emit8(rex(true, Reg::RAX, dst));
-            buf_.emit8(0x83);  // or with imm8
-            buf_.emit8(modrm(0b11, Reg(EXT_OR), dst));
-            buf_.emit8(0xFF);  // -1 as imm8
+            mov_imm32(dst, -1);
             return;
         }
         
@@ -629,15 +641,9 @@ public:
         buf_.emit8(modrm(0b11, right, left));
     }
 
-    // smart compare - uses test for comparing to zero
+    // smart compare
     void cmp_smart(Reg left, Reg right) {
         // compare reg to itself → always equal, use test
-        if (left == right) {
-            test(left, left);
-            return;
-        }
-        
-        // standard comparison
         cmp(left, right);
     }
 

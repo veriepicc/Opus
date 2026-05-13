@@ -38,7 +38,7 @@ public:
         }
     }
 
-    std::expected<ast::Module, std::vector<ParseError>> parse_module(std::string_view name) {
+    std::expected<ast::Module, std::vector<ParseError>> parse_module(std::string_view name, bool validate_ast = false) {
         ast::Module mod;
         mod.name = std::string(name);
         mod.syntax = mode_;
@@ -62,15 +62,17 @@ public:
             return std::unexpected(std::move(errors_));
         }
 
-        for (const auto& issue : ast::validate_module(mod)) {
-            errors_.push_back(ParseError{
-                .message = issue.message,
-                .loc = issue.loc
-            });
-        }
+        if (validate_ast) {
+            for (const auto& issue : ast::validate_module(mod)) {
+                errors_.push_back(ParseError{
+                    .message = issue.message,
+                    .loc = issue.loc
+                });
+            }
 
-        if (!errors_.empty()) {
-            return std::unexpected(std::move(errors_));
+            if (!errors_.empty()) {
+                return std::unexpected(std::move(errors_));
+            }
         }
         return mod;
     }
@@ -284,6 +286,8 @@ private:
             case TokenKind::Enum:
             case TokenKind::Project:
             case TokenKind::Import:
+            case TokenKind::Export:
+            case TokenKind::Internal:
             case TokenKind::Using:
             case TokenKind::Extern:
             case TokenKind::Let:
@@ -292,6 +296,8 @@ private:
             case TokenKind::Auto:
             case TokenKind::If:
             case TokenKind::Else:
+            case TokenKind::Switch:
+            case TokenKind::Case:
             case TokenKind::While:
             case TokenKind::For:
             case TokenKind::Loop:
@@ -461,15 +467,15 @@ private:
     [[nodiscard]] static const std::vector<std::string>& c_decl_keyword_candidates() {
         static const std::vector<std::string> values{
             "function", "fn", "class", "struct", "enum",
-            "const", "import", "using", "extern", "let", "var", "project"
+            "const", "constant", "resolved", "import", "using", "extern", "let", "var", "project"
         };
         return values;
     }
 
     [[nodiscard]] static const std::vector<std::string>& mixed_decl_keyword_candidates() {
         static const std::vector<std::string> values{
-            "function", "fn", "class", "struct", "enum",
-            "const", "import", "using", "extern", "let", "var", "project",
+            "function", "fn", "class", "struct", "view", "enum",
+            "const", "constant", "resolved", "import", "using", "extern", "let", "var", "project",
             "define", "create"
         };
         return values;
@@ -477,7 +483,7 @@ private:
 
     [[nodiscard]] static const std::vector<std::string>& english_decl_keyword_candidates() {
         static const std::vector<std::string> values{
-            "define", "create", "function", "struct"
+            "define", "create", "function", "struct", "view"
         };
         return values;
     }
@@ -489,8 +495,8 @@ private:
 
     [[nodiscard]] static const std::vector<std::string>& statement_keyword_candidates() {
         static const std::vector<std::string> values{
-            "let", "var", "auto", "const", "return", "if", "while",
-            "parallel", "for", "loop", "break", "continue",
+            "let", "var", "auto", "const", "constant", "return", "if", "while",
+            "switch", "case", "parallel", "for", "loop", "break", "continue",
             "create", "set", "call"
         };
         return values;
@@ -956,6 +962,18 @@ private:
             label);
     }
 
+    ast::StmtSuite parse_switch_arm_suite(StatementMode mode, const char* label) {
+        return parse_stmt_suite_until(
+            mode,
+            [this]() {
+                return check(TokenKind::Case) ||
+                       check(TokenKind::Else) ||
+                       check(TokenKind::RBrace) ||
+                       check(TokenKind::Eof);
+            },
+            label);
+    }
+
     template<typename StopFn, typename ParseOneFn>
     void parse_recovering_sequence(
         const char* label,
@@ -1028,6 +1046,7 @@ private:
         std::string name,
         ast::ParamList params,
         Type return_type,
+        bool infer_return_type,
         std::optional<ast::StmtSuite> body,
         SourceSpan span = {},
         ast::DeclAttrs attrs = {}) {
@@ -1036,6 +1055,7 @@ private:
             .name = std::move(name),
             .params = std::move(params),
             .return_type = std::move(return_type),
+            .infer_return_type = infer_return_type,
             .body = std::move(body),
             .attrs = std::move(attrs),
         };
@@ -1043,23 +1063,43 @@ private:
         return decl;
     }
 
+    void apply_decl_attrs(ast::Decl& decl, const ast::DeclAttrs& attrs) {
+        if (decl.is<ast::FnDecl>()) {
+            decl.as<ast::FnDecl>().attrs = attrs;
+        } else if (decl.is<ast::StructDecl>()) {
+            decl.as<ast::StructDecl>().attrs = attrs;
+        } else if (decl.is<ast::ViewDecl>()) {
+            decl.as<ast::ViewDecl>().attrs = attrs;
+        } else if (decl.is<ast::ClassDecl>()) {
+            decl.as<ast::ClassDecl>().attrs = attrs;
+        } else if (decl.is<ast::EnumDecl>()) {
+            decl.as<ast::EnumDecl>().attrs = attrs;
+        } else if (decl.is<ast::ConstDecl>()) {
+            decl.as<ast::ConstDecl>().attrs = attrs;
+        } else if (decl.is<ast::StaticDecl>()) {
+            decl.as<ast::StaticDecl>().attrs = attrs;
+        }
+    }
+
     [[nodiscard]] ast::MethodDecl make_instance_method(
         std::string name,
         ast::ParamList params,
         Type return_type,
+        bool infer_return_type,
         ast::StmtSuite body) {
         return ast::MethodDecl{
             .name = std::move(name),
             .params = std::move(params),
             .return_type = std::move(return_type),
+            .infer_return_type = infer_return_type,
             .body = std::move(body),
             .receiver = ast::MethodReceiver::ImplicitSelf
         };
     }
 
-    [[nodiscard]] ast::StmtSuite make_expression_body_suite(Type return_type, ast::ExprPtr expr) {
+    [[nodiscard]] ast::StmtSuite make_expression_body_suite(Type return_type, bool infer_return_type, ast::ExprPtr expr) {
         auto stmt = std::make_unique<ast::Stmt>();
-        if (return_type.is_void()) {
+        if (return_type.is_void() && !infer_return_type) {
             stmt->kind = ast::ExprStmt{
                 .expr = std::move(expr)
             };
@@ -1078,6 +1118,7 @@ private:
         std::string name;
         ast::ParamList params;
         Type return_type = Type::make_primitive(PrimitiveType::Void);
+        bool infer_return_type = false;
     };
 
     std::optional<ParsedCallableSignature> parse_signature_type_name_params(
@@ -1109,17 +1150,20 @@ private:
         consume(TokenKind::RParen, "expected ')' after parameters");
 
         Type ret_type = Type::make_primitive(PrimitiveType::Void);
+        bool infer_return_type = true;
         if (match(TokenKind::Arrow) || match(TokenKind::Colon)) {
             auto parsed_ret = parse_type();
             if (parsed_ret) {
                 ret_type = std::move(*parsed_ret);
+                infer_return_type = false;
             }
         }
 
         return ParsedCallableSignature{
             .name = std::string(name_tok.text),
             .params = std::move(params),
-            .return_type = std::move(ret_type)
+            .return_type = std::move(ret_type),
+            .infer_return_type = infer_return_type,
         };
     }
 
@@ -1178,6 +1222,7 @@ private:
 
     std::optional<ast::StmtSuite> parse_decl_body_suite(
         Type return_type,
+        bool infer_return_type,
         BracedBodyMode body_mode,
         const char* label) {
         if (match(TokenKind::FatArrow)) {
@@ -1187,7 +1232,7 @@ private:
                 return std::nullopt;
             }
             match(TokenKind::Semicolon);
-            return make_expression_body_suite(std::move(return_type), std::move(*expr));
+            return make_expression_body_suite(std::move(return_type), infer_return_type, std::move(*expr));
         }
 
         consume(TokenKind::LBrace, std::format("expected '{{' or '=>' after {}", label));
@@ -1202,7 +1247,7 @@ private:
             return std::nullopt;
         }
 
-        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "method signature");
+        auto body = parse_decl_body_suite(sig->return_type.clone(), false, BracedBodyMode::V2, "method signature");
         if (!body) {
             return std::nullopt;
         }
@@ -1211,6 +1256,7 @@ private:
             std::move(sig->name),
             std::move(sig->params),
             std::move(sig->return_type),
+            false,
             std::move(*body));
     }
 
@@ -1220,7 +1266,7 @@ private:
             return std::nullopt;
         }
 
-        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "method signature");
+        auto body = parse_decl_body_suite(sig->return_type.clone(), sig->infer_return_type, BracedBodyMode::V2, "method signature");
         if (!body) {
             return std::nullopt;
         }
@@ -1229,6 +1275,7 @@ private:
             std::move(sig->name),
             std::move(sig->params),
             std::move(sig->return_type),
+            sig->infer_return_type,
             std::move(*body));
     }
 
@@ -1238,7 +1285,7 @@ private:
             return std::nullopt;
         }
 
-        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "method signature");
+        auto body = parse_decl_body_suite(sig->return_type.clone(), false, BracedBodyMode::V2, "method signature");
         if (!body) {
             return std::nullopt;
         }
@@ -1247,6 +1294,7 @@ private:
             std::move(sig->name),
             std::move(sig->params),
             std::move(sig->return_type),
+            false,
             std::move(*body));
     }
 
@@ -1262,6 +1310,28 @@ private:
     }
 
     std::optional<ast::DeclPtr> parse_decl_c() {
+        if (match(TokenKind::Export)) {
+            ast::DeclAttrs attrs{
+                .visibility = ast::Visibility::Public
+            };
+            auto decl = parse_decl_c();
+            if (!decl) {
+                return std::nullopt;
+            }
+            apply_decl_attrs(**decl, attrs);
+            return decl;
+        }
+        if (match(TokenKind::Internal)) {
+            ast::DeclAttrs attrs{
+                .visibility = ast::Visibility::Internal
+            };
+            auto decl = parse_decl_c();
+            if (!decl) {
+                return std::nullopt;
+            }
+            apply_decl_attrs(**decl, attrs);
+            return decl;
+        }
         if (match(TokenKind::Function)) {
             return parse_fn_decl_v2();
         }
@@ -1274,11 +1344,32 @@ private:
         if (match(TokenKind::Struct)) {
             return parse_struct_decl();
         }
+        if (match(TokenKind::View)) {
+            return parse_view_decl();
+        }
         if (match(TokenKind::Enum)) {
             return parse_enum_decl();
         }
         if (match(TokenKind::Const)) {
             return parse_const_decl();
+        }
+        if (match(TokenKind::Static)) {
+            bool is_resolved = previous().text == "resolved";
+            if (is_resolved) {
+                ast::DeclAttrs attrs{
+                    .is_resolved = true
+                };
+                if (match(TokenKind::Function)) {
+                    return parse_fn_decl_v2(std::move(attrs));
+                }
+                if (match(TokenKind::Fn)) {
+                    return parse_fn_decl_c(std::move(attrs));
+                }
+                if (looks_like_type_first_fn_decl_start()) {
+                    return parse_fn_decl_v2_type_first(std::move(attrs));
+                }
+            }
+            return parse_static_decl(false, is_resolved);
         }
         if (match(TokenKind::Import)) {
             return parse_import_decl();
@@ -1299,10 +1390,10 @@ private:
             return std::nullopt;
         }
         if (match(TokenKind::Let)) {
-            return parse_static_decl(false);
+            return parse_static_decl(false, false);
         }
         if (match(TokenKind::Var)) {
-            return parse_static_decl(true);
+            return parse_static_decl(true, false);
         }
         if (looks_like_type_first_fn_decl_start()) {
             return parse_fn_decl_v2_type_first();
@@ -1325,6 +1416,9 @@ private:
             if (match(TokenKind::Struct)) {
                 return parse_struct_decl();
             }
+            if (match(TokenKind::View)) {
+                return parse_view_decl();
+            }
         }
         
         error_expected_decl_start(
@@ -1337,7 +1431,7 @@ private:
     // FUNCTION DECLARATIONS
     // ========================================================================
 
-    std::optional<ast::DeclPtr> parse_fn_decl_c() {
+    std::optional<ast::DeclPtr> parse_fn_decl_c(ast::DeclAttrs attrs = {}) {
         SourceSpan span{.start = previous().loc};
 
         auto sig = parse_signature_name_params_optional_return("expected function name", NameMode::AllowTypeKeywords);
@@ -1345,7 +1439,7 @@ private:
             return std::nullopt;
         }
 
-        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::Mixed, "function signature");
+        auto body = parse_decl_body_suite(sig->return_type.clone(), sig->infer_return_type, BracedBodyMode::Mixed, "function signature");
         if (!body) {
             return std::nullopt;
         }
@@ -1356,8 +1450,10 @@ private:
             std::move(sig->name),
             std::move(sig->params),
             std::move(sig->return_type),
+            sig->infer_return_type,
             std::optional<ast::StmtSuite>{std::move(*body)},
-            span);
+            span,
+            std::move(attrs));
     }
 
     std::optional<ast::DeclPtr> parse_fn_decl_english() {
@@ -1375,7 +1471,7 @@ private:
                 return std::nullopt;
             }
 
-            auto body = make_expression_body_suite(sig->return_type.clone(), std::move(*expr));
+            auto body = make_expression_body_suite(sig->return_type.clone(), false, std::move(*expr));
             match(TokenKind::Semicolon);
             if (match(TokenKind::End)) {
                 consume_keyword_spelling(TokenKind::Function, "function", "expected 'function' after 'end'");
@@ -1386,6 +1482,7 @@ private:
                 std::move(sig->name),
                 std::move(sig->params),
                 std::move(sig->return_type),
+                false,
                 std::optional<ast::StmtSuite>{std::move(body)},
                 span);
         }
@@ -1401,6 +1498,7 @@ private:
             std::move(sig->name),
             std::move(sig->params),
             std::move(sig->return_type),
+            false,
             std::optional<ast::StmtSuite>{std::move(body)},
             span);
     }
@@ -1410,7 +1508,7 @@ private:
     // ========================================================================
 
     // v2.0: function RetType name(Type param, Type param) { body }
-    std::optional<ast::DeclPtr> parse_fn_decl_v2() {
+    std::optional<ast::DeclPtr> parse_fn_decl_v2(ast::DeclAttrs attrs = {}) {
         SourceSpan span{.start = previous().loc};
         
         bool is_thread = match(TokenKind::Thread);
@@ -1421,7 +1519,7 @@ private:
             return std::nullopt;
         }
 
-        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "function signature");
+        auto body = parse_decl_body_suite(sig->return_type.clone(), false, BracedBodyMode::V2, "function signature");
         if (!body) {
             return std::nullopt;
         }
@@ -1432,12 +1530,14 @@ private:
             std::move(sig->name),
             std::move(sig->params),
             std::move(sig->return_type),
+            false,
             std::optional<ast::StmtSuite>{std::move(*body)},
-            span);
+            span,
+            std::move(attrs));
     }
 
     // v2.0: Type name(Type param, ...) { body } - no function keyword
-    std::optional<ast::DeclPtr> parse_fn_decl_v2_type_first() {
+    std::optional<ast::DeclPtr> parse_fn_decl_v2_type_first(ast::DeclAttrs attrs = {}) {
         SourceSpan span{.start = current().loc};
 
         auto sig = parse_signature_type_name_params("expected function name after type", NameMode::AllowTypeKeywords);
@@ -1445,7 +1545,7 @@ private:
             return std::nullopt;
         }
 
-        auto body = parse_decl_body_suite(sig->return_type.clone(), BracedBodyMode::V2, "function signature");
+        auto body = parse_decl_body_suite(sig->return_type.clone(), false, BracedBodyMode::V2, "function signature");
         if (!body) {
             return std::nullopt;
         }
@@ -1456,8 +1556,10 @@ private:
             std::move(sig->name),
             std::move(sig->params),
             std::move(sig->return_type),
+            false,
             std::optional<ast::StmtSuite>{std::move(*body)},
-            span);
+            span,
+            std::move(attrs));
     }
 
     // v2.0 param list: Type name, Type name, ...
@@ -1575,6 +1677,11 @@ private:
         }
         if (match(TokenKind::If)) {
             auto s = parse_if_stmt_v2();
+            if (s) (*s)->span.start = stmt_start;
+            return s;
+        }
+        if (match(TokenKind::Switch)) {
+            auto s = parse_switch_stmt_v2();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
@@ -1740,6 +1847,94 @@ private:
         stmt->kind = ast::IfStmt{
             .condition = std::move(*cond),
             .then_block = std::move(*then_block),
+            .else_block = std::move(else_block)
+        };
+        return stmt;
+    }
+
+    bool parse_switch_arms(
+        StatementMode mode,
+        ast::SwitchCaseList& cases,
+        std::optional<ast::StmtSuite>& else_block
+    ) {
+        bool seen_else = false;
+
+        while (!check(TokenKind::RBrace) && !at_end()) {
+            if (!check_loop_safeguard("parse_switch_arms")) {
+                return false;
+            }
+
+            if (match(TokenKind::Case)) {
+                if (seen_else) {
+                    error("switch else branch must be last");
+                }
+
+                auto value = parse_expr();
+                if (!value) {
+                    recover_after_failure(
+                        [this]() {
+                            return check(TokenKind::Case) ||
+                                   check(TokenKind::Else) ||
+                                   check(TokenKind::RBrace) ||
+                                   check(TokenKind::Eof);
+                        },
+                        RecoveryMode::Statement);
+                    continue;
+                }
+
+                consume(TokenKind::Colon, "expected ':' after case value");
+                auto body = parse_switch_arm_suite(mode, "parse_switch_case_body");
+                cases.push_back(ast::SwitchCase{
+                    .value = std::move(*value),
+                    .body = std::move(body)
+                });
+                continue;
+            }
+
+            if (match(TokenKind::Else)) {
+                if (seen_else) {
+                    error("duplicate else branch in switch");
+                }
+                seen_else = true;
+                consume(TokenKind::Colon, "expected ':' after else");
+                else_block = parse_switch_arm_suite(mode, "parse_switch_else_body");
+                if (!check(TokenKind::RBrace)) {
+                    error("switch else branch must be last");
+                }
+                continue;
+            }
+
+            error("expected 'case', 'else', or '}' in switch body");
+            recover_after_failure(
+                [this]() {
+                    return check(TokenKind::Case) ||
+                           check(TokenKind::Else) ||
+                           check(TokenKind::RBrace) ||
+                           check(TokenKind::Eof);
+                },
+                RecoveryMode::Statement);
+        }
+
+        return true;
+    }
+
+    std::optional<ast::StmtPtr> parse_switch_stmt_v2() {
+        auto subject = parse_expr();
+        if (!subject) return std::nullopt;
+
+        consume(TokenKind::LBrace, "expected '{' after switch subject");
+
+        ast::SwitchCaseList cases;
+        std::optional<ast::StmtSuite> else_block;
+        if (!parse_switch_arms(StatementMode::V2, cases, else_block)) {
+            return std::nullopt;
+        }
+        consume(TokenKind::RBrace, "expected '}' after switch body");
+
+        auto stmt = std::make_unique<ast::Stmt>();
+        stmt->kind = ast::SwitchStmt{
+            .subject = std::move(*subject),
+            .cases = std::move(cases),
             .else_block = std::move(else_block)
         };
         return stmt;
@@ -1911,6 +2106,69 @@ private:
         };
     }
 
+    std::optional<ast::ViewFieldDecl> parse_view_field_decl() {
+        ast::FieldDecl base_field;
+        if (looks_like_typed_name_start()) {
+            auto field_type = parse_type();
+            if (!field_type) {
+                return std::nullopt;
+            }
+
+            Token field_name = consume_name("expected view field name");
+            base_field = ast::FieldDecl{
+                .name = std::string(field_name.text),
+                .type = std::move(*field_type)
+            };
+        } else {
+            Token field_name = consume_name("expected view field name");
+            consume(TokenKind::Colon, "expected ':' after view field name");
+            auto field_type = parse_type();
+            if (!field_type) {
+                return std::nullopt;
+            }
+            base_field = ast::FieldDecl{
+                .name = std::string(field_name.text),
+                .type = std::move(*field_type)
+            };
+        }
+
+        consume(TokenKind::At, "expected '@' followed by a byte offset in view field");
+
+        std::int64_t offset_value = 0;
+        std::string offset_name;
+        if (check(TokenKind::IntLit)) {
+            Token offset_tok = advance();
+            auto* offset_ptr = std::get_if<std::int64_t>(&offset_tok.value);
+            if (!offset_ptr) {
+                error("expected integer byte offset after '@'");
+                return std::nullopt;
+            }
+            if (*offset_ptr < 0) {
+                error("view field offsets cannot be negative");
+                return std::nullopt;
+            }
+            offset_value = *offset_ptr;
+        } else if (is_contextual_name_token(current(), true)) {
+            Token offset_tok = advance();
+            offset_name = std::string(offset_tok.text);
+            while (match(TokenKind::Dot)) {
+                Token segment = consume_name("expected name after '.' in view field offset");
+                offset_name += ".";
+                offset_name += segment.text;
+            }
+        } else {
+            error("expected integer or named byte offset after '@'");
+            return std::nullopt;
+        }
+
+        return ast::ViewFieldDecl{
+            .name = std::move(base_field.name),
+            .type = std::move(base_field.type),
+            .offset = offset_value,
+            .offset_name = std::move(offset_name)
+        };
+    }
+
     std::optional<std::string> parse_string_or_name_value(std::string_view label) {
         if (check(TokenKind::StringLit)) {
             Token value = advance();
@@ -2049,6 +2307,38 @@ private:
         return decl;
     }
 
+    std::optional<ast::DeclPtr> parse_view_decl() {
+        Token name_tok = consume_name("expected view name");
+        consume(TokenKind::LBrace, "expected '{'");
+
+        ast::ViewFieldDeclList fields;
+        parse_recovering_sequence(
+            "parse_view_decl",
+            [this]() { return check(TokenKind::RBrace); },
+            RecoveryMode::StructMember,
+            [&]() {
+                if (looks_like_typed_name_start() || is_contextual_name_token(current(), NameMode::AllowTypeKeywords)) {
+                    if (auto field = parse_view_field_decl()) {
+                        fields.push_back(std::move(*field));
+                    }
+                    consume_member_separator();
+                    return true;
+                }
+
+                error("expected field in view");
+                return false;
+            });
+
+        consume(TokenKind::RBrace, "expected '}'");
+
+        auto decl = std::make_unique<ast::Decl>();
+        decl->kind = ast::ViewDecl{
+            .name = std::string(name_tok.text),
+            .fields = std::move(fields)
+        };
+        return decl;
+    }
+
     std::optional<ast::DeclPtr> parse_enum_decl() {
         Token name_tok = consume_name("expected enum name");
         consume(TokenKind::LBrace, "expected '{' after enum name");
@@ -2123,7 +2413,7 @@ private:
         return decl;
     }
 
-    std::optional<ast::DeclPtr> parse_static_decl(bool is_mut) {
+    std::optional<ast::DeclPtr> parse_static_decl(bool is_mut, bool is_resolved = false) {
         Token name_tok = consume_name("expected variable name");
         
         std::optional<Type> type;
@@ -2151,6 +2441,7 @@ private:
         sd.type = std::move(*type);
         sd.init = std::move(init);
         sd.is_mut = is_mut;
+        sd.attrs.is_resolved = is_resolved;
         decl->kind = std::move(sd);
         return decl;
     }
@@ -2294,6 +2585,7 @@ private:
                 std::move(sig->name),
                 std::move(sig->params),
                 std::move(sig->return_type),
+                false,
                 std::nullopt,
                 {},
                 ast::DeclAttrs{
@@ -2311,6 +2603,7 @@ private:
                 std::move(sig->name),
                 std::move(sig->params),
                 std::move(sig->return_type),
+                false,
                 std::nullopt,
                 {},
                 ast::DeclAttrs{
@@ -2378,6 +2671,11 @@ private:
         }
         if (match(TokenKind::If)) {
             auto s = parse_if_stmt_c();
+            if (s) (*s)->span.start = stmt_start;
+            return s;
+        }
+        if (match(TokenKind::Switch)) {
+            auto s = parse_switch_stmt_c();
             if (s) (*s)->span.start = stmt_start;
             return s;
         }
@@ -2583,6 +2881,29 @@ private:
         stmt->kind = ast::IfStmt{
             .condition = std::move(*cond),
             .then_block = std::move(*then_block),
+            .else_block = std::move(else_block)
+        };
+        return stmt;
+    }
+
+    std::optional<ast::StmtPtr> parse_switch_stmt_c() {
+        consume(TokenKind::LParen, "expected '(' after 'switch'");
+        auto subject = parse_expr();
+        if (!subject) return std::nullopt;
+        consume(TokenKind::RParen, "expected ')' after switch subject");
+        consume(TokenKind::LBrace, "expected '{' after switch subject");
+
+        ast::SwitchCaseList cases;
+        std::optional<ast::StmtSuite> else_block;
+        if (!parse_switch_arms(StatementMode::CStyle, cases, else_block)) {
+            return std::nullopt;
+        }
+        consume(TokenKind::RBrace, "expected '}' after switch body");
+
+        auto stmt = std::make_unique<ast::Stmt>();
+        stmt->kind = ast::SwitchStmt{
+            .subject = std::move(*subject),
+            .cases = std::move(cases),
             .else_block = std::move(else_block)
         };
         return stmt;

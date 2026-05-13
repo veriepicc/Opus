@@ -34,6 +34,51 @@ let rect = Rect { origin: p, width: 100, height: 50 }
 print_int(rect.origin.x)
 ```
 
+## Views
+
+Views are for raw memory overlays, not owned inline values.
+
+```c
+view HookRuntime {
+    state: ptr @ 0
+    target: ptr @ 8
+    hits: int @ 16
+    active: bool @ 20
+}
+```
+
+If the offsets already belong to one named layout, keep them named:
+
+```c
+enum HookRuntimeOffset {
+    State = 0,
+    Target = 8,
+    Hits = 16,
+    Active = 20,
+}
+
+view HookRuntime {
+    state: ptr @ HookRuntimeOffset.State
+    target: ptr @ HookRuntimeOffset.Target
+    hits: int @ HookRuntimeOffset.Hits
+    active: bool @ HookRuntimeOffset.Active
+}
+```
+
+Bind them over existing memory:
+
+```c
+let block = malloc(24)
+let rt = block as HookRuntime
+
+rt.hits = 7
+rt.active = true
+```
+
+Use a view when a file starts growing fake property wrappers around a raw block.
+If the thing is really "a pointer plus known offsets", model it as a view instead of writing accessor confetti.
+If a reverse-engineered layout already has a central offset enum, point the view at that enum instead of repeating raw byte literals.
+
 ## Classes
 
 Classes are data plus methods. Fields use the same syntax as structs.

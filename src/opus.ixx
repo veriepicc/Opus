@@ -509,6 +509,25 @@ struct CompileOptions {
     OutputKind output_kind = OutputKind::Raw;
     ast::HealingMode healing_mode = ast::HealingMode::Off;
     bool debug_info = false;
+    bool collect_line_map = false;
+    bool collect_function_artifacts = false;
+    bool collect_timings = false;
+    bool collect_function_offsets = true;
+};
+
+struct TimingEntry {
+    std::string name;
+    double ms = 0.0;
+};
+
+struct FunctionArtifact {
+    std::string name;
+    std::string source_file;
+    std::uint32_t source_line_start = 0;
+    std::uint32_t source_line_end = 0;
+    std::size_t code_offset = 0;
+    std::size_t code_size = 0;
+    bool is_extern = false;
 };
 
 class Compiler {
@@ -516,8 +535,11 @@ public:
     struct Result {
         bool success = false;
         std::vector<std::string> errors;
+        std::vector<std::string> warnings;
+        std::vector<TimingEntry> timings;
         std::vector<std::uint8_t> code;
         std::unordered_map<std::string, std::size_t> function_offsets;
+        std::vector<FunctionArtifact> functions;
         
         // iat fixups for pe generation
         std::vector<pe::IatFixup> iat_fixups;
@@ -527,13 +549,27 @@ public:
         
         // set when code has a writable slot in .text for globals base ptr
         bool needs_writable_text = false;
+        std::optional<std::size_t> main_offset;
     };
 
     Compiler() = default;
 
     static RuntimeFunctions& runtime() { return get_runtime(); }
 
+    static void append_timing(std::vector<TimingEntry>& timings, std::string_view name, double ms) {
+        timings.push_back(TimingEntry{
+            .name = std::string(name),
+            .ms = ms
+        });
+    }
+
     Result compile(const CompileOptions& opts) {
+        auto now = [] { return std::chrono::steady_clock::now(); };
+        auto elapsed_ms = [](auto start, auto end) {
+            return std::chrono::duration<double, std::milli>(end - start).count();
+        };
+
+        auto compile_start = now();
         auto source = opts.source;
         auto filename = opts.filename;
         auto project_root = opts.project_root;
@@ -543,8 +579,12 @@ public:
         [[maybe_unused]] auto debug_info = opts.debug_info;
         Result result;
 
+        auto lex_start = now();
         Lexer lexer(source, filename);
         auto tokens = lexer.tokenize_all();
+        if (opts.collect_timings) {
+            append_timing(result.timings, "lexer.tokenize", elapsed_ms(lex_start, now()));
+        }
 
         for (const auto& tok : tokens) {
             if (tok.kind == TokenKind::Error) {
@@ -557,8 +597,12 @@ public:
         }
 
         // cstyle as base, mixed detection happens per statement
+        auto parse_start = now();
         Parser parser(std::move(tokens), SyntaxMode::CStyle);
         auto mod_result = parser.parse_module(filename);
+        if (opts.collect_timings) {
+            append_timing(result.timings, "parser.parse_module", elapsed_ms(parse_start, now()));
+        }
         
         if (!mod_result) {
             for (const auto& err : mod_result.error()) {
@@ -569,6 +613,7 @@ public:
 
         ast::Module& mod = *mod_result;
 
+        auto codegen_setup_start = now();
         CodeGenerator codegen;
         auto& rt = get_runtime();
         codegen.set_runtime_pointers(RuntimePointers{
@@ -601,6 +646,8 @@ public:
         });
         
         codegen.set_output_kind(output_kind);
+        codegen.set_collect_line_map(opts.collect_line_map || opts.debug_info);
+        codegen.set_collect_timings(opts.collect_timings);
         
         codegen.set_source_path(std::string(filename));
         codegen.set_project_root(project_root);
@@ -612,28 +659,84 @@ public:
             auto layout = pe::PeImageGenerator::compute_layout(debug_mode, output_kind);
             codegen.set_user_code_offset(layout.startup_code_size);
         }
+        if (opts.collect_timings) {
+            append_timing(result.timings, "compiler.setup_codegen", elapsed_ms(codegen_setup_start, now()));
+        }
         
+        auto codegen_start = now();
         if (!codegen.generate(mod)) {
             for (const auto& err : codegen.errors()) {
                 result.errors.push_back(err);
             }
             return result;
         }
+        if (opts.collect_timings) {
+            append_timing(result.timings, "codegen.generate", elapsed_ms(codegen_start, now()));
+            for (const auto& timing : codegen.timings()) {
+                append_timing(result.timings, timing.first, timing.second);
+            }
+        }
 
+        for (const auto& warning : codegen.warnings()) {
+            result.warnings.push_back(warning);
+        }
+
+        auto copy_code_start = now();
         const auto& buf = codegen.emitter().buffer();
         result.code.assign(buf.data(), buf.data() + buf.pos());
-
-        for (const auto& [name, info] : codegen.functions()) {
-            result.function_offsets[name] = info.code_offset;
+        if (opts.collect_timings) {
+            append_timing(result.timings, "compiler.copy_code", elapsed_ms(copy_code_start, now()));
         }
-        
-        if (output_is_native_image(output_kind)) {
-            result.iat_fixups = codegen.get_iat_fixups();
+
+        auto collect_functions_start = now();
+        for (const auto& [name, info] : codegen.functions()) {
+            if (name == "main") {
+                result.main_offset = info.code_offset;
+            }
+            if (opts.collect_function_offsets) {
+                result.function_offsets[name] = info.code_offset;
+            }
+            if (opts.collect_function_artifacts) {
+                result.functions.push_back(FunctionArtifact{
+                    .name = name,
+                    .source_file = info.source_file,
+                    .source_line_start = info.source_line_start,
+                    .source_line_end = info.source_line_end,
+                    .code_offset = info.code_offset,
+                    .code_size = info.code_size,
+                    .is_extern = info.is_extern,
+                });
+            }
+        }
+        if (opts.collect_timings) {
+            append_timing(result.timings, "compiler.collect_functions", elapsed_ms(collect_functions_start, now()));
+        }
+
+        if (opts.collect_line_map || opts.debug_info) {
+            auto line_map_start = now();
             result.line_map = codegen.get_line_map();
+            if (opts.collect_timings) {
+                append_timing(result.timings, "compiler.collect_line_map", elapsed_ms(line_map_start, now()));
+            }
+        }
+
+        if (output_is_native_image(output_kind)) {
+            auto native_meta_start = now();
+            result.iat_fixups = codegen.get_iat_fixups();
             result.needs_writable_text = codegen.has_global_slot();
+            if (opts.collect_timings) {
+                append_timing(result.timings, "compiler.collect_native_metadata", elapsed_ms(native_meta_start, now()));
+            }
         }
 
         result.success = true;
+        if (opts.collect_timings) {
+            append_timing(result.timings, "compiler.total", elapsed_ms(compile_start, now()));
+            std::println("\n\033[1;96mcompile timings:\033[0m");
+            for (const auto& timing : result.timings) {
+                std::println("  {:<30} {:>8.3f} ms", timing.name, timing.ms);
+            }
+        }
         return result;
     }
 

@@ -22,6 +22,7 @@ enum class TokenKind : std::uint8_t {
     Function,       // function keyword (JS style)
     Class,          // class keyword
     Struct,         // struct keyword
+    View,           // view keyword
     Enum,           // enum keyword
     Project,        // project keyword (for project config)
     Include,        // include keyword (for project includes)
@@ -29,9 +30,9 @@ enum class TokenKind : std::uint8_t {
     Var,            // var (mutable variable - JS style)
     Const,          // const
     Static,         // static
-    If, Else, While, For, In, Loop,
+    If, Else, Switch, Case, While, For, In, Loop,
     Return, Break, Continue,
-    Import, Export, Extern,
+    Import, Export, Internal, Extern,
     Using,
     True, False,
     As, And, Or, Not,
@@ -615,6 +616,7 @@ private:
             {"class", TokenKind::Class},
             {"struct", TokenKind::Struct},
             {"structure", TokenKind::Struct},   // Alias: verbose
+            {"view", TokenKind::View},
             {"enum", TokenKind::Enum},
             {"project", TokenKind::Project},
             {"include", TokenKind::Include},
@@ -623,7 +625,9 @@ private:
             {"let", TokenKind::Let},
             {"var", TokenKind::Var},
             {"const", TokenKind::Const},
+            {"constant", TokenKind::Const},
             {"static", TokenKind::Static},
+            {"resolved", TokenKind::Static},
             {"auto", TokenKind::Auto},
             {"mut", TokenKind::Mut},
             
@@ -631,6 +635,8 @@ private:
             {"if", TokenKind::If},
             {"else", TokenKind::Else},
             {"elif", TokenKind::Else},          // Alias: Python style (parser handles)
+            {"switch", TokenKind::Switch},
+            {"case", TokenKind::Case},
             {"while", TokenKind::While},
             {"for", TokenKind::For},
             {"in", TokenKind::In},
@@ -644,6 +650,8 @@ private:
             // Modules
             {"import", TokenKind::Import},
             {"export", TokenKind::Export},
+            {"public", TokenKind::Export},
+            {"internal", TokenKind::Internal},
             {"extern", TokenKind::Extern},
             {"external", TokenKind::Extern},    // Alias: verbose
             {"using", TokenKind::Using},
@@ -924,6 +932,9 @@ constexpr std::string_view token_kind_name(TokenKind k) {
         case TokenKind::Ident:     return "identifier";
         case TokenKind::Fn:        return "fn";
         case TokenKind::Let:       return "let";
+        case TokenKind::View:      return "view";
+        case TokenKind::Switch:    return "switch";
+        case TokenKind::Case:      return "case";
         case TokenKind::Return:    return "return";
         case TokenKind::Eof:       return "end of file";
         case TokenKind::Error:     return "error";

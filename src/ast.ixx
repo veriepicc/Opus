@@ -102,6 +102,15 @@ struct FieldDecl {
 
 using FieldDeclList = std::vector<FieldDecl>;
 
+struct ViewFieldDecl {
+    std::string name;
+    Type type;
+    std::int64_t offset = 0;
+    std::string offset_name;
+};
+
+using ViewFieldDeclList = std::vector<ViewFieldDecl>;
+
 struct EnumVariantDecl {
     std::string name;
     std::optional<std::int64_t> value;
@@ -328,6 +337,21 @@ struct IfStmt {
     [[nodiscard]] bool has_else() const noexcept { return else_block.has_value(); }
 };
 
+struct SwitchCase {
+    ExprPtr value;
+    StmtSuite body;
+};
+
+using SwitchCaseList = std::vector<SwitchCase>;
+
+struct SwitchStmt {
+    ExprPtr subject;
+    SwitchCaseList cases;
+    std::optional<StmtSuite> else_block;
+
+    [[nodiscard]] bool has_else() const noexcept { return else_block.has_value(); }
+};
+
 struct WhileStmt {
     ExprPtr condition;
     StmtSuite body;
@@ -364,6 +388,7 @@ struct Stmt {
         ExprStmt,
         ReturnStmt,
         IfStmt,
+        SwitchStmt,
         WhileStmt,
         ForStmt,
         LoopStmt,
@@ -426,12 +451,21 @@ enum class Linkage {
     External,
 };
 
+enum class Visibility {
+    Public,
+    Internal,
+};
+
 struct DeclAttrs {
-    bool is_export = false;
+    Visibility visibility = Visibility::Public;
+    bool is_resolved = false;
     Linkage linkage = Linkage::Internal;
     std::optional<std::string> link_name;
 
+    [[nodiscard]] bool is_public_decl() const noexcept { return visibility == Visibility::Public; }
+    [[nodiscard]] bool is_internal_decl() const noexcept { return visibility == Visibility::Internal; }
     [[nodiscard]] bool is_extern() const noexcept { return linkage == Linkage::External; }
+    [[nodiscard]] bool is_resolved_decl() const noexcept { return is_resolved; }
     [[nodiscard]] bool has_link_name() const noexcept { return link_name.has_value(); }
 };
 
@@ -439,6 +473,7 @@ struct FnDecl {
     std::string name;
     ParamList params;
     Type return_type;
+    bool infer_return_type = false;
     std::optional<StmtSuite> body;
     DeclAttrs attrs;
 
@@ -454,6 +489,12 @@ struct StructDecl {
     DeclAttrs attrs;
 };
 
+struct ViewDecl {
+    std::string name;
+    ViewFieldDeclList fields;
+    DeclAttrs attrs;
+};
+
 enum class MethodReceiver {
     ImplicitSelf,
     Static,
@@ -464,6 +505,7 @@ struct MethodDecl {
     std::string name;
     ParamList params;
     Type return_type;
+    bool infer_return_type = false;
     StmtSuite body;
     MethodReceiver receiver = MethodReceiver::ImplicitSelf;
 
@@ -530,6 +572,7 @@ struct Decl {
     using Kind = std::variant<
         FnDecl,
         StructDecl,
+        ViewDecl,
         ClassDecl,
         EnumDecl,
         ConstDecl,
@@ -850,6 +893,16 @@ inline void walk_stmt(StmtT& stmt, Visitor&& visitor) {
                 walk_stmt_block(*s.else_block, visit);
             }
         },
+        [&](auto& s) requires std::same_as<std::remove_cvref_t<decltype(s)>, SwitchStmt> {
+            walk_expr_ptr(s.subject, visit);
+            for (auto& branch : s.cases) {
+                walk_expr_ptr(branch.value, visit);
+                walk_stmt_block(branch.body, visit);
+            }
+            if (s.else_block) {
+                walk_stmt_block(*s.else_block, visit);
+            }
+        },
         [&](auto& s) requires std::same_as<std::remove_cvref_t<decltype(s)>, WhileStmt> {
             walk_expr_ptr(s.condition, visit);
             walk_stmt_block(s.body, visit);
@@ -882,6 +935,7 @@ inline void walk_decl(DeclT& decl, Visitor&& visitor) {
             std::same_as<std::remove_cvref_t<decltype(d)>, ImportDecl> ||
             std::same_as<std::remove_cvref_t<decltype(d)>, TypeAliasDecl> ||
             std::same_as<std::remove_cvref_t<decltype(d)>, StructDecl> ||
+            std::same_as<std::remove_cvref_t<decltype(d)>, ViewDecl> ||
             std::same_as<std::remove_cvref_t<decltype(d)>, EnumDecl>) {},
         [&](auto& d) requires std::same_as<std::remove_cvref_t<decltype(d)>, ConstDecl> {
             walk_expr_ptr(d.value, visit);
@@ -1186,6 +1240,16 @@ template<typename NodeT>
                     validate_block(stmt, *s.else_block, "if else block");
                 }
             },
+            [&](const SwitchStmt& s) {
+                require_child(stmt, s.subject, "switch subject");
+                for (const auto& branch : s.cases) {
+                    require_child(stmt, branch.value, "switch case value");
+                    validate_block(stmt, branch.body, "switch case body");
+                }
+                if (s.else_block) {
+                    validate_block(stmt, *s.else_block, "switch else block");
+                }
+            },
             [&](const WhileStmt& s) {
                 require_child(stmt, s.condition, "while condition");
                 validate_block(stmt, s.body, "while body");
@@ -1231,6 +1295,13 @@ template<typename NodeT>
                 validate_name(decl, d.name, "struct name");
                 validate_attrs(decl, d.attrs);
                 validate_unique_names(decl, d.fields, [](const FieldDecl& field) -> const std::string& {
+                    return field.name;
+                }, "field name");
+            },
+            [&](const ViewDecl& d) {
+                validate_name(decl, d.name, "view name");
+                validate_attrs(decl, d.attrs);
+                validate_unique_names(decl, d.fields, [](const ViewFieldDecl& field) -> const std::string& {
                     return field.name;
                 }, "field name");
             },

@@ -53,6 +53,35 @@ function int main() {
 }
 ```
 
+`mem` and `view` are meant to work together:
+
+```c
+import mem
+
+enum HeaderOffset {
+    Magic = 0,
+    Flags = 4,
+}
+
+view Header {
+    magic: int @ HeaderOffset.Magic
+    flags: int @ HeaderOffset.Flags
+}
+
+function int main() {
+    let block = mem.make_zero(8)
+    let hdr = block as Header
+    hdr.magic = 0x1234
+    hdr.flags = 7
+    free(block)
+    return 0
+}
+```
+
+Use `mem` for allocation/copy/fill/read/write helpers.
+Use `view` when those bytes represent a stable layout you want to name directly.
+Use named offsets when those layouts are shared with SDK or offset-manager style code.
+
 ## `text` and `fmt`
 
 ```c

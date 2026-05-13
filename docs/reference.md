@@ -30,6 +30,12 @@ fn add(left: int, right: int) -> int {
 }
 ```
 
+Return type inference is supported for `fn` declarations when the body makes the type obvious:
+
+```c
+fn add(left: int, right: int) => left + right
+```
+
 ### Type-first
 
 ```c
@@ -51,6 +57,7 @@ end function
 ```c
 function int add(int left, int right) => left + right
 fn add(left: int, right: int) -> int => left + right
+fn add(left: int, right: int) => left + right
 int add(int left, int right) => left + right
 ```
 
@@ -74,6 +81,61 @@ var y = 2
 auto z = x + y
 int copy = z
 ```
+
+## Constants And Resolved Values
+
+Top-level compile-time constants:
+
+```c
+constant answer: int = 41
+constant total: int = answer + 1
+```
+
+Top-level load-time resolved values:
+
+```c
+resolved cache_value: int = 42
+```
+
+Load-time cached functions:
+
+```c
+resolved function int kernel32_handle() {
+    return 123
+}
+```
+
+Meaning:
+
+- `constant` is evaluated at compile time and binds as a typed literal
+- `resolved` is evaluated once at startup through the global init path
+- `resolved function` is evaluated once at startup and later calls read the cached result
+- imported constants can be used in other top-level constants
+
+## Visibility
+
+Declarations can be marked with:
+
+- `public`
+- `internal`
+
+Examples:
+
+```c
+public function int exposed() {
+    return 7
+}
+
+internal function int hidden() {
+    return 9
+}
+```
+
+Notes:
+
+- `internal` declarations stay inside the defining module
+- `public` declarations are visible through normal imports
+- current default visibility is public
 
 ## Statements
 
@@ -110,6 +172,40 @@ else if x < 0 then
     return -1
 end if
 ```
+
+### Switch / case / else
+
+V2 / mixed style:
+
+```c
+switch state {
+case State.Idle:
+    return 1
+case State.Running:
+    return 2
+else:
+    return 3
+}
+```
+
+C-style:
+
+```c
+switch (value) {
+case 1:
+    return 10;
+case 2:
+    return 20;
+else:
+    return 0;
+}
+```
+
+Notes:
+
+- `else` is the default branch
+- there is no fallthrough between cases
+- switch currently targets non-float values
 
 ### While
 
@@ -241,6 +337,66 @@ struct Point {
     y: int
 }
 ```
+
+## Views
+
+Views are pointer-backed overlays for raw memory layouts and runtime blocks.
+
+Use them when the code is really describing:
+
+- a hook/runtime state block
+- a reverse-engineered engine layout
+- a packed memory region
+- a PE/header overlay
+
+Syntax:
+
+```c
+view RuntimeState {
+    state: ptr @ 0
+    hits: int @ 8
+    ready: bool @ 12
+}
+```
+
+Named offsets are also valid:
+
+```c
+enum RuntimeOffset {
+    State = 0,
+    Hits = 8,
+    Ready = 12,
+}
+
+constant marker_offset: int = 16
+
+view RuntimeState {
+    state: ptr @ RuntimeOffset.State
+    hits: int @ RuntimeOffset.Hits
+    ready: bool @ RuntimeOffset.Ready
+    marker: long @ marker_offset
+}
+```
+
+Use a raw pointer as the backing storage and cast it to the view type:
+
+```c
+let block = malloc(16)
+let rt = block as RuntimeState
+
+rt.hits = 42
+if rt.ready {
+    print_int(rt.hits)
+}
+```
+
+Notes:
+
+- view fields use explicit byte offsets
+- offsets may be integer literals, top-level `constant`s, or enum variants
+- the view value itself is a pointer-like handle, not an inline struct value
+- field reads and writes go directly to the backing memory
+- views are meant to replace wrapper spam like `read_ptr(block, Slot.X)` or `function ptr state()`
 
 ## Classes
 

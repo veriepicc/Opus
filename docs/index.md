@@ -41,9 +41,10 @@ Opus is built around a simple idea: the language should stay expressive while th
 - supports mixed syntax in one file
   `function int add(int a, int b) { ... }`
   `fn add(a: int, b: int) -> int { ... }`
+  `fn add(a: int, b: int) => a + b`
   `int add(int a, int b) { ... }`
   `define function add with left as i64, right as i64 returning i64`
-- supports structs, classes, methods, enums, imports, and `opus.project`
+- supports structs, views, classes, methods, enums, imports, and `opus.project`
 - supports typed FFI, `spawn`, `await`, `parallel for`, and atomic operations
 - ships a built-in crash debugger and healing runtime
 - ships an embedded stdlib with module-first surfaces like `mem`, `text`, `fmt`, `fs`, `json`, `path`, `process`, `rand`, `time`, `vec`, and `algo`
@@ -68,6 +69,9 @@ Compile-verified examples that match the current compiler.
 ## Strengths
 
 - The parser is much less brittle than it used to be in day-to-day writing.
+- Views now give raw memory overlays a first-class language surface instead of forcing wrapper/accessor spam around slot blocks.
+- Views can use named offsets from constants and enums, which makes SDK and reverse-engineered layouts much easier to keep in one place.
+- Small `fn` helpers can infer their return type from the body, which cuts down a lot of `function ptr` or `fn x() -> int` noise in wrapper-style code.
 - The debugger can report native faults with source context, and healing mode can keep some tooling-style programs alive long enough to be useful.
 - The concurrency surface is part of the actual language: `spawn`, `await`, `parallel for`, and atomics all work today.
 

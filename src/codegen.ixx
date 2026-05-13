@@ -154,16 +154,23 @@ struct FunctionInfo {
     std::string name;
     std::size_t code_offset;
     std::size_t code_size;
+    std::string source_file;
+    std::uint32_t source_line_start = 0;
+    std::uint32_t source_line_end = 0;
     Type return_type;
     std::vector<Type> param_types;
     const ast::FnDecl* decl = nullptr;
     bool is_extern = false;
+    bool is_resolved = false;
+    std::string resolved_storage_name;
+    std::string resolved_init_name;
     bool single_use_inline_safe = false;
 };
 
 enum class OwnedLocalState {
     None,
-    Live
+    Live,
+    Released
 };
 
 class CodeGenerator {
@@ -189,6 +196,8 @@ public:
     bool is_native_image_output() const { return output_is_native_image(output_kind_); }
     bool is_exe_output() const { return output_is_exe(output_kind_); }
     bool is_dll_output() const { return output_is_dll(output_kind_); }
+    void set_collect_line_map(bool enabled) { collect_line_map_ = enabled; }
+    void set_collect_timings(bool enabled) { collect_timings_ = enabled; }
 
     // set source file path for import resolution
     void set_source_path(const std::string& path) { source_path_ = path; }
@@ -210,16 +219,40 @@ public:
 
     // Generate code for a module
     [[nodiscard]] bool generate(const ast::Module& mod) {
+        auto now = [] { return std::chrono::steady_clock::now(); };
+        auto elapsed_ms = [](auto start, auto end) {
+            return std::chrono::duration<double, std::milli>(end - start).count();
+        };
+        auto total_start = now();
         module_name_ = mod.name;
 
-        // first pass: collect function signatures, structs, and globals
+        // imports can contribute constants/globals/types we want available
+        // before local declarations get registered
+        auto import_prep_start = now();
+        for (const auto& decl : mod.decls) {
+            if (decl->is<ast::ImportDecl>()) {
+                if (!collect_import_metadata(decl->as<ast::ImportDecl>())) return false;
+                if (!prime_import_aliases_from_metadata(decl->as<ast::ImportDecl>())) return false;
+            }
+        }
+        if (collect_timings_) {
+            add_timing("codegen.import_prep", elapsed_ms(import_prep_start, now()));
+        }
+
+        // first pass: collect function signatures, constants, structs, and globals
+        auto first_pass_start = now();
         for (const auto& decl : mod.decls) {
             if (decl->is<ast::TypeAliasDecl>()) {
                 if (!register_type_alias_decl(decl->as<ast::TypeAliasDecl>())) return false;
+            } else if (decl->is<ast::ConstDecl>()) {
+                if (!register_const_decl(decl->as<ast::ConstDecl>())) return false;
+            } else if (decl->is<ast::EnumDecl>()) {
+                if (!generate_enum_decl(decl->as<ast::EnumDecl>())) return false;
             } else if (decl->is<ast::FnDecl>()) {
                 const auto& fn = decl->as<ast::FnDecl>();
                 if (!claim_symbol_name(function_owners_, "function", fn.name, current_symbol_owner())) return false;
-                auto resolved_ret = canonicalize_type(fn.return_type);
+                if (!register_resolved_fn_support(fn)) return false;
+                auto resolved_ret = resolve_fn_decl_return_type(fn);
                 if (!resolved_ret) return false;
                 std::vector<Type> params;
                 params.reserve(fn.params.size());
@@ -232,24 +265,27 @@ public:
                     .name = fn.name,
                     .code_offset = 0,
                     .code_size = 0,
+                    .source_file = source_path_.empty() ? decl->span.start.file : source_path_,
+                    .source_line_start = decl->span.start.line,
+                    .source_line_end = decl->span.end.line,
                     .return_type = std::move(*resolved_ret),
                     .param_types = std::move(params),
                     .decl = &fn,
-                    .is_extern = fn.attrs.is_extern()
+                    .is_extern = fn.attrs.is_extern(),
+                    .is_resolved = fn.attrs.is_resolved_decl(),
+                    .resolved_storage_name = fn.attrs.is_resolved_decl() ? resolved_storage_name_for(fn.name) : "",
+                    .resolved_init_name = fn.attrs.is_resolved_decl() ? resolved_init_name_for(fn.name) : ""
                 };
             } else if (decl->is<ast::StructDecl>()) {
                 if (!generate_struct_decl(decl->as<ast::StructDecl>())) return false;
+            } else if (decl->is<ast::ViewDecl>()) {
+                if (!generate_view_decl(decl->as<ast::ViewDecl>())) return false;
             } else if (decl->is<ast::StaticDecl>()) {
                 if (!register_static_decl(decl->as<ast::StaticDecl>())) return false;
             }
         }
-
-        // imports can contribute globals too, so collect their declarations before
-        // deciding whether this module needs a writable globals slot
-        for (const auto& decl : mod.decls) {
-            if (decl->is<ast::ImportDecl>()) {
-                if (!collect_import_metadata(decl->as<ast::ImportDecl>())) return false;
-            }
+        if (collect_timings_) {
+            add_timing("codegen.first_pass", elapsed_ms(first_pass_start, now()));
         }
 
         // reserve a writable globals slot only when native-image globals exist
@@ -262,18 +298,27 @@ public:
         }
 
         // Second pass: generate code
+        auto second_pass_start = now();
         for (const auto& decl : mod.decls) {
             if (!generate_decl(*decl)) {
                 return false;
             }
         }
+        if (collect_timings_) {
+            add_timing("codegen.generate_decls", elapsed_ms(second_pass_start, now()));
+        }
         
         // generate __opus_init if we have globals
+        auto global_init_start = now();
         if (!globals_.empty()) {
             generate_global_init();
         }
+        if (collect_timings_) {
+            add_timing("codegen.global_init", elapsed_ms(global_init_start, now()));
+        }
         
         // Third pass: patch call fixups (for forward references)
+        auto fixups_start = now();
         for (const auto& fixup : call_fixups_) {
             auto it = functions_.find(fixup.target_fn);
             if (it == functions_.end()) {
@@ -287,17 +332,21 @@ public:
                 continue;
             }
             // rel32 fixup: target - (call_site + 4)
-            std::int32_t offset = static_cast<std::int32_t>(it->second.code_offset) -
-                                  static_cast<std::int32_t>(fixup.call_site + 4);
-            emit_.buffer().patch32(fixup.call_site, static_cast<std::uint32_t>(offset));
+            patch_rel32(fixup.call_site, it->second.code_offset);
         }
         call_fixups_.clear();
+        if (collect_timings_) {
+            add_timing("codegen.patch_fixups", elapsed_ms(fixups_start, now()));
+            add_timing("codegen.total", elapsed_ms(total_start, now()));
+        }
 
         return errors_.empty();
     }
 
     x64::Emitter& emitter() { return emit_; }
     const std::vector<std::string>& errors() const { return errors_; }
+    const std::vector<std::string>& warnings() const { return warnings_; }
+    const std::vector<std::pair<std::string, double>>& timings() const { return timings_; }
     
     const std::unordered_map<std::string, FunctionInfo>& functions() const {
         return functions_;
@@ -313,9 +362,8 @@ public:
             // IAT entry absolute RVA
             std::size_t iat_rva = rdata_rva + fixup.iat_offset;
             // Code position absolute RVA (patch_site is in user code buffer, add offset + text_rva)
-            std::size_t code_rva = text_rva + user_code_offset + fixup.patch_site + 4;  // +4 for the disp32 we're patching
-            // RIP-relative: target - rip
-            std::int32_t disp = static_cast<std::int32_t>(iat_rva) - static_cast<std::int32_t>(code_rva);
+            std::size_t code_rva = text_rva + user_code_offset + fixup.patch_site;
+            std::int32_t disp = emit_.buffer().rel32(code_rva, iat_rva);
             
             buf[fixup.patch_site + 0] = static_cast<std::uint8_t>(disp & 0xFF);
             buf[fixup.patch_site + 1] = static_cast<std::uint8_t>((disp >> 8) & 0xFF);
@@ -483,6 +531,14 @@ private:
     std::string project_root_;
     std::vector<std::string> import_search_paths_;
     mutable std::optional<std::string> last_import_resolution_error_;
+    mutable std::optional<std::vector<std::filesystem::path>> import_search_roots_cache_;
+    struct ImportSourceCacheEntry {
+        bool found = false;
+        std::string canonical;
+        std::string source;
+        std::string error;
+    };
+    mutable std::unordered_map<std::string, ImportSourceCacheEntry> import_source_cache_;
     enum class ImportState { InProgress, Completed };
     std::unordered_map<std::string, ImportState> import_states_;
     std::vector<std::string> import_stack_;
@@ -490,6 +546,7 @@ private:
         std::vector<std::string> functions;
         std::vector<std::string> types;
         std::vector<std::string> enums;
+        std::vector<std::string> constants;
         std::vector<std::string> globals;
     };
     std::unordered_map<std::string, ImportedModuleExports> imported_module_exports_;
@@ -499,18 +556,22 @@ private:
     std::unordered_map<std::string, std::string> type_aliases_;
     std::unordered_map<std::string, Type> named_type_aliases_;
     std::unordered_map<std::string, std::string> enum_aliases_;
+    std::unordered_map<std::string, std::string> constant_aliases_;
     std::unordered_map<std::string, std::string> global_aliases_;
     std::unordered_map<std::string, std::string> function_owners_;
     std::unordered_map<std::string, std::string> type_owners_;
     std::unordered_map<std::string, std::string> enum_owners_;
+    std::unordered_map<std::string, std::string> constant_owners_;
     std::unordered_map<std::string, std::string> global_owners_;
     std::unordered_map<std::string, std::string> import_namespace_owners_;
     std::unordered_map<std::string, FunctionInfo> functions_;
     std::vector<std::string> errors_;
+    std::vector<std::string> warnings_;
     
     Scope* current_scope_ = nullptr;
     std::vector<std::unique_ptr<Scope>> scopes_;
     std::unordered_map<const Symbol*, x64::Reg> register_bindings_;
+    std::unordered_map<const Symbol*, std::string> stack_struct_locals_;
     std::unordered_map<std::string, x64::Reg> pending_named_register_bindings_;
     std::vector<std::unordered_set<std::string>> bound_stack_elision_names_;
     std::vector<x64::Reg> current_function_saved_regs_;
@@ -629,6 +690,7 @@ private:
         std::vector<std::pair<std::string, Type>> fields;
         std::unordered_map<std::string, std::size_t> field_offsets;
         std::size_t total_size = 0;
+        bool is_view = false;
         
         void calculate_offsets() {
             std::size_t offset = 0;
@@ -653,14 +715,23 @@ private:
     
     // Enum definitions (EnumName -> (VariantName -> Value))
     std::unordered_map<std::string, std::unordered_map<std::string, std::int64_t>> enums_;
+
+    struct ConstantVar {
+        std::string name;
+        Type type;
+        ast::LiteralExpr value;
+    };
+    std::unordered_map<std::string, ConstantVar> constants_;
     
     // Global variables
     struct GlobalVar {
         std::string name;
         Type type;
         bool is_mut = false;
+        bool is_resolved = false;
         std::size_t offset = 0;  // offset in global data section
         const ast::Expr* init = nullptr;  // initializer (may call functions)
+        std::string init_fn_name;
     };
     std::unordered_map<std::string, GlobalVar> globals_;
     std::vector<std::string> global_order_;  // tracks insertion order for deterministic init
@@ -673,6 +744,9 @@ private:
         std::uint32_t line;
     };
     std::vector<LineMapEntry> line_map_;
+    bool collect_line_map_ = false;
+    bool collect_timings_ = false;
+    mutable std::vector<std::pair<std::string, double>> timings_;
     
     // String literals (embedded in data section)
     std::vector<std::string> string_literals_;
@@ -804,6 +878,8 @@ private:
             // strings
             {"string_length",   [this](const ast::CallExpr& c) { return generate_dll_string_length(c); }},
             {"strlen",          [this](const ast::CallExpr& c) { return generate_dll_string_length(c); }},
+            {"string_get_char", [this](const ast::CallExpr& c) { return generate_dll_string_get_char(c); }},
+            {"char_at",         [this](const ast::CallExpr& c) { return generate_dll_string_get_char(c); }},
             {"string_append",   [this](const ast::CallExpr& c) { return generate_dll_string_append(c); }},
             {"concat",          [this](const ast::CallExpr& c) { return generate_dll_string_append(c); }},
             {"make_string",     [this](const ast::CallExpr& c) { return generate_dll_make_string(c); }},
@@ -868,8 +944,8 @@ private:
             }},
             {"string_length",   [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.string_length)); }},
             {"strlen",          [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.string_length)); }},
-            {"string_get_char", [this](const ast::CallExpr& c) { return generate_dll_string_get_char(c); }},
-            {"char_at",         [this](const ast::CallExpr& c) { return generate_dll_string_get_char(c); }},
+            {"string_get_char", [this](const ast::CallExpr& c) { return generate_builtin_string_get_char(c); }},
+            {"char_at",         [this](const ast::CallExpr& c) { return generate_builtin_string_get_char(c); }},
             {"print_string",    [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.print_string)); }},
             {"puts",            [this](const ast::CallExpr& c) { return generate_builtin_one_arg(c, as_void(rt_.print_string)); }},
             {"write_file",      [this](const ast::CallExpr& c) {
@@ -967,6 +1043,14 @@ private:
         errors_.push_back(std::string(msg));
     }
 
+    void warn(std::string_view msg) {
+        warnings_.push_back(std::string(msg));
+    }
+
+    void add_timing(std::string_view name, double ms) const {
+        timings_.emplace_back(std::string(name), ms);
+    }
+
     template <typename Map>
     static void append_unique_candidate_keys(const Map& map,
                                              std::vector<std::string>& out,
@@ -985,9 +1069,11 @@ private:
         for (const Scope* scope = current_scope_; scope; scope = scope->parent) {
             append_unique_candidate_keys(scope->symbols, out, seen);
         }
+        append_unique_candidate_keys(constants_, out, seen);
         append_unique_candidate_keys(globals_, out, seen);
         append_unique_candidate_keys(functions_, out, seen);
         append_unique_candidate_keys(function_aliases_, out, seen);
+        append_unique_candidate_keys(constant_aliases_, out, seen);
         append_unique_candidate_keys(global_aliases_, out, seen);
         append_unique_candidate_keys(import_namespace_owners_, out, seen);
 
@@ -1030,6 +1116,7 @@ private:
         };
 
         append_suffixes(function_aliases_);
+        append_suffixes(constant_aliases_);
         append_suffixes(global_aliases_);
         append_suffixes(type_aliases_);
         append_suffixes(enum_aliases_);
@@ -1076,6 +1163,22 @@ private:
     void pop_scope() {
         if (current_scope_) {
             current_scope_ = current_scope_->parent;
+        }
+    }
+
+    void discard_temporary_scopes(std::size_t scope_mark) {
+        while (scopes_.size() > scope_mark) {
+            Scope* dying = scopes_.back().get();
+            Scope* parent = dying ? dying->parent : nullptr;
+            for (const auto& [_, sym] : dying->symbols) {
+                register_bindings_.erase(&sym);
+                stack_struct_locals_.erase(&sym);
+                owned_locals_.erase(&sym);
+                accumulator_inductions_.erase(&sym);
+                counter_inductions_.erase(&sym);
+            }
+            scopes_.pop_back();
+            current_scope_ = parent;
         }
     }
 
@@ -1172,6 +1275,22 @@ private:
         emit_.buffer().patch32(patch_site, static_cast<std::uint32_t>(alloc));
     }
 
+    [[nodiscard]] std::int32_t rel32_from_patch(std::size_t patch_site, std::size_t target) {
+        return emit_.buffer().rel32(patch_site, target);
+    }
+
+    void patch_rel32(std::size_t patch_site, std::size_t target) {
+        emit_.buffer().patch32(patch_site, static_cast<std::uint32_t>(rel32_from_patch(patch_site, target)));
+    }
+
+    [[nodiscard]] std::int32_t rel32_from_next_jmp(std::size_t target) {
+        return emit_.buffer().rel32(emit_.buffer().pos() + 1, target);
+    }
+
+    void emit_jmp_rel32_to(std::size_t target) {
+        emit_.jmp_rel32(rel32_from_next_jmp(target));
+    }
+
     void emit_current_epilogue() {
         emit_.epilogue(current_function_saved_regs_);
     }
@@ -1182,7 +1301,11 @@ private:
 
     // emit lea <dst>, [rip+disp32] and return the disp32 patch site
     std::size_t emit_lea_rip_disp32(x64::Reg dst) {
-        emit_.buffer().emit8(0x48);  // REX.W
+        std::uint8_t rex = 0x48;  // REX.W
+        if ((static_cast<std::uint8_t>(dst) & 0x8) != 0) {
+            rex |= 0x04;  // REX.R for high destination registers
+        }
+        emit_.buffer().emit8(rex);
         emit_.buffer().emit8(0x8D);  // LEA opcode
         emit_.buffer().emit8(static_cast<std::uint8_t>((static_cast<std::uint8_t>(dst) & 7) << 3) | 0x05);
         std::size_t site = emit_.buffer().pos();
@@ -1193,9 +1316,7 @@ private:
     // emit lea <dst>, [rip+global_base_slot_] with immediate patching
     void emit_lea_rip_slot(x64::Reg dst) {
         std::size_t site = emit_lea_rip_disp32(dst);
-        std::int32_t rel = static_cast<std::int32_t>(global_base_slot_)
-            - static_cast<std::int32_t>(site + 4);
-        emit_.buffer().patch32(site, static_cast<std::uint32_t>(rel));
+        patch_rel32(site, global_base_slot_);
     }
 
     [[nodiscard]] bool emit_load_global_base_ptr(x64::Reg dst) {
@@ -1256,6 +1377,69 @@ private:
         return *base + "." + field.field;
     }
 
+    [[nodiscard]] bool try_stack_struct_field_offset(const ast::FieldExpr& field, std::int32_t& absolute_offset) {
+        if (!field.base->is<ast::IdentExpr>() || !current_scope_) {
+            return false;
+        }
+        const auto& name = field.base->as<ast::IdentExpr>().name;
+        Symbol* sym = current_scope_->lookup(name);
+        if (!sym || !stack_struct_locals_.contains(sym)) {
+            return false;
+        }
+        auto sn = get_struct_name(sym->type);
+        if (!sn) {
+            return false;
+        }
+        auto struct_it = structs_.find(*sn);
+        if (struct_it == structs_.end() || struct_it->second.is_view) {
+            return false;
+        }
+        auto offset_opt = struct_it->second.get_field_offset(field.field);
+        if (!offset_opt) {
+            return false;
+        }
+        absolute_offset = sym->stack_offset + static_cast<std::int32_t>(*offset_opt);
+        return true;
+    }
+
+    [[nodiscard]] bool try_bound_struct_field_operand(const ast::FieldExpr& field, x64::Reg& base_reg, std::int32_t& field_offset) {
+        if (!field.base->is<ast::IdentExpr>() || !current_scope_) {
+            return false;
+        }
+        const auto& name = field.base->as<ast::IdentExpr>().name;
+        Symbol* sym = current_scope_->lookup(name);
+        if (!sym) {
+            return false;
+        }
+        auto bound = lookup_bound_reg(sym);
+        if (!bound) {
+            return false;
+        }
+        auto sn = get_struct_name(sym->type);
+        if (!sn) {
+            return false;
+        }
+        auto struct_it = structs_.find(*sn);
+        if (struct_it == structs_.end() || struct_it->second.is_view) {
+            return false;
+        }
+        auto offset_opt = struct_it->second.get_field_offset(field.field);
+        if (!offset_opt) {
+            return false;
+        }
+        base_reg = *bound;
+        field_offset = static_cast<std::int32_t>(*offset_opt);
+        return true;
+    }
+
+    [[nodiscard]] static std::string resolved_storage_name_for(std::string_view name) {
+        return std::format("__resolved_value_{}", name);
+    }
+
+    [[nodiscard]] static std::string resolved_init_name_for(std::string_view name) {
+        return std::format("__resolved_init_{}", name);
+    }
+
     std::vector<std::string> get_import_prefixes(const ast::ImportDecl& imp) const {
         std::vector<std::string> prefixes;
         prefixes.push_back(imp.path);
@@ -1269,17 +1453,42 @@ private:
         ImportedModuleExports exports;
         for (const auto& decl : mod.decls) {
             if (decl->is<ast::FnDecl>()) {
-                exports.functions.push_back(decl->as<ast::FnDecl>().name);
+                const auto& fn = decl->as<ast::FnDecl>();
+                if (fn.attrs.is_public_decl()) {
+                    exports.functions.push_back(fn.name);
+                }
             } else if (decl->is<ast::StructDecl>()) {
-                exports.types.push_back(decl->as<ast::StructDecl>().name);
+                const auto& s = decl->as<ast::StructDecl>();
+                if (s.attrs.is_public_decl()) {
+                    exports.types.push_back(s.name);
+                }
+            } else if (decl->is<ast::ViewDecl>()) {
+                const auto& v = decl->as<ast::ViewDecl>();
+                if (v.attrs.is_public_decl()) {
+                    exports.types.push_back(v.name);
+                }
             } else if (decl->is<ast::ClassDecl>()) {
-                exports.types.push_back(decl->as<ast::ClassDecl>().name);
+                const auto& c = decl->as<ast::ClassDecl>();
+                if (c.attrs.is_public_decl()) {
+                    exports.types.push_back(c.name);
+                }
             } else if (decl->is<ast::TypeAliasDecl>()) {
                 exports.types.push_back(decl->as<ast::TypeAliasDecl>().name);
             } else if (decl->is<ast::EnumDecl>()) {
-                exports.enums.push_back(decl->as<ast::EnumDecl>().name);
+                const auto& e = decl->as<ast::EnumDecl>();
+                if (e.attrs.is_public_decl()) {
+                    exports.enums.push_back(e.name);
+                }
+            } else if (decl->is<ast::ConstDecl>()) {
+                const auto& c = decl->as<ast::ConstDecl>();
+                if (c.attrs.is_public_decl()) {
+                    exports.constants.push_back(c.name);
+                }
             } else if (decl->is<ast::StaticDecl>()) {
-                exports.globals.push_back(decl->as<ast::StaticDecl>().name);
+                const auto& s = decl->as<ast::StaticDecl>();
+                if (s.attrs.is_public_decl()) {
+                    exports.globals.push_back(s.name);
+                }
             }
         }
         return exports;
@@ -1299,11 +1508,29 @@ private:
             for (const auto& name : exports.enums) {
                 enum_aliases_.try_emplace(prefix + "." + name, name);
             }
+            for (const auto& name : exports.constants) {
+                constant_aliases_.try_emplace(prefix + "." + name, name);
+            }
             for (const auto& name : exports.globals) {
                 global_aliases_.try_emplace(prefix + "." + name, name);
             }
         }
         return true;
+    }
+
+    bool prime_import_aliases_from_metadata(const ast::ImportDecl& imp) {
+        auto import_source = load_import_source(imp.path);
+        if (!import_source) {
+            error(import_resolution_error(imp.path));
+            return false;
+        }
+        auto [canonical, _] = *import_source;
+        auto exports_it = imported_module_exports_.find(canonical);
+        if (exports_it == imported_module_exports_.end()) {
+            error(std::format("import bookkeeping error for module: {}", display_module_path(canonical)));
+            return false;
+        }
+        return register_import_aliases(imp, exports_it->second, canonical);
     }
 
     std::string resolve_function_name(std::string_view name) const {
@@ -1396,6 +1623,123 @@ private:
         return canonicalize_type_impl(type, seen);
     }
 
+    [[nodiscard]] std::size_t layout_field_storage_bytes(const Type& type) const {
+        if (auto* prim = std::get_if<PrimitiveType>(&type.kind)) {
+            return primitive_size(*prim);
+        }
+        return 8;
+    }
+
+    [[nodiscard]] bool emit_load_typed_from_address_in_rax(const Type& type) {
+        auto resolved = canonicalize_type(type);
+        const Type& final_type = resolved ? *resolved : type;
+
+        if (is_bool_type(final_type)) {
+            emit_.buffer().emit8(0x0F);
+            emit_.buffer().emit8(0xB6);
+            emit_.buffer().emit8(0x00);  // movzx eax, byte [rax]
+            return true;
+        }
+
+        if (auto* prim = std::get_if<PrimitiveType>(&final_type.kind)) {
+            switch (*prim) {
+                case PrimitiveType::I8:
+                    emit_.buffer().emit8(0x48);
+                    emit_.buffer().emit8(0x0F);
+                    emit_.buffer().emit8(0xBE);
+                    emit_.buffer().emit8(0x00);  // movsx rax, byte [rax]
+                    return true;
+                case PrimitiveType::I16:
+                    emit_.buffer().emit8(0x48);
+                    emit_.buffer().emit8(0x0F);
+                    emit_.buffer().emit8(0xBF);
+                    emit_.buffer().emit8(0x00);  // movsx rax, word [rax]
+                    return true;
+                case PrimitiveType::I32:
+                    emit_.buffer().emit8(0x48);
+                    emit_.buffer().emit8(0x63);
+                    emit_.buffer().emit8(0x00);  // movsxd rax, dword [rax]
+                    return true;
+                case PrimitiveType::U8:
+                    emit_.buffer().emit8(0x0F);
+                    emit_.buffer().emit8(0xB6);
+                    emit_.buffer().emit8(0x00);  // movzx eax, byte [rax]
+                    return true;
+                case PrimitiveType::U16:
+                    emit_.buffer().emit8(0x0F);
+                    emit_.buffer().emit8(0xB7);
+                    emit_.buffer().emit8(0x00);  // movzx eax, word [rax]
+                    return true;
+                case PrimitiveType::U32:
+                case PrimitiveType::F32:
+                case PrimitiveType::Char:
+                    emit_.buffer().emit8(0x8B);
+                    emit_.buffer().emit8(0x00);  // mov eax, [rax]
+                    return true;
+                default:
+                    break;
+            }
+        }
+
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_load_typed_from_address_reg(x64::Reg dst, const Type& type) {
+        if (dst == x64::Reg::RAX) {
+            return emit_load_typed_from_address_in_rax(type);
+        }
+
+        emit_.push(x64::Reg::RAX);
+        emit_.mov(x64::Reg::RAX, dst);
+        if (!emit_load_typed_from_address_in_rax(type)) {
+            emit_.pop(x64::Reg::RAX);
+            return false;
+        }
+        emit_.mov(dst, x64::Reg::RAX);
+        emit_.pop(x64::Reg::RAX);
+        return true;
+    }
+
+    [[nodiscard]] bool emit_store_typed_to_address_in_rcx(const Type& type) {
+        auto resolved = canonicalize_type(type);
+        const Type& final_type = resolved ? *resolved : type;
+
+        if (is_bool_type(final_type)) {
+            emit_.buffer().emit8(0x88);
+            emit_.buffer().emit8(0x01);  // mov [rcx], al
+            return true;
+        }
+
+        if (auto* prim = std::get_if<PrimitiveType>(&final_type.kind)) {
+            switch (*prim) {
+                case PrimitiveType::I8:
+                case PrimitiveType::U8:
+                    emit_.buffer().emit8(0x88);
+                    emit_.buffer().emit8(0x01);  // mov [rcx], al
+                    return true;
+                case PrimitiveType::I16:
+                case PrimitiveType::U16:
+                    emit_.buffer().emit8(0x66);
+                    emit_.buffer().emit8(0x89);
+                    emit_.buffer().emit8(0x01);  // mov [rcx], ax
+                    return true;
+                case PrimitiveType::I32:
+                case PrimitiveType::U32:
+                case PrimitiveType::F32:
+                case PrimitiveType::Char:
+                    emit_.buffer().emit8(0x89);
+                    emit_.buffer().emit8(0x01);  // mov [rcx], eax
+                    return true;
+                default:
+                    break;
+            }
+        }
+
+        emit_.mov_store(x64::Reg::RCX, 0, x64::Reg::RAX);
+        return true;
+    }
+
     [[nodiscard]] static bool types_equal(const Type& lhs, const Type& rhs) {
         if (lhs.kind.index() != rhs.kind.index()) {
             return false;
@@ -1439,9 +1783,7 @@ private:
         push_scope();
 
         auto cleanup_scope = [&]() {
-            while (scopes_.size() > scope_mark) {
-                pop_scope();
-            }
+            discard_temporary_scopes(scope_mark);
         };
 
         for (std::size_t i = 0; i < stmts.size(); ++i) {
@@ -1483,9 +1825,7 @@ private:
         push_scope();
 
         auto cleanup_scope = [&]() {
-            while (scopes_.size() > scope_mark) {
-                pop_scope();
-            }
+            discard_temporary_scopes(scope_mark);
         };
 
         for (const auto& stmt_ptr : block.stmts) {
@@ -1513,8 +1853,80 @@ private:
         return inferred;
     }
 
+    [[nodiscard]] std::optional<Type> infer_callable_return_type(
+        const ast::ParamList& params,
+        const ast::StmtSuite& body,
+        const std::optional<std::string>& self_type_name = std::nullopt
+    ) {
+        std::size_t scope_mark = scopes_.size();
+        push_scope();
+
+        auto cleanup_scope = [&]() {
+            discard_temporary_scopes(scope_mark);
+        };
+
+        if (self_type_name) {
+            Type self_type;
+            self_type.kind = *self_type_name;
+            current_scope_->define("self", std::move(self_type), true);
+        }
+
+        for (const auto& param : params) {
+            auto resolved = canonicalize_type(param.type);
+            if (!resolved) {
+                cleanup_scope();
+                return std::nullopt;
+            }
+            current_scope_->define(param.name, std::move(*resolved), param.is_mut);
+        }
+
+        auto inferred = infer_stmt_suite_value_type(body);
+        cleanup_scope();
+        return inferred;
+    }
+
+    [[nodiscard]] std::optional<Type> resolve_fn_decl_return_type(const ast::FnDecl& fn) {
+        if (!fn.infer_return_type) {
+            return canonicalize_type(fn.return_type);
+        }
+        if (!fn.has_body()) {
+            error(std::format(
+                "function '{}' needs an explicit return type because there is no body to infer from",
+                fn.name));
+            return std::nullopt;
+        }
+        auto inferred = infer_callable_return_type(fn.params, fn.body_ref());
+        if (!inferred) {
+            error(std::format("could not infer return type for function '{}'", fn.name));
+            return std::nullopt;
+        }
+        return canonicalize_type(*inferred);
+    }
+
+    [[nodiscard]] std::optional<Type> resolve_method_return_type(const ast::MethodDecl& method, std::string_view class_name) {
+        if (!method.infer_return_type) {
+            return canonicalize_type(method.return_type);
+        }
+        auto inferred = infer_callable_return_type(
+            method.params,
+            method.body,
+            method.has_receiver() ? std::optional<std::string>{std::string(class_name)} : std::nullopt);
+        if (!inferred) {
+            error(std::format("could not infer return type for method '{}.{}'", class_name, method.name));
+            return std::nullopt;
+        }
+        return canonicalize_type(*inferred);
+    }
+
     std::string resolve_enum_name(std::string_view name) const {
         if (auto it = enum_aliases_.find(std::string(name)); it != enum_aliases_.end()) {
+            return it->second;
+        }
+        return std::string(name);
+    }
+
+    std::string resolve_constant_name(std::string_view name) const {
+        if (auto it = constant_aliases_.find(std::string(name)); it != constant_aliases_.end()) {
             return it->second;
         }
         return std::string(name);
@@ -1616,6 +2028,10 @@ private:
     }
 
     std::vector<std::filesystem::path> import_search_roots() const {
+        if (import_search_roots_cache_) {
+            return *import_search_roots_cache_;
+        }
+
         std::vector<std::filesystem::path> search_roots;
         if (!source_path_.empty()) {
             search_roots.push_back(std::filesystem::path(source_path_).parent_path());
@@ -1633,6 +2049,7 @@ private:
         if (search_roots.empty()) {
             search_roots.push_back(std::filesystem::current_path());
         }
+        import_search_roots_cache_ = search_roots;
         return search_roots;
     }
 
@@ -1645,7 +2062,11 @@ private:
 
         std::vector<std::filesystem::path> matches;
         for (const auto& root : import_search_roots()) {
-            auto candidate = std::filesystem::weakly_canonical(root / rel_path);
+            std::error_code ec;
+            auto candidate = std::filesystem::weakly_canonical(root / rel_path, ec);
+            if (ec) {
+                candidate = (root / rel_path).lexically_normal();
+            }
             if (!std::filesystem::exists(candidate)) {
                 continue;
             }
@@ -1669,9 +2090,53 @@ private:
         return std::format("<embedded-stdlib>/{}", import_rel_path(module_path));
     }
 
+    std::optional<std::string> read_source_file_fast(const std::filesystem::path& path) const {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file) {
+            return std::nullopt;
+        }
+
+        auto end = file.tellg();
+        if (end < 0) {
+            return std::nullopt;
+        }
+
+        std::string source(static_cast<std::size_t>(end), '\0');
+        file.seekg(0, std::ios::beg);
+        if (!source.empty()) {
+            file.read(source.data(), static_cast<std::streamsize>(source.size()));
+        }
+        if (!file && !source.empty()) {
+            return std::nullopt;
+        }
+        return source;
+    }
+
     std::optional<std::pair<std::string, std::string>> load_import_source(std::string_view module_path) const {
+        auto now = [] { return std::chrono::steady_clock::now(); };
+        auto elapsed_ms = [](auto start, auto end) {
+            return std::chrono::duration<double, std::milli>(end - start).count();
+        };
+        auto total_start = now();
         last_import_resolution_error_.reset();
+        std::string key(module_path);
+
+        if (auto it = import_source_cache_.find(key); it != import_source_cache_.end()) {
+            if (collect_timings_) {
+                const_cast<CodeGenerator*>(this)->add_timing("imports.cache_hit", elapsed_ms(total_start, now()));
+            }
+            if (!it->second.found) {
+                last_import_resolution_error_ = it->second.error;
+                return std::nullopt;
+            }
+            return std::pair{it->second.canonical, it->second.source};
+        }
+
+        auto resolve_start = now();
         auto matches = resolve_import_candidates(module_path);
+        if (collect_timings_) {
+            add_timing("imports.resolve_candidates", elapsed_ms(resolve_start, now()));
+        }
         if (matches.size() > 1) {
             auto request = describe_import_request(module_path);
             std::string details;
@@ -1684,23 +2149,57 @@ private:
                 request,
                 details
             );
+            import_source_cache_[key] = ImportSourceCacheEntry{
+                .found = false,
+                .error = *last_import_resolution_error_
+            };
+            if (collect_timings_) {
+                add_timing("imports.cache_miss", elapsed_ms(total_start, now()));
+            }
             return std::nullopt;
         }
 
         if (matches.size() == 1) {
             const auto& full_path = matches.front();
-            if (std::ifstream file(full_path); file) {
-                std::stringstream buf;
-                buf << file.rdbuf();
-                return std::pair{full_path.string(), buf.str()};
+            auto read_start = now();
+            if (auto source_opt = read_source_file_fast(full_path)) {
+                std::string canonical = full_path.string();
+                std::string source = std::move(*source_opt);
+                import_source_cache_[key] = ImportSourceCacheEntry{
+                    .found = true,
+                    .canonical = canonical,
+                    .source = source
+                };
+                if (collect_timings_) {
+                    add_timing("imports.read_file", elapsed_ms(read_start, now()));
+                    add_timing("imports.cache_miss", elapsed_ms(total_start, now()));
+                }
+                return std::pair{std::move(canonical), std::move(source)};
             }
         }
 
-        if (auto it = embedded_stdlib_sources().find(std::string(module_path)); it != embedded_stdlib_sources().end()) {
-            return std::pair{embedded_import_canonical(module_path), it->second};
+        if (auto it = embedded_stdlib_sources().find(key); it != embedded_stdlib_sources().end()) {
+            std::string canonical = embedded_import_canonical(module_path);
+            std::string source = it->second;
+            import_source_cache_[key] = ImportSourceCacheEntry{
+                .found = true,
+                .canonical = canonical,
+                .source = source
+            };
+            if (collect_timings_) {
+                add_timing("imports.embedded_lookup", elapsed_ms(total_start, now()));
+            }
+            return std::pair{std::move(canonical), std::move(source)};
         }
 
         last_import_resolution_error_ = std::format("cannot find module: {}", describe_import_request(module_path));
+        import_source_cache_[key] = ImportSourceCacheEntry{
+            .found = false,
+            .error = *last_import_resolution_error_
+        };
+        if (collect_timings_) {
+            add_timing("imports.cache_miss", elapsed_ms(total_start, now()));
+        }
         return std::nullopt;
     }
 
@@ -1722,7 +2221,7 @@ private:
         // inc rcx, inc rax
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC0);
-        emit_.jmp_rel32(static_cast<std::int32_t>(loop_top - emit_.buffer().pos() - 5));
+        emit_jmp_rel32_to(loop_top);
         emit_.patch_jump(done);
     }
 
@@ -1742,7 +2241,7 @@ private:
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC2);
         emit_.buffer().emit8(0x49); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC8);
-        emit_.jmp_rel32(static_cast<std::int32_t>(loop_top - emit_.buffer().pos() - 5));
+        emit_jmp_rel32_to(loop_top);
         emit_.patch_jump(done);
     }
 
@@ -1755,19 +2254,25 @@ private:
             return generate_fn(decl.as<ast::FnDecl>());
         }
         if (decl.is<ast::StructDecl>()) {
-            return generate_struct_decl(decl.as<ast::StructDecl>());
+            return true;
+        }
+        if (decl.is<ast::ViewDecl>()) {
+            return true;
         }
         if (decl.is<ast::ClassDecl>()) {
             return generate_class_decl(decl.as<ast::ClassDecl>());
         }
         if (decl.is<ast::EnumDecl>()) {
-            return generate_enum_decl(decl.as<ast::EnumDecl>());
+            return true;
+        }
+        if (decl.is<ast::ConstDecl>()) {
+            return true;
         }
         if (decl.is<ast::StaticDecl>()) {
-            return register_static_decl(decl.as<ast::StaticDecl>());
+            return true;
         }
         if (decl.is<ast::TypeAliasDecl>()) {
-            return register_type_alias_decl(decl.as<ast::TypeAliasDecl>());
+            return true;
         }
         if (decl.is<ast::ImportDecl>()) {
             return generate_import(decl.as<ast::ImportDecl>());
@@ -1870,19 +2375,32 @@ private:
                 if (!collect_import_metadata(decl->as<ast::ImportDecl>())) {
                     return fail_import();
                 }
+                if (!prime_import_aliases_from_metadata(decl->as<ast::ImportDecl>())) {
+                    return fail_import();
+                }
             }
         }
 
         for (const auto& decl : mod_ptr->decls) {
-            if (decl->is<ast::FnDecl>()) {
+            if (decl->is<ast::TypeAliasDecl>()) {
+                if (!register_type_alias_decl(decl->as<ast::TypeAliasDecl>())) {
+                    return fail_import();
+                }
+            } else if (decl->is<ast::FnDecl>()) {
                 const auto& fn = decl->as<ast::FnDecl>();
                 if (!claim_symbol_name(function_owners_, "function", fn.name, current_symbol_owner())) {
+                    return fail_import();
+                }
+                if (!register_resolved_fn_support(fn)) {
                     return fail_import();
                 }
                 functions_[fn.name] = FunctionInfo{
                     .name = fn.name,
                     .code_offset = 0,
                     .code_size = 0,
+                    .source_file = source_path_.empty() ? decl->span.start.file : source_path_,
+                    .source_line_start = decl->span.start.line,
+                    .source_line_end = decl->span.end.line,
                     .return_type = fn.return_type.clone(),
                     .param_types = [&fn] {
                         std::vector<Type> params;
@@ -1890,10 +2408,25 @@ private:
                         for (const auto& param : fn.params) params.push_back(param.type.clone());
                         return params;
                     }(),
-                    .decl = &fn
+                    .decl = &fn,
+                    .is_resolved = fn.attrs.is_resolved_decl(),
+                    .resolved_storage_name = fn.attrs.is_resolved_decl() ? resolved_storage_name_for(fn.name) : "",
+                    .resolved_init_name = fn.attrs.is_resolved_decl() ? resolved_init_name_for(fn.name) : ""
                 };
+            } else if (decl->is<ast::ConstDecl>()) {
+                if (!register_const_decl(decl->as<ast::ConstDecl>())) {
+                    return fail_import();
+                }
+            } else if (decl->is<ast::EnumDecl>()) {
+                if (!generate_enum_decl(decl->as<ast::EnumDecl>())) {
+                    return fail_import();
+                }
             } else if (decl->is<ast::StructDecl>()) {
                 if (!generate_struct_decl(decl->as<ast::StructDecl>())) {
+                    return fail_import();
+                }
+            } else if (decl->is<ast::ViewDecl>()) {
+                if (!generate_view_decl(decl->as<ast::ViewDecl>())) {
                     return fail_import();
                 }
             } else if (decl->is<ast::StaticDecl>()) {
@@ -1990,15 +2523,25 @@ private:
         if (!metadata_already_collected) {
             // first pass: collect function signatures, structs, and globals from imported module
             for (const auto& decl : mod_ptr->decls) {
-                if (decl->is<ast::FnDecl>()) {
+                if (decl->is<ast::TypeAliasDecl>()) {
+                    if (!register_type_alias_decl(decl->as<ast::TypeAliasDecl>())) {
+                        return fail_import();
+                    }
+                } else if (decl->is<ast::FnDecl>()) {
                     const auto& fn = decl->as<ast::FnDecl>();
                     if (!claim_symbol_name(function_owners_, "function", fn.name, current_symbol_owner())) {
+                        return fail_import();
+                    }
+                    if (!register_resolved_fn_support(fn)) {
                         return fail_import();
                     }
                     functions_[fn.name] = FunctionInfo{
                         .name = fn.name,
                         .code_offset = 0,
                         .code_size = 0,
+                        .source_file = source_path_.empty() ? decl->span.start.file : source_path_,
+                        .source_line_start = decl->span.start.line,
+                        .source_line_end = decl->span.end.line,
                         .return_type = fn.return_type.clone(),
                         .param_types = [&fn] {
                             std::vector<Type> params;
@@ -2006,10 +2549,25 @@ private:
                             for (const auto& param : fn.params) params.push_back(param.type.clone());
                             return params;
                         }(),
-                        .decl = &fn
+                        .decl = &fn,
+                        .is_resolved = fn.attrs.is_resolved_decl(),
+                        .resolved_storage_name = fn.attrs.is_resolved_decl() ? resolved_storage_name_for(fn.name) : "",
+                        .resolved_init_name = fn.attrs.is_resolved_decl() ? resolved_init_name_for(fn.name) : ""
                     };
+                } else if (decl->is<ast::ConstDecl>()) {
+                    if (!register_const_decl(decl->as<ast::ConstDecl>())) {
+                        return fail_import();
+                    }
+                } else if (decl->is<ast::EnumDecl>()) {
+                    if (!generate_enum_decl(decl->as<ast::EnumDecl>())) {
+                        return fail_import();
+                    }
                 } else if (decl->is<ast::StructDecl>()) {
                     if (!generate_struct_decl(decl->as<ast::StructDecl>())) {
+                        return fail_import();
+                    }
+                } else if (decl->is<ast::ViewDecl>()) {
+                    if (!generate_view_decl(decl->as<ast::ViewDecl>())) {
                         return fail_import();
                     }
                 } else if (decl->is<ast::StaticDecl>()) {
@@ -2039,6 +2597,408 @@ private:
         return true;
     }
 
+    [[nodiscard]] static bool literal_matches_type(const ast::LiteralExpr& lit, const Type& type) {
+        auto* prim = std::get_if<PrimitiveType>(&type.kind);
+        if (!prim) {
+            return false;
+        }
+
+        if (type.is_integer()) {
+            return std::holds_alternative<std::int64_t>(lit.value) ||
+                   std::holds_alternative<std::uint64_t>(lit.value) ||
+                   std::holds_alternative<bool>(lit.value) ||
+                   std::holds_alternative<char32_t>(lit.value);
+        }
+        if (type.is_float()) {
+            return std::holds_alternative<double>(lit.value) ||
+                   std::holds_alternative<std::int64_t>(lit.value) ||
+                   std::holds_alternative<std::uint64_t>(lit.value);
+        }
+
+        switch (*prim) {
+            case PrimitiveType::Bool:
+                return std::holds_alternative<bool>(lit.value);
+            case PrimitiveType::Str:
+                return std::holds_alternative<std::string>(lit.value);
+            case PrimitiveType::Char:
+                return std::holds_alternative<char32_t>(lit.value);
+            default:
+                return false;
+        }
+    }
+
+    [[nodiscard]] ast::LiteralExpr make_i64_literal(std::int64_t value) const {
+        return ast::LiteralExpr{
+            .value = value,
+            .type = Type::make_primitive(PrimitiveType::I64)
+        };
+    }
+
+    [[nodiscard]] ast::LiteralExpr make_bool_literal(bool value) const {
+        return ast::LiteralExpr{
+            .value = value,
+            .type = Type::make_primitive(PrimitiveType::Bool)
+        };
+    }
+
+    [[nodiscard]] std::optional<ast::LiteralExpr> evaluate_constant_expr(
+        const ast::Expr& expr,
+        std::unordered_set<std::string>& visiting
+    ) {
+        return std::visit(overloaded{
+            [&](const ast::LiteralExpr& lit) -> std::optional<ast::LiteralExpr> {
+                std::optional<ast::LiteralExpr> out;
+                out = ast::LiteralExpr{
+                    .value = lit.value,
+                    .type = lit.type.clone()
+                };
+                return out;
+            },
+            [&](const ast::IdentExpr& ident) -> std::optional<ast::LiteralExpr> {
+                std::string resolved = resolve_constant_name(ident.name);
+                if (!visiting.insert(resolved).second) {
+                    error(std::format("constant cycle detected: {}", ident.name));
+                    return std::nullopt;
+                }
+                auto it = constants_.find(resolved);
+                if (it == constants_.end()) {
+                    visiting.erase(resolved);
+                    error(std::format("constant initializer references non-constant name: {}", ident.name));
+                    return std::nullopt;
+                }
+                visiting.erase(resolved);
+                std::optional<ast::LiteralExpr> out;
+                out = ast::LiteralExpr{
+                    .value = it->second.value.value,
+                    .type = it->second.value.type.clone()
+                };
+                return out;
+            },
+            [&](const ast::FieldExpr& field) -> std::optional<ast::LiteralExpr> {
+                if (auto qualified = get_qualified_name(field)) {
+                    std::string resolved_const = resolve_constant_name(*qualified);
+                    if (auto it = constants_.find(resolved_const); it != constants_.end()) {
+                        std::optional<ast::LiteralExpr> out;
+                        out = ast::LiteralExpr{
+                            .value = it->second.value.value,
+                            .type = it->second.value.type.clone()
+                        };
+                        return out;
+                    }
+                }
+
+                if (auto base_name = get_qualified_name(*field.base)) {
+                    auto enum_it = enums_.find(resolve_enum_name(*base_name));
+                    if (enum_it != enums_.end()) {
+                        auto variant_it = enum_it->second.find(field.field);
+                        if (variant_it != enum_it->second.end()) {
+                            auto literal = make_i64_literal(variant_it->second);
+                            std::optional<ast::LiteralExpr> out;
+                            out = ast::LiteralExpr{
+                                .value = std::move(literal.value),
+                                .type = literal.type.clone()
+                            };
+                            return out;
+                        }
+                    }
+                }
+
+                error("constant initializer uses an unsupported field expression");
+                return std::nullopt;
+            },
+            [&](const ast::UnaryExpr& un) -> std::optional<ast::LiteralExpr> {
+                auto operand = evaluate_constant_expr(*un.operand, visiting);
+                if (!operand) {
+                    return std::nullopt;
+                }
+
+                if (un.op == ast::UnaryExpr::Op::Not) {
+                    if (auto* value = std::get_if<bool>(&operand->value)) {
+                        return make_bool_literal(!*value);
+                    }
+                    std::int64_t imm = 0;
+                    if (try_get_i64_immediate(*operand, imm)) {
+                        return make_bool_literal(imm == 0);
+                    }
+                }
+
+                std::int64_t imm = 0;
+                if (!try_get_i64_immediate(*operand, imm)) {
+                    error("constant unary expression requires an integer-compatible operand");
+                    return std::nullopt;
+                }
+
+                switch (un.op) {
+                    case ast::UnaryExpr::Op::Neg:
+                        return make_i64_literal(-imm);
+                    case ast::UnaryExpr::Op::BitNot:
+                        return make_i64_literal(~imm);
+                    case ast::UnaryExpr::Op::Not:
+                        return make_bool_literal(imm == 0);
+                    default:
+                        error("unsupported unary operation in constant initializer");
+                        return std::nullopt;
+                }
+            },
+            [&](const ast::BinaryExpr& bin) -> std::optional<ast::LiteralExpr> {
+                auto lhs = evaluate_constant_expr(*bin.lhs, visiting);
+                auto rhs = evaluate_constant_expr(*bin.rhs, visiting);
+                if (!lhs || !rhs) {
+                    return std::nullopt;
+                }
+
+                if (bin.op == ast::BinaryExpr::Op::And || bin.op == ast::BinaryExpr::Op::Or) {
+                    bool left = false;
+                    bool right = false;
+                    if (auto* l = std::get_if<bool>(&lhs->value)) {
+                        left = *l;
+                    } else {
+                        std::int64_t imm = 0;
+                        if (!try_get_i64_immediate(*lhs, imm)) {
+                            error("constant logical expression requires bool-compatible operands");
+                            return std::nullopt;
+                        }
+                        left = imm != 0;
+                    }
+                    if (auto* r = std::get_if<bool>(&rhs->value)) {
+                        right = *r;
+                    } else {
+                        std::int64_t imm = 0;
+                        if (!try_get_i64_immediate(*rhs, imm)) {
+                            error("constant logical expression requires bool-compatible operands");
+                            return std::nullopt;
+                        }
+                        right = imm != 0;
+                    }
+                    return make_bool_literal(bin.op == ast::BinaryExpr::Op::And ? (left && right) : (left || right));
+                }
+
+                std::int64_t left = 0;
+                std::int64_t right = 0;
+                if (!try_get_i64_immediate(*lhs, left) || !try_get_i64_immediate(*rhs, right)) {
+                    error("constant binary expression requires integer-compatible operands");
+                    return std::nullopt;
+                }
+
+                using Op = ast::BinaryExpr::Op;
+                switch (bin.op) {
+                    case Op::Add: return make_i64_literal(left + right);
+                    case Op::Sub: return make_i64_literal(left - right);
+                    case Op::Mul: return make_i64_literal(left * right);
+                    case Op::Div:
+                        if (right == 0) {
+                            error("division by zero in constant initializer");
+                            return std::nullopt;
+                        }
+                        return make_i64_literal(left / right);
+                    case Op::Mod:
+                        if (right == 0) {
+                            error("modulo by zero in constant initializer");
+                            return std::nullopt;
+                        }
+                        return make_i64_literal(left % right);
+                    case Op::BitAnd: return make_i64_literal(left & right);
+                    case Op::BitOr: return make_i64_literal(left | right);
+                    case Op::BitXor: return make_i64_literal(left ^ right);
+                    case Op::Shl: return make_i64_literal(left << right);
+                    case Op::Shr: return make_i64_literal(left >> right);
+                    case Op::Eq: return make_bool_literal(left == right);
+                    case Op::Ne: return make_bool_literal(left != right);
+                    case Op::Lt: return make_bool_literal(left < right);
+                    case Op::Gt: return make_bool_literal(left > right);
+                    case Op::Le: return make_bool_literal(left <= right);
+                    case Op::Ge: return make_bool_literal(left >= right);
+                    default:
+                        error("unsupported binary operation in constant initializer");
+                        return std::nullopt;
+                }
+            },
+            [&](const ast::CastExpr& cast) -> std::optional<ast::LiteralExpr> {
+                auto value = evaluate_constant_expr(*cast.expr, visiting);
+                if (!value) {
+                    return std::nullopt;
+                }
+
+                auto resolved = canonicalize_type(cast.target_type);
+                if (!resolved) {
+                    return std::nullopt;
+                }
+
+                if (resolved->is_integer()) {
+                    std::int64_t imm = 0;
+                    if (!try_get_i64_immediate(*value, imm)) {
+                        error("constant cast to integer requires integer-compatible value");
+                        return std::nullopt;
+                    }
+                    auto out = make_i64_literal(imm);
+                    out.type = std::move(*resolved);
+                    return out;
+                }
+                if (resolved->is_float()) {
+                    double out_value = 0.0;
+                    if (auto* f = std::get_if<double>(&value->value)) {
+                        out_value = *f;
+                    } else {
+                        std::int64_t imm = 0;
+                        if (!try_get_i64_immediate(*value, imm)) {
+                            error("constant cast to float requires numeric value");
+                            return std::nullopt;
+                        }
+                        out_value = static_cast<double>(imm);
+                    }
+                    return ast::LiteralExpr{
+                        .value = out_value,
+                        .type = std::move(*resolved)
+                    };
+                }
+                if (is_bool_type(*resolved)) {
+                    std::int64_t imm = 0;
+                    if (!try_get_i64_immediate(*value, imm)) {
+                        error("constant cast to bool requires integer-compatible value");
+                        return std::nullopt;
+                    }
+                    return ast::LiteralExpr{
+                        .value = imm != 0,
+                        .type = std::move(*resolved)
+                    };
+                }
+
+                error("unsupported cast in constant initializer");
+                return std::nullopt;
+            },
+            [&](const auto&) -> std::optional<ast::LiteralExpr> {
+                error("unsupported expression in constant initializer");
+                return std::nullopt;
+            }
+        }, expr.kind);
+    }
+
+    bool register_const_decl(const ast::ConstDecl& cd) {
+        if (!claim_symbol_name(constant_owners_, "constant", cd.name, current_symbol_owner(), true)) return false;
+        auto resolved_type = canonicalize_type(cd.type);
+        if (!resolved_type) return false;
+
+        std::unordered_set<std::string> visiting;
+        visiting.insert(cd.name);
+        auto literal = evaluate_constant_expr(*cd.value, visiting);
+        if (!literal) {
+            return false;
+        }
+
+        if (!literal_matches_type(*literal, *resolved_type)) {
+            error(std::format("constant '{}' initializer does not match declared type", cd.name));
+            return false;
+        }
+
+        literal->type = resolved_type->clone();
+        constants_[cd.name] = ConstantVar{
+            .name = cd.name,
+            .type = std::move(*resolved_type),
+            .value = std::move(*literal)
+        };
+        return true;
+    }
+
+    [[nodiscard]] std::optional<std::int64_t> resolve_view_field_offset(const ast::ViewFieldDecl& field) {
+        if (field.offset_name.empty()) {
+            if (field.offset < 0) {
+                error("view field offsets cannot be negative");
+                return std::nullopt;
+            }
+            return field.offset;
+        }
+
+        std::string resolved_const = resolve_constant_name(field.offset_name);
+        if (auto it = constants_.find(resolved_const); it != constants_.end()) {
+            std::int64_t imm = 0;
+            if (!try_get_i64_immediate(it->second.value, imm)) {
+                error(std::format("view field offset '{}' must resolve to an integer", field.offset_name));
+                return std::nullopt;
+            }
+            if (imm < 0) {
+                error("view field offsets cannot be negative");
+                return std::nullopt;
+            }
+            return imm;
+        }
+
+        auto dot = field.offset_name.rfind('.');
+        if (dot != std::string::npos && dot + 1 < field.offset_name.size()) {
+            std::string enum_name = field.offset_name.substr(0, dot);
+            std::string variant_name = field.offset_name.substr(dot + 1);
+            auto enum_it = enums_.find(resolve_enum_name(enum_name));
+            if (enum_it != enums_.end()) {
+                auto variant_it = enum_it->second.find(variant_name);
+                if (variant_it != enum_it->second.end()) {
+                    if (variant_it->second < 0) {
+                        error("view field offsets cannot be negative");
+                        return std::nullopt;
+                    }
+                    return variant_it->second;
+                }
+            }
+        }
+
+        error(std::format("view field offset '{}' must be an integer literal, constant, or enum variant", field.offset_name));
+        return std::nullopt;
+    }
+
+    bool register_resolved_fn_support(const ast::FnDecl& fn) {
+        if (!fn.attrs.is_resolved_decl()) {
+            return true;
+        }
+        if (!fn.has_body()) {
+            error(std::format("resolved function '{}' requires a body", fn.name));
+            return false;
+        }
+        if (!fn.params.empty()) {
+            error(std::format("resolved function '{}' cannot take parameters yet", fn.name));
+            return false;
+        }
+
+        auto resolved_type = resolve_fn_decl_return_type(fn);
+        if (!resolved_type) return false;
+        if (resolved_type->is_void()) {
+            error(std::format("resolved function '{}' must return a value", fn.name));
+            return false;
+        }
+
+        std::string storage_name = resolved_storage_name_for(fn.name);
+        std::string init_name = resolved_init_name_for(fn.name);
+
+        if (!claim_symbol_name(global_owners_, "global", storage_name, current_symbol_owner(), true)) return false;
+        if (!claim_symbol_name(function_owners_, "function", init_name, current_symbol_owner(), true)) return false;
+
+        if (auto it = globals_.find(storage_name); it != globals_.end()) {
+            it->second.type = resolved_type->clone();
+            it->second.is_mut = false;
+            it->second.is_resolved = true;
+            it->second.init_fn_name = init_name;
+        } else {
+            GlobalVar gv;
+            gv.name = storage_name;
+            gv.type = resolved_type->clone();
+            gv.is_mut = false;
+            gv.is_resolved = true;
+            gv.offset = next_global_offset_;
+            next_global_offset_ += 8;
+            gv.init_fn_name = init_name;
+            globals_[storage_name] = std::move(gv);
+            global_order_.push_back(storage_name);
+        }
+
+        functions_[init_name] = FunctionInfo{
+            .name = init_name,
+            .return_type = resolved_type->clone(),
+            .decl = &fn,
+            .is_resolved = true,
+            .resolved_storage_name = storage_name,
+            .resolved_init_name = init_name
+        };
+
+        return true;
+    }
+
     // track global variables for later initialization
     bool register_static_decl(const ast::StaticDecl& sd) {
         if (!claim_symbol_name(global_owners_, "global", sd.name, current_symbol_owner(), true)) return false;
@@ -2050,6 +3010,7 @@ private:
         if (auto it = globals_.find(sd.name); it != globals_.end()) {
             it->second.type = resolved_type->clone();
             it->second.is_mut = sd.is_mut;
+            it->second.is_resolved = sd.attrs.is_resolved_decl();
             it->second.init = sd.init.get();
             return true;
         }
@@ -2058,6 +3019,7 @@ private:
         gv.name = sd.name;
         gv.type = std::move(*resolved_type);
         gv.is_mut = sd.is_mut;
+        gv.is_resolved = sd.attrs.is_resolved_decl();
         gv.offset = next_global_offset_;
         next_global_offset_ += 8;
         
@@ -2102,7 +3064,21 @@ private:
             // run initializers
             for (const auto& name : global_order_) {
                 auto& gv = globals_[name];
-                if (gv.init) {
+                if (!gv.init_fn_name.empty()) {
+                    emit_.sub_imm(x64::Reg::RSP, 32);
+                    emit_.buffer().emit8(0xE8);
+                    std::size_t init_fixup = emit_.buffer().pos();
+                    emit_.buffer().emit32(0);
+                    call_fixups_.push_back(CallFixup{
+                        .call_site = init_fixup,
+                        .target_fn = gv.init_fn_name
+                    });
+                    emit_.add_smart(x64::Reg::RSP, 32);
+                    emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+
+                    if (!emit_load_global_base_ptr(x64::Reg::RAX)) return;
+                    emit_.mov_store(x64::Reg::RAX, static_cast<std::int32_t>(gv.offset), x64::Reg::RCX);
+                } else if (gv.init) {
                     // evaluate initializer -> RAX
                     if (!generate_expr(*gv.init)) return;
                     emit_.mov(x64::Reg::RCX, x64::Reg::RAX); // save value
@@ -2138,6 +3114,29 @@ private:
         structs_[s.name] = std::move(info);
         return true;
     }
+
+    [[nodiscard]] bool generate_view_decl(const ast::ViewDecl& v) {
+        if (!claim_symbol_name(type_owners_, "type", v.name, current_symbol_owner(), true)) return false;
+        if (structs_.contains(v.name)) return true;
+        StructInfo info;
+        info.name = v.name;
+        info.is_view = true;
+        for (const auto& field : v.fields) {
+            auto resolved = canonicalize_type(field.type);
+            if (!resolved) return false;
+            auto offset_opt = resolve_view_field_offset(field);
+            if (!offset_opt) return false;
+            std::size_t offset = static_cast<std::size_t>(*offset_opt);
+            info.fields.emplace_back(field.name, std::move(*resolved));
+            info.field_offsets[field.name] = offset;
+            std::size_t end = offset + layout_field_storage_bytes(info.fields.back().second);
+            if (end > info.total_size) {
+                info.total_size = end;
+            }
+        }
+        structs_[v.name] = std::move(info);
+        return true;
+    }
     
     [[nodiscard]] bool generate_class_decl(const ast::ClassDecl& c) {
         if (!claim_symbol_name(type_owners_, "type", c.name, current_symbol_owner())) return false;
@@ -2158,7 +3157,7 @@ private:
             if (!claim_symbol_name(function_owners_, "function", mangled_name, current_symbol_owner())) return false;
             
             // Register function info first
-            auto resolved_ret = canonicalize_type(method.return_type);
+            auto resolved_ret = resolve_method_return_type(method, c.name);
             if (!resolved_ret) return false;
             std::vector<Type> method_params;
             method_params.reserve(method.params.size() + (method.has_receiver() ? 1u : 0u));
@@ -2179,6 +3178,8 @@ private:
             // Generate the method code
             auto& func_info = functions_[mangled_name];
             func_info.code_offset = emit_.buffer().pos();
+            current_function_return_type_ = func_info.return_type.clone();
+            has_current_function_return_type_ = true;
             
             std::size_t scope_mark = scopes_.size();
             push_scope();
@@ -2207,17 +3208,44 @@ private:
                 sym.is_param = true;
                 const std::size_t arg_index = i + arg_index_base;
                 if (arg_index < std::size(param_regs)) {
-                    emit_.mov_store(x64::Reg::RBP, sym.stack_offset, param_regs[arg_index]);
+                    if (sym.type.is_float()) {
+                        if (!emit_capture_float_param_to_rax(arg_index, sym.type)) {
+                            has_current_function_return_type_ = false;
+                            pop_scope();
+                            return false;
+                        }
+                    } else {
+                        emit_.mov(x64::Reg::RAX, param_regs[arg_index]);
+                        if (!emit_coerce_rax_to_type(sym.type)) {
+                            has_current_function_return_type_ = false;
+                            pop_scope();
+                            return false;
+                        }
+                    }
                 } else {
                     // stack params use the full call arg index including the receiver when present
                     std::int32_t src_offset = 16 + static_cast<std::int32_t>(arg_index) * 8;
-                    emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, src_offset);
-                    emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
+                    if (sym.type.is_float()) {
+                        if (!emit_capture_stack_float_param_to_rax(src_offset, sym.type)) {
+                            has_current_function_return_type_ = false;
+                            pop_scope();
+                            return false;
+                        }
+                    } else {
+                        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, src_offset);
+                        if (!emit_coerce_rax_to_type(sym.type)) {
+                            has_current_function_return_type_ = false;
+                            pop_scope();
+                            return false;
+                        }
+                    }
                 }
+                emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
             }
             
             // Generate body
             if (!generate_stmt_list(method.body)) {
+                has_current_function_return_type_ = false;
                 pop_scope();
                 return false;
             }
@@ -2226,7 +3254,11 @@ private:
             
             // Default return if no explicit return
             emit_.mov_imm32(x64::Reg::RAX, 0);
-            emit_.epilogue();
+            if (has_current_function_return_type_ && current_function_return_type_.is_float()) {
+                emit_return_float_rax_to_xmm0(current_function_return_type_);
+            }
+            emit_current_epilogue();
+            has_current_function_return_type_ = false;
             
             pop_scope();
             
@@ -2278,6 +3310,129 @@ private:
         }, expr.kind);
     }
 
+    [[nodiscard]] static bool stmt_contains_call(const ast::Stmt& stmt) {
+        return std::visit(overloaded{
+            [&](const ast::LetStmt& s) {
+                return s.init && expr_contains_call(*s.init);
+            },
+            [&](const ast::ExprStmt& s) {
+                return expr_contains_call(*s.expr);
+            },
+            [&](const ast::ReturnStmt& s) {
+                return s.value && expr_contains_call(*s.value);
+            },
+            [&](const ast::IfStmt& s) {
+                if (expr_contains_call(*s.condition)) {
+                    return true;
+                }
+                for (const auto& inner : s.then_block) {
+                    if (stmt_contains_call(*inner)) {
+                        return true;
+                    }
+                }
+                if (s.else_block) {
+                    for (const auto& inner : *s.else_block) {
+                        if (stmt_contains_call(*inner)) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            },
+            [&](const ast::SwitchStmt& s) {
+                if (expr_contains_call(*s.subject)) {
+                    return true;
+                }
+                for (const auto& branch : s.cases) {
+                    if (expr_contains_call(*branch.value)) {
+                        return true;
+                    }
+                    for (const auto& inner : branch.body) {
+                        if (stmt_contains_call(*inner)) {
+                            return true;
+                        }
+                    }
+                }
+                if (s.else_block) {
+                    for (const auto& inner : *s.else_block) {
+                        if (stmt_contains_call(*inner)) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            },
+            [&](const ast::WhileStmt& s) {
+                if (expr_contains_call(*s.condition)) {
+                    return true;
+                }
+                for (const auto& inner : s.body) {
+                    if (stmt_contains_call(*inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::ForStmt& s) {
+                if (expr_contains_call(*s.iterable)) {
+                    return true;
+                }
+                for (const auto& inner : s.body) {
+                    if (stmt_contains_call(*inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::LoopStmt& s) {
+                for (const auto& inner : s.body) {
+                    if (stmt_contains_call(*inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::BlockStmt& s) {
+                for (const auto& inner : s.block.stmts) {
+                    if (stmt_contains_call(*inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::ParallelForStmt& s) {
+                if (expr_contains_call(*s.start) || expr_contains_call(*s.end)) {
+                    return true;
+                }
+                for (const auto& inner : s.body) {
+                    if (stmt_contains_call(*inner)) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+            [&](const auto&) {
+                return false;
+            },
+        }, stmt.kind);
+    }
+
+    [[nodiscard]] static bool range_contains_call(
+        const std::vector<ast::StmtPtr>& stmts,
+        std::size_t start,
+        std::size_t end
+    ) {
+        if (start >= end) {
+            return false;
+        }
+        for (std::size_t i = start; i < end; ++i) {
+            if (stmt_contains_call(*stmts[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] static bool stmt_is_leaf_registerizable(
         const ast::Stmt& stmt,
         bool top_level,
@@ -2309,6 +3464,29 @@ private:
                 for (const auto& inner : s.then_block) {
                     if (!stmt_is_leaf_registerizable(*inner, false, mutable_locals)) {
                         return false;
+                    }
+                }
+                if (s.else_block) {
+                    for (const auto& inner : *s.else_block) {
+                        if (!stmt_is_leaf_registerizable(*inner, false, mutable_locals)) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            },
+            [&](const ast::SwitchStmt& s) {
+                if (expr_contains_call(*s.subject)) {
+                    return false;
+                }
+                for (const auto& branch : s.cases) {
+                    if (expr_contains_call(*branch.value)) {
+                        return false;
+                    }
+                    for (const auto& inner : branch.body) {
+                        if (!stmt_is_leaf_registerizable(*inner, false, mutable_locals)) {
+                            return false;
+                        }
                     }
                 }
                 if (s.else_block) {
@@ -2386,11 +3564,45 @@ private:
         return !plan.local_regs.empty() || !plan.param_regs.empty();
     }
 
-    [[nodiscard]] bool try_make_function_saved_local_plan(const ast::FnDecl&, FunctionSavedLocalPlan& plan) {
+    [[nodiscard]] bool try_make_function_saved_local_plan(const ast::FnDecl& fn, FunctionSavedLocalPlan& plan) {
         plan.locals.clear();
         plan.save_regs.clear();
         plan.prefix_count = 0;
-        return false;
+
+        if (!fn.has_body()) {
+            return false;
+        }
+
+        constexpr std::array<x64::Reg, 7> kSavedCandidates = {
+            x64::Reg::RBX,
+            x64::Reg::R12,
+            x64::Reg::R13,
+            x64::Reg::R14,
+            x64::Reg::R15,
+            x64::Reg::RSI,
+            x64::Reg::RDI,
+        };
+
+        std::size_t reg_index = 0;
+        const auto& body = fn.body_ref();
+        for (const auto& stmt : body) {
+            if (!stmt->is<ast::LetStmt>()) {
+                break;
+            }
+            const auto& let = stmt->as<ast::LetStmt>();
+            if (!let_init_is_saved_local_candidate(let)) {
+                break;
+            }
+            if (reg_index >= kSavedCandidates.size()) {
+                break;
+            }
+            auto reg = kSavedCandidates[reg_index++];
+            plan.locals.push_back({let.name, reg});
+            plan.save_regs.push_back(reg);
+            plan.prefix_count++;
+        }
+
+        return !plan.locals.empty();
     }
 
     [[nodiscard]] static bool expr_has_only_local_side_effects(const ast::Expr& expr, const std::unordered_set<std::string>& locals) {
@@ -2463,6 +3675,31 @@ private:
                 for (const auto& inner : s.then_block) {
                     if (!stmt_is_single_use_inline_safe_fn(*inner, then_locals)) {
                         return false;
+                    }
+                }
+                if (s.else_block) {
+                    auto else_locals = locals;
+                    for (const auto& inner : *s.else_block) {
+                        if (!stmt_is_single_use_inline_safe_fn(*inner, else_locals)) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            },
+            [&](const ast::SwitchStmt& s) {
+                if (!expr_has_only_local_side_effects(*s.subject, locals)) {
+                    return false;
+                }
+                for (const auto& branch : s.cases) {
+                    if (!expr_has_only_local_side_effects(*branch.value, locals)) {
+                        return false;
+                    }
+                    auto branch_locals = locals;
+                    for (const auto& inner : branch.body) {
+                        if (!stmt_is_single_use_inline_safe_fn(*inner, branch_locals)) {
+                            return false;
+                        }
                     }
                 }
                 if (s.else_block) {
@@ -2559,7 +3796,7 @@ private:
         }, expr.kind);
     }
 
-    [[nodiscard]] bool generate_fn(const ast::FnDecl& fn) {
+    [[nodiscard]] bool generate_fn_named(const ast::FnDecl& fn, std::string_view emitted_name, bool inject_startup_init) {
         if (fn.attrs.is_extern()) {
             // External functions don't need code generation
             return true;
@@ -2572,8 +3809,14 @@ private:
         const auto& body = fn.body_ref();
 
         // Record function start
-        auto& info = functions_[fn.name];
+        auto& info = functions_[std::string(emitted_name)];
         info.code_offset = emit_.buffer().pos();
+        if (collect_line_map_ && info.source_line_start > 0) {
+            line_map_.push_back({
+                static_cast<std::uint32_t>(info.code_offset),
+                info.source_line_start
+            });
+        }
         info.single_use_inline_safe = is_single_use_inline_safe_fn(fn);
         current_function_return_type_ = info.return_type.clone();
         has_current_function_return_type_ = true;
@@ -2619,7 +3862,7 @@ private:
         std::size_t frame_patch = emit_.prologue_patchable(current_function_saved_regs_);
 
         // if this is main and we have globals, call __opus_init first
-        if (fn.name == "main" && !globals_.empty()) {
+        if (inject_startup_init && fn.name == "main" && !globals_.empty()) {
             emit_.sub_imm(x64::Reg::RSP, 32); // shadow space
             emit_.buffer().emit8(0xE8); // CALL rel32
             std::size_t init_fixup = emit_.buffer().pos();
@@ -2729,9 +3972,11 @@ private:
 
         // If no explicit return, add one
         if (info.return_type.is_void()) {
+            warn_live_owned_locals_on_exit();
             emit_current_epilogue();
         } else {
             // Default return 0
+            warn_live_owned_locals_on_exit();
             emit_.mov_imm32(x64::Reg::RAX, 0);
             emit_current_epilogue();
         }
@@ -2742,6 +3987,62 @@ private:
 
         pop_scope();
         return true;
+    }
+
+    [[nodiscard]] bool generate_resolved_fn(const ast::FnDecl& fn) {
+        const auto& fn_info = functions_[fn.name];
+        if (fn_info.resolved_init_name.empty() || fn_info.resolved_storage_name.empty()) {
+            error(std::format("resolved function '{}' is missing generated storage metadata", fn.name));
+            return false;
+        }
+
+        if (!generate_fn_named(fn, fn_info.resolved_init_name, false)) {
+            return false;
+        }
+
+        auto& info = functions_[fn.name];
+        info.code_offset = emit_.buffer().pos();
+        if (collect_line_map_ && info.source_line_start > 0) {
+            line_map_.push_back({
+                static_cast<std::uint32_t>(info.code_offset),
+                info.source_line_start
+            });
+        }
+        current_function_return_type_ = info.return_type.clone();
+        has_current_function_return_type_ = true;
+        current_function_saved_regs_.clear();
+        register_bindings_.clear();
+        pending_named_register_bindings_.clear();
+
+        std::size_t scope_mark = scopes_.size();
+        push_scope();
+        std::size_t frame_patch = emit_.prologue_patchable();
+
+        ast::IdentExpr storage_ident{.name = info.resolved_storage_name};
+        if (!generate_ident_into(storage_ident, x64::Reg::RAX)) {
+            has_current_function_return_type_ = false;
+            pop_scope();
+            return false;
+        }
+        if (has_current_function_return_type_ && current_function_return_type_.is_float()) {
+            emit_return_float_rax_to_xmm0(current_function_return_type_);
+        }
+
+        patch_scope_frame(frame_patch, scope_mark);
+        emit_current_epilogue();
+
+        info.code_size = emit_.buffer().pos() - info.code_offset;
+        current_function_saved_regs_.clear();
+        has_current_function_return_type_ = false;
+        pop_scope();
+        return true;
+    }
+
+    [[nodiscard]] bool generate_fn(const ast::FnDecl& fn) {
+        if (fn.attrs.is_resolved_decl()) {
+            return generate_resolved_fn(fn);
+        }
+        return generate_fn_named(fn, fn.name, true);
     }
 
     [[nodiscard]] std::optional<std::string> extract_ident_name(const ast::Expr& expr) const {
@@ -2986,6 +4287,17 @@ private:
                 }
                 return total;
             },
+            [&](const ast::SwitchStmt& s) -> std::size_t {
+                std::size_t total = count_ident_uses_in_expr(name, *s.subject);
+                for (const auto& branch : s.cases) {
+                    total += count_ident_uses_in_expr(name, *branch.value);
+                    for (const auto& inner : branch.body) total += count_ident_uses_in_stmt(name, *inner);
+                }
+                if (s.else_block) {
+                    for (const auto& inner : *s.else_block) total += count_ident_uses_in_stmt(name, *inner);
+                }
+                return total;
+            },
             [&](const ast::WhileStmt& s) -> std::size_t {
                 std::size_t total = count_ident_uses_in_expr(name, *s.condition);
                 for (const auto& inner : s.body) total += count_ident_uses_in_stmt(name, *inner);
@@ -3156,6 +4468,29 @@ private:
                 for (const auto& inner : s.then_block) {
                     if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
                         return true;
+                    }
+                }
+                if (s.else_block) {
+                    for (const auto& inner : *s.else_block) {
+                        if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            },
+            [&](const ast::SwitchStmt& s) -> bool {
+                if (expr_uses_ident_in_call_arg_context(name, *s.subject)) {
+                    return true;
+                }
+                for (const auto& branch : s.cases) {
+                    if (expr_uses_ident_in_call_arg_context(name, *branch.value)) {
+                        return true;
+                    }
+                    for (const auto& inner : branch.body) {
+                        if (stmt_uses_ident_in_call_arg_context(name, *inner)) {
+                            return true;
+                        }
                     }
                 }
                 if (s.else_block) {
@@ -3360,6 +4695,9 @@ private:
             if (auto resolved_fn = resolve_function_alias_name(*qualified)) {
                 return make_function_value_type(*resolved_fn);
             }
+            if (auto it = constants_.find(resolve_constant_name(*qualified)); it != constants_.end()) {
+                return it->second.type.clone();
+            }
         }
 
         std::optional<Type> base_type;
@@ -3407,6 +4745,9 @@ private:
                     if (const ast::Expr* inlined = current_scope_->lookup_inline(e.name)) {
                         return infer_expr_type(*inlined);
                     }
+                }
+                if (auto it = constants_.find(resolve_constant_name(e.name)); it != constants_.end()) {
+                    return it->second.type.clone();
                 }
                 if (auto it = globals_.find(e.name); it != globals_.end()) {
                     return it->second.type.clone();
@@ -3744,20 +5085,117 @@ private:
         return true;
     }
 
+    void reserve_symbol_stack_storage(Symbol& sym) {
+        auto struct_name = get_struct_name(sym.type);
+        if (!struct_name) {
+            return;
+        }
+
+        auto it = structs_.find(*struct_name);
+        if (it == structs_.end()) {
+            return;
+        }
+
+        std::size_t size = it->second.total_size > 0 ? it->second.total_size : 8;
+        if (!it->second.is_view && size > 8) {
+            auto extra = static_cast<std::int32_t>(size - 8);
+            sym.stack_offset -= extra;
+            current_scope_->next_offset -= extra;
+        }
+        if (!it->second.is_view) {
+            stack_struct_locals_[&sym] = *struct_name;
+        }
+    }
+
     [[nodiscard]] Symbol* define_let_symbol(const ast::LetStmt& let) {
         Type type;
         if (!infer_let_type(let, type)) {
             return nullptr;
         }
         Symbol& sym = current_scope_->define(let.name, std::move(type), let.is_mut);
+        reserve_symbol_stack_storage(sym);
         if (auto it = pending_named_register_bindings_.find(let.name); it != pending_named_register_bindings_.end()) {
             register_bindings_[&sym] = it->second;
         }
         return &sym;
     }
 
+    [[nodiscard]] bool let_init_is_saved_local_candidate(const ast::LetStmt& let) {
+        if (!let.is_mut || !let.init) {
+            return false;
+        }
+        if (let.init->is<ast::StructExpr>()) {
+            return true;
+        }
+        if (let.type) {
+            auto resolved = canonicalize_type(*let.type);
+            return resolved && (resolved->is_integer() || is_bool_type(*resolved));
+        }
+        return let.init->is<ast::LiteralExpr>();
+    }
+
+    [[nodiscard]] bool expr_is_struct_value(const ast::Expr& expr) const {
+        auto* self = const_cast<CodeGenerator*>(this);
+        auto inferred = self->infer_expr_type(expr);
+        if (!inferred) {
+            return false;
+        }
+        auto name = self->get_struct_name(*inferred);
+        if (!name) {
+            return false;
+        }
+        auto it = self->structs_.find(*name);
+        return it != self->structs_.end() && !it->second.is_view;
+    }
+
     [[nodiscard]] bool emit_let_init(const ast::LetStmt& let, const Symbol& sym) {
         if (!let.init) {
+            return true;
+        }
+        if (let.init->is<ast::StructExpr>()) {
+            if (auto it = stack_struct_locals_.find(&sym); it != stack_struct_locals_.end()) {
+                const auto& lit = let.init->as<ast::StructExpr>();
+                auto struct_it = structs_.find(it->second);
+                if (struct_it == structs_.end()) {
+                    error_unknown_type("struct/class", lit.name);
+                    return false;
+                }
+                const auto& info = struct_it->second;
+                for (const auto& [field_name, value_expr] : lit.fields) {
+                    auto offset_opt = info.get_field_offset(field_name);
+                    if (!offset_opt) {
+                        error(std::format("struct '{}' has no field '{}'", lit.name, field_name));
+                        return false;
+                    }
+                    if (!generate_expr(*value_expr)) {
+                        return false;
+                    }
+                    emit_.mov_store(x64::Reg::RBP, sym.stack_offset + static_cast<std::int32_t>(*offset_opt), x64::Reg::RAX);
+                }
+                if (auto bound = lookup_bound_reg(&sym)) {
+                    emit_.lea(*bound, x64::Reg::RBP, sym.stack_offset);
+                }
+                return true;
+            }
+        }
+        if (auto it = stack_struct_locals_.find(&sym); it != stack_struct_locals_.end()) {
+            if (!generate_expr(*let.init)) {
+                return false;
+            }
+            auto struct_it = structs_.find(it->second);
+            if (struct_it == structs_.end()) {
+                error_unknown_type("struct/class", it->second);
+                return false;
+            }
+            std::size_t size = struct_it->second.total_size > 0 ? struct_it->second.total_size : 8;
+            for (std::size_t offset = 0; offset < size; offset += 8) {
+                auto chunk = static_cast<std::int32_t>(offset);
+                emit_.mov_load(x64::Reg::RCX, x64::Reg::RAX, chunk);
+                emit_.mov_store(x64::Reg::RBP, sym.stack_offset + chunk, x64::Reg::RCX);
+            }
+            if (auto bound = lookup_bound_reg(&sym)) {
+                emit_.lea(*bound, x64::Reg::RBP, sym.stack_offset);
+            }
             return true;
         }
         if (auto bound = lookup_bound_reg(&sym)) {
@@ -3790,6 +5228,21 @@ private:
         if (!current_scope_ || !stmts[start_index]->is<ast::LetStmt>()) {
             return false;
         }
+
+        auto try_speculative_codegen = [&](auto&& emit_fn) -> bool {
+            std::size_t code_mark = emit_.buffer().pos();
+            std::size_t line_map_mark = line_map_.size();
+            std::size_t break_mark = break_patches_.size();
+            std::size_t continue_mark = continue_patches_.size();
+            if (emit_fn()) {
+                return true;
+            }
+            emit_.buffer().truncate(code_mark);
+            line_map_.resize(line_map_mark);
+            break_patches_.resize(break_mark);
+            continue_patches_.resize(continue_mark);
+            return false;
+        };
 
         std::size_t while_index = start_index;
         while (while_index < stmts.size() && stmts[while_index]->is<ast::LetStmt>()) {
@@ -3846,7 +5299,9 @@ private:
                 init_map[sym] = let->init.get();
             }
             if (all_bound && try_make_while_alternating_branch_reduction_plan(while_stmt, ret_stmt, alternating_plan) &&
-                generate_while_alternating_branch_reduced_return(alternating_plan, &init_map)) {
+                try_speculative_codegen([&] {
+                    return generate_while_alternating_branch_reduced_return(alternating_plan, &init_map);
+                })) {
                 consumed = return_index;
                 return true;
             }
@@ -3876,7 +5331,9 @@ private:
                     }
                 }
 
-                if (all_bound && generate_while_multistate_reduced_return(reduced_plan, &init_map)) {
+                if (all_bound && try_speculative_codegen([&] {
+                    return generate_while_multistate_reduced_return(reduced_plan, &init_map);
+                })) {
                     consumed = return_index;
                     return true;
                 }
@@ -3899,7 +5356,9 @@ private:
                 }
             }
 
-            if (all_bound && generate_while_multistate_registerized_return(plan, ret_stmt, &init_map)) {
+            if (all_bound && try_speculative_codegen([&] {
+                return generate_while_multistate_registerized_return(plan, ret_stmt, &init_map);
+            })) {
                 consumed = return_index;
                 return true;
             }
@@ -3924,7 +5383,9 @@ private:
                 }
             }
 
-            if (all_bound && generate_while_bound_registerized_return(while_stmt, bound_plan, ret_stmt, &init_map)) {
+            if (all_bound && try_speculative_codegen([&] {
+                return generate_while_bound_registerized_return(while_stmt, bound_plan, ret_stmt, &init_map);
+            })) {
                 consumed = return_index;
                 return true;
             }
@@ -3949,7 +5410,9 @@ private:
                 }
             }
 
-            if (all_bound && generate_while_registerized_return(while_stmt, single_plan, ret_stmt, &init_map)) {
+            if (all_bound && try_speculative_codegen([&] {
+                return generate_while_registerized_return(while_stmt, single_plan, ret_stmt, &init_map);
+            })) {
                 consumed = return_index;
                 return true;
             }
@@ -3979,6 +5442,21 @@ private:
             return true;
         }
 
+        auto try_speculative_codegen = [&](auto&& emit_fn) -> bool {
+            std::size_t code_mark = emit_.buffer().pos();
+            std::size_t line_map_mark = line_map_.size();
+            std::size_t break_mark = break_patches_.size();
+            std::size_t continue_mark = continue_patches_.size();
+            if (emit_fn()) {
+                return true;
+            }
+            emit_.buffer().truncate(code_mark);
+            line_map_.resize(line_map_mark);
+            break_patches_.resize(break_mark);
+            continue_patches_.resize(continue_mark);
+            return false;
+        };
+
         std::unordered_map<std::size_t, std::vector<std::string>> expirations;
         std::unordered_map<std::size_t, std::vector<const Symbol*>> reg_expirations;
         std::unordered_map<std::size_t, std::vector<std::string>> inline_call_reg_expirations;
@@ -4007,7 +5485,9 @@ private:
                     if (later_live == stmts.size()) {
                         WhileAlternatingBranchReductionPlan alternating_plan;
                         if (try_make_while_alternating_branch_reduction_plan(stmts[i]->as<ast::WhileStmt>(), stmts[next_live]->as<ast::ReturnStmt>(), alternating_plan) &&
-                            generate_while_alternating_branch_reduced_return(alternating_plan)) {
+                            try_speculative_codegen([&] {
+                                return generate_while_alternating_branch_reduced_return(alternating_plan);
+                            })) {
                             i = next_live;
                             continue;
                         }
@@ -4016,11 +5496,15 @@ private:
                         if (try_make_while_multistate_plan(stmts[i]->as<ast::WhileStmt>(), multi_plan)) {
                             WhileMultiStateReductionPlan reduced_plan;
                             if (try_make_while_multistate_reduction_plan(multi_plan, stmts[next_live]->as<ast::ReturnStmt>(), reduced_plan) &&
-                                generate_while_multistate_reduced_return(reduced_plan)) {
+                                try_speculative_codegen([&] {
+                                    return generate_while_multistate_reduced_return(reduced_plan);
+                                })) {
                                 i = next_live;
                                 continue;
                             }
-                            if (generate_while_multistate_registerized_return(multi_plan, stmts[next_live]->as<ast::ReturnStmt>())) {
+                            if (try_speculative_codegen([&] {
+                                return generate_while_multistate_registerized_return(multi_plan, stmts[next_live]->as<ast::ReturnStmt>());
+                            })) {
                                 i = next_live;
                                 continue;
                             }
@@ -4028,14 +5512,18 @@ private:
 
                         WhileBoundPlan bound_plan;
                         if (try_make_while_bound_plan(stmts[i]->as<ast::WhileStmt>(), bound_plan) &&
-                            generate_while_bound_registerized_return(stmts[i]->as<ast::WhileStmt>(), bound_plan, stmts[next_live]->as<ast::ReturnStmt>())) {
+                            try_speculative_codegen([&] {
+                                return generate_while_bound_registerized_return(stmts[i]->as<ast::WhileStmt>(), bound_plan, stmts[next_live]->as<ast::ReturnStmt>());
+                            })) {
                             i = next_live;
                             continue;
                         }
 
                         WhileRegisterPlan plan;
                         if (try_make_while_register_plan(stmts[i]->as<ast::WhileStmt>(), plan) &&
-                            generate_while_registerized_return(stmts[i]->as<ast::WhileStmt>(), plan, stmts[next_live]->as<ast::ReturnStmt>())) {
+                            try_speculative_codegen([&] {
+                                return generate_while_registerized_return(stmts[i]->as<ast::WhileStmt>(), plan, stmts[next_live]->as<ast::ReturnStmt>());
+                            })) {
                             i = next_live;
                             continue;
                         }
@@ -4045,7 +5533,10 @@ private:
 
             if (stmts[i]->is<ast::LetStmt>()) {
                 const auto& let = stmts[i]->as<ast::LetStmt>();
-                if (!let.is_mut && let.init && count_ident_uses_in_expr(let.name, *let.init) == 0 && expr_is_side_effect_free(*let.init) && can_generate_pure_expr(*let.init)) {
+                if (!let.is_mut && let.init && !expr_is_struct_value(*let.init) &&
+                    count_ident_uses_in_expr(let.name, *let.init) == 0 &&
+                    expr_is_side_effect_free(*let.init) &&
+                    can_generate_pure_expr(*let.init)) {
                     std::size_t next_live = i + 1;
                     while (next_live < stmts.size() && can_skip_stmt(stmts, next_live)) {
                         next_live++;
@@ -4073,9 +5564,13 @@ private:
                     inline_safe_call_init && uses_ident_multiple_times_in_single_stmt_in_range(let.name, stmts, i + 1);
                 bool registerizable_immutable_init =
                     !let.is_mut && let.init && can_registerize_immutable_let_init(*let.init);
+                auto last_use = find_last_ident_use_in_range(let.name, stmts, i + 1);
+                bool lives_across_call =
+                    last_use && range_contains_call(stmts, i + 1, *last_use);
                 if (registerizable_immutable_init &&
                     !later_call_arg_uses &&
                     !later_multi_use_stmt &&
+                    !lives_across_call &&
                     !(inline_safe_call_init && !active_inline_safe_call_reg_lets.empty())) {
                     std::size_t remaining_uses = count_ident_uses_in_range(let.name, stmts, i + 1);
                     if (remaining_uses >= 2) {
@@ -4092,7 +5587,7 @@ private:
                             }
                             pending_named_register_bindings_.erase(let.name);
                             if (Symbol* sym = current_scope_->lookup(let.name)) {
-                                if (auto last_use = find_last_ident_use_in_range(let.name, stmts, i + 1)) {
+                                if (last_use) {
                                     reg_expirations[*last_use].push_back(sym);
                                     if (inline_safe_call_init) {
                                         active_inline_safe_call_reg_lets.insert(let.name);
@@ -4147,7 +5642,7 @@ private:
     // ========================================================================
 
     [[nodiscard]] bool generate_stmt(const ast::Stmt& stmt) {
-        if (stmt.span.start.line > 0) {
+        if (collect_line_map_ && stmt.span.start.line > 0) {
             line_map_.push_back({
                 static_cast<std::uint32_t>(emit_.buffer().pos()),
                 stmt.span.start.line
@@ -4159,6 +5654,7 @@ private:
             [&](const ast::ReturnStmt& s)      { return generate_return(s); },
             [&](const ast::ExprStmt& s)        { return generate_expr_stmt(s); },
             [&](const ast::IfStmt& s)          { return generate_if(s); },
+            [&](const ast::SwitchStmt& s)      { return generate_switch(s); },
             [&](const ast::WhileStmt& s)       { return generate_while(s); },
             [&](const ast::LoopStmt& s)        { return generate_loop(s); },
             [&](const ast::ForStmt& s)         { return generate_for(s); },
@@ -4177,6 +5673,62 @@ private:
         }, stmt.kind);
     }
 
+    [[nodiscard]] bool generate_switch(const ast::SwitchStmt& switch_stmt) {
+        if (auto subject_type = infer_expr_type(*switch_stmt.subject); subject_type && subject_type->is_float()) {
+            error("switch does not support float subjects yet");
+            return false;
+        }
+
+        if (!generate_expr(*switch_stmt.subject)) {
+            return false;
+        }
+        emit_.push(x64::Reg::RAX);
+
+        std::vector<std::size_t> done_patches;
+        for (const auto& branch : switch_stmt.cases) {
+            if (auto case_type = infer_expr_type(*branch.value); case_type && case_type->is_float()) {
+                emit_.add_smart(x64::Reg::RSP, 8);
+                error("switch does not support float case values yet");
+                return false;
+            }
+
+            if (!generate_expr(*branch.value)) {
+                emit_.add_smart(x64::Reg::RSP, 8);
+                return false;
+            }
+
+            emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 0);
+            emit_.cmp(x64::Reg::RCX, x64::Reg::RAX);
+            std::size_t next_case = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+            emit_.add_smart(x64::Reg::RSP, 8);
+            push_scope();
+            if (!generate_stmt_list(branch.body)) {
+                pop_scope();
+                return false;
+            }
+            pop_scope();
+            done_patches.push_back(emit_.jmp_rel32_placeholder());
+
+            emit_.patch_jump(next_case);
+        }
+
+        emit_.add_smart(x64::Reg::RSP, 8);
+        if (switch_stmt.else_block) {
+            push_scope();
+            if (!generate_stmt_list(*switch_stmt.else_block)) {
+                pop_scope();
+                return false;
+            }
+            pop_scope();
+        }
+
+        for (auto patch : done_patches) {
+            emit_.patch_jump(patch);
+        }
+        return true;
+    }
+
     [[nodiscard]] bool generate_let(const ast::LetStmt& let) {
         Symbol* sym = define_let_symbol(let);
         if (!sym) {
@@ -4190,6 +5742,7 @@ private:
     }
 
     [[nodiscard]] bool generate_return(const ast::ReturnStmt& ret) {
+        warn_live_owned_locals_on_exit(ret.value.get());
         if (ret.value) {
             if (!generate_expr(*ret.value)) return false;
         } else {
@@ -4359,11 +5912,15 @@ private:
             error(*discarded);
             return false;
         }
+        if (auto invalid_release = describe_invalid_release(*stmt.expr)) {
+            error(*invalid_release);
+            return false;
+        }
         if (!generate_expr(*stmt.expr)) {
             return false;
         }
         if (auto released = released_local_from_expr_stmt(*stmt.expr)) {
-            owned_locals_.erase(*released);
+            owned_locals_[*released] = OwnedLocalState::Released;
         }
         return true;
     }
@@ -4478,6 +6035,25 @@ private:
         return current_scope_->lookup(ident->name);
     }
 
+    [[nodiscard]] std::optional<std::string> describe_invalid_release(const ast::Expr& expr) {
+        auto released = released_local_from_expr_stmt(expr);
+        if (!released) {
+            return std::nullopt;
+        }
+
+        auto it = owned_locals_.find(*released);
+        if (it == owned_locals_.end()) {
+            return std::nullopt;
+        }
+        if (it->second != OwnedLocalState::Released) {
+            return std::nullopt;
+        }
+
+        return std::format(
+            "release of '{}' happens after it was already freed or released",
+            (*released)->name);
+    }
+
     void update_owned_local_after_store(const Symbol* sym, const ast::Expr* value_expr) {
         if (!sym) {
             return;
@@ -4491,6 +6067,35 @@ private:
             return;
         }
         owned_locals_.erase(sym);
+    }
+
+    [[nodiscard]] const Symbol* returned_owned_symbol(const ast::Expr* expr) const {
+        if (!expr) {
+            return nullptr;
+        }
+        if (auto* cast = std::get_if<ast::CastExpr>(&expr->kind)) {
+            return returned_owned_symbol(cast->expr.get());
+        }
+        auto* ident = std::get_if<ast::IdentExpr>(&expr->kind);
+        if (!ident || !current_scope_) {
+            return nullptr;
+        }
+        return current_scope_->lookup(ident->name);
+    }
+
+    void warn_live_owned_locals_on_exit(const ast::Expr* returned_expr = nullptr) {
+        const Symbol* returned_sym = returned_owned_symbol(returned_expr);
+        for (const auto& [sym, state] : owned_locals_) {
+            if (state != OwnedLocalState::Live) {
+                continue;
+            }
+            if (returned_sym == sym) {
+                continue;
+            }
+            warn(std::format(
+                "possible leak: '{}' still owns memory when the function exits",
+                sym->name));
+        }
     }
 
     [[nodiscard]] std::optional<std::string> describe_owned_local_overwrite(const ast::BinaryExpr& bin) {
@@ -4914,6 +6519,13 @@ private:
                 else emit_.sub_mem_imm(*bound, update.field_offset, -delta32);
                 return true;
             }
+            if (stack_struct_locals_.contains(update.base_sym)) {
+                if (delta32 == 1) emit_.inc_mem(x64::Reg::RBP, update.base_sym->stack_offset + update.field_offset);
+                else if (delta32 == -1) emit_.dec_mem(x64::Reg::RBP, update.base_sym->stack_offset + update.field_offset);
+                else if (delta32 > 0) emit_.add_mem_imm(x64::Reg::RBP, update.base_sym->stack_offset + update.field_offset, delta32);
+                else emit_.sub_mem_imm(x64::Reg::RBP, update.base_sym->stack_offset + update.field_offset, -delta32);
+                return true;
+            }
 
             emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, update.base_sym->stack_offset);
             if (delta32 == 1) emit_.inc_mem(x64::Reg::RAX, update.field_offset);
@@ -4944,6 +6556,25 @@ private:
                 return false;
             }
             emit_.mov_store(*bound, update.field_offset, *value_reg);
+            return true;
+        }
+        if (stack_struct_locals_.contains(update.base_sym)) {
+            auto rhs_reg = pick_scratch_reg({x64::Reg::RDX});
+            if (!rhs_reg) {
+                return false;
+            }
+            if (!generate_pure_expr_into(*update.rhs, *rhs_reg)) {
+                return false;
+            }
+            auto value_reg = pick_scratch_reg({*rhs_reg, x64::Reg::RDX});
+            if (!value_reg) {
+                return false;
+            }
+            emit_.mov_load(*value_reg, x64::Reg::RBP, update.base_sym->stack_offset + update.field_offset);
+            if (!emit_binary_into_with_rhs_reg(*value_reg, update.op, *rhs_reg)) {
+                return false;
+            }
+            emit_.mov_store(x64::Reg::RBP, update.base_sym->stack_offset + update.field_offset, *value_reg);
             return true;
         }
 
@@ -5501,8 +7132,7 @@ private:
             }
         }
 
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
 
         emit_.patch_jump(exit_patch);
         for (const auto& [sym, reg] : plan.bindings) {
@@ -5555,8 +7185,7 @@ private:
             }
         }
 
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
 
         emit_.patch_jump(exit_patch);
         if (!ret_expr) {
@@ -5603,8 +7232,7 @@ private:
         patch_jumps_to(continue_patches_.back(), loop_start);
         continue_patches_.pop_back();
 
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
 
         std::size_t exit_pos = emit_.buffer().pos();
         emit_.patch_jump(exit_patch);
@@ -5686,8 +7314,7 @@ private:
         patch_jumps_to(continue_patches_.back(), loop_start);
         continue_patches_.pop_back();
 
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
 
         std::size_t exit_pos = emit_.buffer().pos();
         emit_.patch_jump(exit_patch);
@@ -5951,8 +7578,7 @@ private:
             }
 
             emit_.add_smart(x64::Reg::RCX, static_cast<std::int32_t>(kUnroll));
-            std::int32_t rel = static_cast<std::int32_t>(unroll_loop_start - emit_.buffer().pos() - 5);
-            emit_.jmp_rel32(rel);
+            emit_jmp_rel32_to(unroll_loop_start);
 
             emit_.patch_jump(tail_patch);
         }
@@ -5966,8 +7592,7 @@ private:
         }
 
         emit_.inc(x64::Reg::RCX);
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
 
         emit_.patch_jump(exit_patch);
 
@@ -6200,8 +7825,7 @@ private:
         patch_jumps_to(continue_patches_.back(), loop_start);
         continue_patches_.pop_back();
 
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
 
         std::size_t exit_pos = emit_.buffer().pos();
         emit_.patch_jump(exit_patch);
@@ -6287,8 +7911,7 @@ private:
         patch_jumps_to(continue_patches_.back(), loop_start);
         continue_patches_.pop_back();
 
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
 
         std::size_t exit_pos = emit_.buffer().pos();
         emit_.patch_jump(exit_patch);
@@ -6303,31 +7926,237 @@ private:
     }
 
     [[nodiscard]] bool generate_if(const ast::IfStmt& if_stmt) {
+        struct IfEqChainArm {
+            std::int64_t value = 0;
+            const ast::StmtSuite* body = nullptr;
+        };
+
+        auto try_collect_if_eq_chain = [&](const ast::IfStmt& root,
+                                           std::string& subject_name,
+                                           std::vector<IfEqChainArm>& arms,
+                                           const ast::StmtSuite*& default_body,
+                                           const auto& self) -> bool {
+            auto* cond = std::get_if<ast::BinaryExpr>(&root.condition->kind);
+            if (!cond || cond->op != ast::BinaryExpr::Op::Eq) {
+                return false;
+            }
+
+            const ast::Expr* ident_expr = nullptr;
+            const ast::Expr* value_expr = nullptr;
+            if (cond->lhs->is<ast::IdentExpr>() && try_get_i64_immediate(*cond->rhs, arms.emplace_back().value)) {
+                ident_expr = cond->lhs.get();
+                value_expr = cond->rhs.get();
+            } else if (cond->rhs->is<ast::IdentExpr>() && try_get_i64_immediate(*cond->lhs, arms.emplace_back().value)) {
+                ident_expr = cond->rhs.get();
+                value_expr = cond->lhs.get();
+            } else {
+                arms.pop_back();
+                return false;
+            }
+
+            const auto& ident = ident_expr->as<ast::IdentExpr>();
+            if (subject_name.empty()) {
+                subject_name = ident.name;
+            } else if (subject_name != ident.name) {
+                arms.pop_back();
+                return false;
+            }
+
+            std::int64_t imm = 0;
+            if (!try_get_i64_immediate(*value_expr, imm)) {
+                arms.pop_back();
+                return false;
+            }
+            arms.back().value = imm;
+            arms.back().body = &root.then_block;
+
+            if (!root.else_block) {
+                default_body = nullptr;
+                return true;
+            }
+
+            if (root.else_block->size() == 1 && (*root.else_block)[0]->is<ast::IfStmt>()) {
+                return self((*root.else_block)[0]->as<ast::IfStmt>(), subject_name, arms, default_body, self);
+            }
+
+            default_body = &*root.else_block;
+            return true;
+        };
+
+        auto stmt_guarantees_return = [&](const ast::Stmt& stmt, const auto& self) -> bool {
+            return std::visit(overloaded{
+                [&](const ast::ReturnStmt&) -> bool {
+                    return true;
+                },
+                [&](const ast::BlockStmt& s) -> bool {
+                    return !s.block.stmts.empty() && self(*s.block.stmts.back(), self);
+                },
+                [&](const ast::IfStmt& s) -> bool {
+                    return !s.then_block.empty() &&
+                           s.has_else() &&
+                           self(*s.then_block.back(), self) &&
+                           !s.else_block->empty() &&
+                           self(*s.else_block->back(), self);
+                },
+                [&](const ast::SwitchStmt& s) -> bool {
+                    if (s.cases.empty() || !s.has_else()) {
+                        return false;
+                    }
+                    for (const auto& branch : s.cases) {
+                        if (branch.body.empty() || !self(*branch.body.back(), self)) {
+                            return false;
+                        }
+                    }
+                    return !s.else_block->empty() && self(*s.else_block->back(), self);
+                },
+                [&](const auto&) -> bool {
+                    return false;
+                }
+            }, stmt.kind);
+        };
+
+        auto suite_guarantees_return = [&](const ast::StmtSuite& suite) -> bool {
+            return !suite.empty() && stmt_guarantees_return(*suite.back(), stmt_guarantees_return);
+        };
+
+        auto merge_owned_states = [](const std::vector<std::unordered_map<const Symbol*, OwnedLocalState>>& states) {
+            std::unordered_map<const Symbol*, OwnedLocalState> merged;
+            if (states.empty()) {
+                return merged;
+            }
+
+            std::unordered_set<const Symbol*> keys;
+            for (const auto& state : states) {
+                for (const auto& [sym, _] : state) {
+                    keys.insert(sym);
+                }
+            }
+
+            for (const Symbol* sym : keys) {
+                bool first = true;
+                OwnedLocalState common = OwnedLocalState::None;
+                bool all_same = true;
+                for (const auto& state : states) {
+                    auto it = state.find(sym);
+                    if (it == state.end()) {
+                        all_same = false;
+                        break;
+                    }
+                    if (first) {
+                        common = it->second;
+                        first = false;
+                    } else if (it->second != common) {
+                        all_same = false;
+                        break;
+                    }
+                }
+                if (all_same) {
+                    merged[sym] = common;
+                }
+            }
+
+            return merged;
+        };
+
+        auto before_state = owned_locals_;
+
+        std::string subject_name;
+        std::vector<IfEqChainArm> chain_arms;
+        const ast::StmtSuite* chain_default = nullptr;
+        if (try_collect_if_eq_chain(if_stmt, subject_name, chain_arms, chain_default, try_collect_if_eq_chain) &&
+            !subject_name.empty() && chain_arms.size() >= 2 && current_scope_) {
+            Symbol* subject_sym = current_scope_->lookup(subject_name);
+            if (subject_sym) {
+                auto subject_reg = pick_scratch_reg();
+                if (subject_reg && generate_ident_into(ast::IdentExpr{.name = subject_name}, *subject_reg)) {
+                    std::vector<std::unordered_map<const Symbol*, OwnedLocalState>> continuing_states;
+                    std::vector<std::size_t> done_patches;
+
+                    for (const auto& arm : chain_arms) {
+                        emit_.cmp_smart_imm(*subject_reg, arm.value);
+                        std::size_t next_case = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+                        owned_locals_ = before_state;
+                        push_scope();
+                        if (!generate_stmt_list(*arm.body)) {
+                            pop_scope();
+                            return false;
+                        }
+                        pop_scope();
+                        if (!suite_guarantees_return(*arm.body)) {
+                            continuing_states.push_back(owned_locals_);
+                        }
+                        done_patches.push_back(emit_.jmp_rel32_placeholder());
+
+                        emit_.patch_jump(next_case);
+                    }
+
+                    owned_locals_ = before_state;
+                    if (chain_default) {
+                        push_scope();
+                        if (!generate_stmt_list(*chain_default)) {
+                            pop_scope();
+                            return false;
+                        }
+                        pop_scope();
+                        if (!suite_guarantees_return(*chain_default)) {
+                            continuing_states.push_back(owned_locals_);
+                        }
+                    } else {
+                        continuing_states.push_back(before_state);
+                    }
+
+                    for (auto patch : done_patches) {
+                        emit_.patch_jump(patch);
+                    }
+                    owned_locals_ = merge_owned_states(continuing_states);
+                    return true;
+                }
+            }
+            owned_locals_ = before_state;
+        }
+
         std::size_t jz_patch = 0;
         if (!emit_condition_false_jump(*if_stmt.condition, jz_patch)) return false;
 
+        owned_locals_ = before_state;
         push_scope();
         if (!generate_stmt_list(if_stmt.then_block)) {
             pop_scope();
             return false;
         }
         pop_scope();
+        bool then_returns = suite_guarantees_return(if_stmt.then_block);
+        auto then_state = owned_locals_;
+
+        std::vector<std::unordered_map<const Symbol*, OwnedLocalState>> continuing_states;
+        if (!then_returns) {
+            continuing_states.push_back(then_state);
+        }
 
         if (if_stmt.has_else()) {
             std::size_t jmp_patch = emit_.jmp_rel32_placeholder();
             emit_.patch_jump(jz_patch);
 
+            owned_locals_ = before_state;
             push_scope();
             if (!generate_stmt_list(*if_stmt.else_block)) {
                 pop_scope();
                 return false;
             }
             pop_scope();
+            bool else_returns = suite_guarantees_return(*if_stmt.else_block);
+            if (!else_returns) {
+                continuing_states.push_back(owned_locals_);
+            }
 
             emit_.patch_jump(jmp_patch);
         } else {
             emit_.patch_jump(jz_patch);
+            continuing_states.push_back(before_state);
         }
+
+        owned_locals_ = merge_owned_states(continuing_states);
 
         return true;
     }
@@ -6425,8 +8254,7 @@ private:
         continue_patches_.pop_back();
 
         // Jump back to start
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
 
         // Patch the jz to here (end)
         emit_.patch_jump(jz_patch);
@@ -6456,8 +8284,7 @@ private:
         continue_patches_.pop_back();
 
         // Jump back to start
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
 
         // Patch all breaks
         for (std::size_t patch : break_patches_.back()) {
@@ -6546,8 +8373,7 @@ private:
         emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
         
         // jump back to condition check
-        std::int32_t rel = static_cast<std::int32_t>(loop_start - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(rel);
+        emit_jmp_rel32_to(loop_start);
         
         // patch exit jump
         emit_.patch_jump(jge_patch);
@@ -6565,8 +8391,7 @@ private:
     // patch a list of jmp placeholders to jump to a specific target address
     void patch_jumps_to(const std::vector<std::size_t>& patches, std::size_t target) {
         for (std::size_t patch : patches) {
-            std::int32_t rel = static_cast<std::int32_t>(target - patch - 4);
-            emit_.buffer().patch32(patch, static_cast<std::uint32_t>(rel));
+            patch_rel32(patch, target);
         }
     }
 
@@ -6693,6 +8518,23 @@ private:
                             return true;
                         }
                     }
+                    if (bin->lhs->is<ast::FieldExpr>() &&
+                        rhs_imm >= (std::numeric_limits<std::int32_t>::min)() &&
+                        rhs_imm <= (std::numeric_limits<std::int32_t>::max)()) {
+                        std::int32_t mem_off = 0;
+                        x64::Reg mem_base = x64::Reg::RBP;
+                        const auto& lhs_field = bin->lhs->as<ast::FieldExpr>();
+                        if (try_stack_struct_field_offset(lhs_field, mem_off)) {
+                            emit_.cmp_mem_imm(x64::Reg::RBP, mem_off, static_cast<std::int32_t>(rhs_imm));
+                            jump_patch = emit_.jcc_rel32(*false_cc);
+                            return true;
+                        }
+                        if (try_bound_struct_field_operand(lhs_field, mem_base, mem_off)) {
+                            emit_.cmp_mem_imm(mem_base, mem_off, static_cast<std::int32_t>(rhs_imm));
+                            jump_patch = emit_.jcc_rel32(*false_cc);
+                            return true;
+                        }
+                    }
                     if (can_generate_pure_expr(*bin->lhs)) {
                         auto lhs_reg = pick_scratch_reg();
                         if (!lhs_reg) return false;
@@ -6726,6 +8568,22 @@ private:
                     emit_.cmp(x64::Reg::RAX, *rhs_reg);
                     jump_patch = emit_.jcc_rel32(*false_cc);
                     return true;
+                }
+
+                if (bin->rhs->is<ast::FieldExpr>() && can_generate_pure_expr(*bin->lhs)) {
+                    std::int32_t mem_off = 0;
+                    x64::Reg mem_base = x64::Reg::RBP;
+                    const auto& rhs_field = bin->rhs->as<ast::FieldExpr>();
+                    bool has_mem = try_stack_struct_field_offset(rhs_field, mem_off) ||
+                                   try_bound_struct_field_operand(rhs_field, mem_base, mem_off);
+                    if (has_mem) {
+                        auto lhs_reg = pick_scratch_reg();
+                        if (!lhs_reg) return false;
+                        if (!generate_pure_expr_into(*bin->lhs, *lhs_reg)) return false;
+                        emit_.cmp_mem(*lhs_reg, mem_base, mem_off);
+                        jump_patch = emit_.jcc_rel32(*false_cc);
+                        return true;
+                    }
                 }
 
                 if (can_generate_pure_expr(*bin->lhs) && can_generate_pure_expr(*bin->rhs)) {
@@ -7014,6 +8872,22 @@ private:
     [[nodiscard]] bool generate_bound_ident_into(const ast::IdentExpr& ident, x64::Reg dst) {
         Symbol* sym = current_scope_->lookup(ident.name);
         if (sym) {
+            if (auto it = owned_locals_.find(sym); it != owned_locals_.end() && it->second == OwnedLocalState::Released) {
+                error(std::format(
+                    "use of '{}' happens after it was freed or released",
+                    ident.name));
+                return false;
+            }
+            if (stack_struct_locals_.contains(sym)) {
+                if (auto bound = lookup_bound_reg(sym)) {
+                    if (dst != *bound) {
+                        emit_.mov(dst, *bound);
+                    }
+                    return true;
+                }
+                emit_.lea(dst, x64::Reg::RBP, sym->stack_offset);
+                return true;
+            }
             if (auto bound = lookup_bound_reg(sym)) {
                 if (dst != *bound) {
                     emit_.mov(dst, *bound);
@@ -7021,6 +8895,22 @@ private:
                 return true;
             }
             emit_.mov_load(dst, x64::Reg::RBP, sym->stack_offset);
+            return true;
+        }
+
+        if (auto it = constants_.find(resolve_constant_name(ident.name)); it != constants_.end()) {
+            std::int64_t imm = 0;
+            if (try_get_i64_immediate(it->second.value, imm)) {
+                emit_.mov_smart(dst, imm);
+                return true;
+            }
+            auto saved = dst == x64::Reg::RAX ? std::optional<x64::Reg>{} : std::optional<x64::Reg>{dst};
+            if (!generate_literal(it->second.value)) {
+                return false;
+            }
+            if (saved && *saved != x64::Reg::RAX) {
+                emit_.mov(*saved, x64::Reg::RAX);
+            }
             return true;
         }
 
@@ -7056,6 +8946,21 @@ private:
             if (auto resolved_fn = resolve_function_alias_name(*qualified)) {
                 std::size_t fn_addr_fixup = emit_lea_rip_disp32(dst);
                 call_fixups_.push_back({fn_addr_fixup, *resolved_fn});
+                return true;
+            }
+            if (auto const_it = constants_.find(resolve_constant_name(*qualified)); const_it != constants_.end()) {
+                std::int64_t imm = 0;
+                if (try_get_i64_immediate(const_it->second.value, imm)) {
+                    emit_.mov_smart(dst, imm);
+                    return true;
+                }
+                auto saved = dst == x64::Reg::RAX ? std::optional<x64::Reg>{} : std::optional<x64::Reg>{dst};
+                if (!generate_literal(const_it->second.value)) {
+                    return false;
+                }
+                if (saved && *saved != x64::Reg::RAX) {
+                    emit_.mov(*saved, x64::Reg::RAX);
+                }
                 return true;
             }
             if (auto global_name = resolve_global_alias(*qualified)) {
@@ -7143,11 +9048,26 @@ private:
             error(std::format("struct '{}' has no field '{}'", struct_name, field.field));
             return false;
         }
+        auto field_type = lookup_struct_field_type(struct_name, field.field);
+        if (!field_type) {
+            error(std::format("struct '{}' has no typed field '{}'", struct_name, field.field));
+            return false;
+        }
 
         std::int32_t offset = static_cast<std::int32_t>(*offset_opt);
+        if (struct_it->second.is_view) {
+            if (offset != 0) {
+                emit_.add_smart(dst, offset);
+            }
+            return emit_load_typed_from_address_reg(dst, *field_type);
+        }
         if (base_sym) {
             if (auto bound = lookup_bound_reg(base_sym)) {
                 emit_.mov_load(dst, *bound, offset);
+                return true;
+            }
+            if (stack_struct_locals_.contains(base_sym)) {
+                emit_.mov_load(dst, x64::Reg::RBP, base_sym->stack_offset + offset);
                 return true;
             }
             emit_.mov_load(dst, x64::Reg::RBP, base_sym->stack_offset);
@@ -7235,6 +9155,13 @@ private:
 
             if (bin->rhs->is<ast::FieldExpr>()) {
                 const auto& field = bin->rhs->as<ast::FieldExpr>();
+                std::int32_t stack_field_off = 0;
+                if (try_stack_struct_field_offset(field, stack_field_off)) {
+                    if (!generate_pure_expr_into(*bin->lhs, dst)) return false;
+                    if (emit_binary_into_with_rhs_mem(dst, bin->op, x64::Reg::RBP, stack_field_off)) {
+                        return true;
+                    }
+                }
                 if (field.base->is<ast::IdentExpr>()) {
                     const auto& var_name = field.base->as<ast::IdentExpr>().name;
                     if (Symbol* sym = current_scope_->lookup(var_name)) {
@@ -7381,21 +9308,39 @@ private:
         // resolve the struct type of the base expression
         std::string struct_name;
         Symbol* base_sym = nullptr;
-        
+        bool base_in_rax = false;
+
         if (field.base->is<ast::IdentExpr>()) {
             const std::string& var_name = field.base->as<ast::IdentExpr>().name;
             Symbol* sym = current_scope_->lookup(var_name);
             if (!sym) {
-                error_undefined_name("variable", var_name, collect_value_name_candidates());
-                return false;
+                const ast::Expr* inlined = current_scope_ ? current_scope_->lookup_inline(var_name) : nullptr;
+                if (!inlined) {
+                    error_undefined_name("variable", var_name, collect_value_name_candidates());
+                    return false;
+                }
+                auto base_type = infer_expr_type(*inlined);
+                if (!base_type) {
+                    error(std::format("cannot resolve type of inline field base '{}'", var_name));
+                    return false;
+                }
+                auto sn = get_struct_name(*base_type);
+                if (!sn) {
+                    error(std::format("variable '{}' is not a struct type", var_name));
+                    return false;
+                }
+                struct_name = *sn;
+                if (!generate_expr(*inlined)) return false;
+                base_in_rax = true;
+            } else {
+                auto sn = get_struct_name(sym->type);
+                if (!sn) {
+                    error(std::format("variable '{}' is not a struct type", var_name));
+                    return false;
+                }
+                struct_name = *sn;
+                base_sym = sym;
             }
-            auto sn = get_struct_name(sym->type);
-            if (!sn) {
-                error(std::format("variable '{}' is not a struct type", var_name));
-                return false;
-            }
-            struct_name = *sn;
-            base_sym = sym;
         } else {
             // chained field access: evaluate base expression to get pointer in RAX
             // first figure out the struct type of the base
@@ -7412,6 +9357,7 @@ private:
             }
             // evaluate base expression -> RAX = pointer to intermediate struct
             if (!generate_expr(*field.base)) return false;
+            base_in_rax = true;
         }
         
         // look up field offset
@@ -7426,10 +9372,37 @@ private:
             error(std::format("struct '{}' has no field '{}'", struct_name, field.field));
             return false;
         }
+        auto field_type = lookup_struct_field_type(struct_name, field.field);
+        if (!field_type) {
+            error(std::format("struct '{}' has no typed field '{}'", struct_name, field.field));
+            return false;
+        }
         
         std::int32_t offset = static_cast<std::int32_t>(*offset_opt);
+
+        if (struct_it->second.is_view) {
+            if (base_sym) {
+                if (auto bound = lookup_bound_reg(base_sym)) {
+                    emit_.mov(x64::Reg::RAX, *bound);
+                } else {
+                    emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, base_sym->stack_offset);
+                }
+            } else if (!base_in_rax) {
+                error("unsupported base expression for view access");
+                return false;
+            }
+
+            if (offset != 0) {
+                emit_.add_smart(x64::Reg::RAX, offset);
+            }
+            return emit_load_typed_from_address_in_rax(*field_type);
+        }
         
         if (base_sym) {
+            if (stack_struct_locals_.contains(base_sym)) {
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, base_sym->stack_offset + offset);
+                return true;
+            }
             if (auto bound = lookup_bound_reg(base_sym)) {
                 emit_.mov_load(x64::Reg::RAX, *bound, offset);
                 return true;
@@ -7439,8 +9412,10 @@ private:
             return true;
         }
 
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, offset);
-        
+        if (base_in_rax) {
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, offset);
+        }
+
         return true;
     }
 
@@ -7774,6 +9749,13 @@ private:
 
         if (bin.rhs->is<ast::FieldExpr>()) {
             const auto& field = bin.rhs->as<ast::FieldExpr>();
+            std::int32_t stack_field_off = 0;
+            if (try_stack_struct_field_offset(field, stack_field_off)) {
+                if (!generate_expr(*bin.lhs)) return false;
+                if (emit_binary_with_rhs_mem(bin.op, x64::Reg::RBP, stack_field_off)) {
+                    return true;
+                }
+            }
             if (field.base->is<ast::IdentExpr>()) {
                 const auto& var_name = field.base->as<ast::IdentExpr>().name;
                 if (Symbol* sym = current_scope_->lookup(var_name)) {
@@ -7888,6 +9870,27 @@ private:
                 return false;
             }
             std::int32_t offset = static_cast<std::int32_t>(*offset_opt);
+
+            if (struct_it->second.is_view) {
+                if (base_sym) {
+                    if (auto bound = lookup_bound_reg(base_sym)) {
+                        emit_.mov(x64::Reg::RCX, *bound);
+                    } else {
+                        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, base_sym->stack_offset);
+                    }
+                } else {
+                    emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+                }
+                if (offset != 0) {
+                    emit_.add_smart(x64::Reg::RCX, offset);
+                }
+                emit_.pop(x64::Reg::RAX);
+                if (!emit_coerce_rax_to_type(*field_type, bin.rhs.get())) {
+                    return false;
+                }
+                return emit_store_typed_to_address_in_rcx(*field_type);
+            }
+
             if (!emit_coerce_rax_to_type(*field_type, bin.rhs.get())) {
                 return false;
             }
@@ -7903,6 +9906,8 @@ private:
             if (base_sym) {
                 if (auto bound = lookup_bound_reg(base_sym)) {
                     emit_.mov_store(*bound, offset, *value_reg);
+                } else if (stack_struct_locals_.contains(base_sym)) {
+                    emit_.mov_store(x64::Reg::RBP, base_sym->stack_offset + offset, *value_reg);
                 } else {
                     emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, base_sym->stack_offset);
                     emit_.mov_store(x64::Reg::RAX, offset, *value_reg);
@@ -8037,6 +10042,8 @@ private:
             // load base pointer and current field value
             if (auto bound = lookup_bound_reg(sym)) {
                 emit_.mov_load(x64::Reg::RAX, *bound, foff); // current value
+            } else if (stack_struct_locals_.contains(sym)) {
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset + foff); // current value
             } else {
                 emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
                 emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, foff); // current value
@@ -8067,6 +10074,8 @@ private:
             emit_.mov(*rhs_reg, x64::Reg::RAX); // save result
             if (auto bound = lookup_bound_reg(sym)) {
                 emit_.mov_store(*bound, foff, *rhs_reg);
+            } else if (stack_struct_locals_.contains(sym)) {
+                emit_.mov_store(x64::Reg::RBP, sym->stack_offset + foff, *rhs_reg);
             } else {
                 emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset); // reload base
                 emit_.mov_store(x64::Reg::RAX, foff, *rhs_reg);
@@ -8388,6 +10397,9 @@ private:
     }
 
     [[nodiscard]] bool can_registerize_immutable_let_init(const ast::Expr& expr) const {
+        if (expr_is_struct_value(expr)) {
+            return false;
+        }
         if (expr_is_side_effect_free(expr) && can_generate_pure_expr(expr)) {
             return true;
         }
@@ -8493,7 +10505,7 @@ private:
     }
 
     [[nodiscard]] bool generate_inline_stmt(const ast::Stmt& stmt, std::vector<std::size_t>& return_patches) {
-        if (stmt.span.start.line > 0) {
+        if (collect_line_map_ && stmt.span.start.line > 0) {
             line_map_.push_back({
                 static_cast<std::uint32_t>(emit_.buffer().pos()),
                 stmt.span.start.line
@@ -8541,6 +10553,12 @@ private:
                     emit_.patch_jump(done_patch);
                 } else {
                     emit_.patch_jump(else_patch);
+                }
+                return true;
+            },
+            [&](const ast::SwitchStmt& s) {
+                if (!generate_switch(s)) {
+                    return false;
                 }
                 return true;
             },
@@ -8697,6 +10715,17 @@ private:
                            stmt_list_guarantees_return(s.then_block) &&
                            stmt_list_guarantees_return(*s.else_block);
                 },
+                [&](const ast::SwitchStmt& s) {
+                    if (s.cases.empty() || !s.has_else()) {
+                        return false;
+                    }
+                    for (const auto& branch : s.cases) {
+                        if (branch.body.empty() || !stmt_list_guarantees_return(branch.body)) {
+                            return false;
+                        }
+                    }
+                    return !s.else_block->empty() && stmt_list_guarantees_return(*s.else_block);
+                },
                 [&](const auto&) {
                     return false;
                 }
@@ -8756,6 +10785,9 @@ private:
 
     void emit_xmm_load_f64_from_stack(std::uint8_t xmm_index, std::int32_t offset) {
         emit_.buffer().emit8(0xF2);
+        if ((xmm_index & 0x8) != 0) {
+            emit_.buffer().emit8(0x44);  // REX.R
+        }
         emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x10);
         emit_sse_stack_operand(xmm_index & 7, offset);
@@ -8763,6 +10795,9 @@ private:
 
     void emit_xmm_convert_f64_to_f32(std::uint8_t xmm_index) {
         emit_.buffer().emit8(0xF2);
+        if ((xmm_index & 0x8) != 0) {
+            emit_.buffer().emit8(0x45);  // REX.R | REX.B
+        }
         emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x5A);
         emit_.buffer().emit8(static_cast<std::uint8_t>(0xC0 | ((xmm_index & 7) << 3) | (xmm_index & 7)));
@@ -8770,6 +10805,9 @@ private:
 
     void emit_xmm_convert_f32_to_f64(std::uint8_t xmm_index) {
         emit_.buffer().emit8(0xF3);
+        if ((xmm_index & 0x8) != 0) {
+            emit_.buffer().emit8(0x45);  // REX.R | REX.B
+        }
         emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x5A);
         emit_.buffer().emit8(static_cast<std::uint8_t>(0xC0 | ((xmm_index & 7) << 3) | (xmm_index & 7)));
@@ -8777,6 +10815,9 @@ private:
 
     void emit_xmm_store_f64_to_stack(std::uint8_t xmm_index, std::int32_t offset) {
         emit_.buffer().emit8(0xF2);
+        if ((xmm_index & 0x8) != 0) {
+            emit_.buffer().emit8(0x44);  // REX.R
+        }
         emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x11);
         emit_sse_stack_operand(xmm_index & 7, offset);
@@ -8784,6 +10825,9 @@ private:
 
     void emit_xmm_store_f32_to_stack(std::uint8_t xmm_index, std::int32_t offset) {
         emit_.buffer().emit8(0xF3);
+        if ((xmm_index & 0x8) != 0) {
+            emit_.buffer().emit8(0x44);  // REX.R
+        }
         emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x11);
         emit_sse_stack_operand(xmm_index & 7, offset);
@@ -8791,6 +10835,9 @@ private:
 
     void emit_xmm_load_f64_from_rbp(std::uint8_t xmm_index, std::int32_t offset) {
         emit_.buffer().emit8(0xF2);
+        if ((xmm_index & 0x8) != 0) {
+            emit_.buffer().emit8(0x44);  // REX.R
+        }
         emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x10);
         if (offset >= -128 && offset <= 127) {
@@ -8802,8 +10849,26 @@ private:
         emit_.buffer().emit32(static_cast<std::uint32_t>(offset));
     }
 
+    void emit_xmm_load_f64_bits_from_reg(std::uint8_t xmm_index, x64::Reg src) {
+        emit_.buffer().emit8(0x66);
+        std::uint8_t rex = 0x48;  // REX.W
+        if ((xmm_index & 0x8) != 0) {
+            rex |= 0x04;  // REX.R
+        }
+        if ((static_cast<std::uint8_t>(src) & 0x8) != 0) {
+            rex |= 0x01;  // REX.B
+        }
+        emit_.buffer().emit8(rex);
+        emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x6E);
+        emit_.buffer().emit8(static_cast<std::uint8_t>(0xC0 | ((xmm_index & 7) << 3) | (static_cast<std::uint8_t>(src) & 7)));
+    }
+
     void emit_xmm_load_f32_from_rbp(std::uint8_t xmm_index, std::int32_t offset) {
         emit_.buffer().emit8(0xF3);
+        if ((xmm_index & 0x8) != 0) {
+            emit_.buffer().emit8(0x44);  // REX.R
+        }
         emit_.buffer().emit8(0x0F);
         emit_.buffer().emit8(0x10);
         if (offset >= -128 && offset <= 127) {
@@ -8987,8 +11052,10 @@ private:
         // use same pattern as generate_call: push all args, alloc frame, load from pushed values
         std::size_t nargs = 1 + call.args.size(); // total including self
         
-        // push self first
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+        // push self first using the normal value path so bound regs and stack structs work too
+        if (!generate_expr(*field.base)) {
+            return false;
+        }
         emit_.push(x64::Reg::RAX);
         
         // push explicit args left to right
@@ -9001,24 +11068,30 @@ private:
         std::size_t reg_args = nargs < 4 ? nargs : 4;
         std::size_t stack_args = nargs > 4 ? nargs - 4 : 0;
         std::size_t alloc = 32 + stack_args * 8;
-        alloc = (alloc + 15) & ~15;
+        if (stack_args == 0 && (nargs & 1) != 0) {
+            alloc += 8;
+        }
         emit_.sub_imm(x64::Reg::RSP, static_cast<std::int32_t>(alloc));
         
         // pushed args are at [RSP + alloc + 0] (last pushed = arg n-1) 
         // through [RSP + alloc + (n-1)*8] (first pushed = self = arg 0)
         // arg[i] is at [RSP + alloc + (nargs - 1 - i) * 8]
         
-        // load first 4 into registers (RCX=self, RDX=arg0, R8=arg1, R9=arg2)
+        // load first 4 into registers / xmm regs
         for (std::size_t i = 0; i < reg_args; ++i) {
-            std::int32_t off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
-            emit_.mov_load(x64::ARG_REGS[i], x64::Reg::RSP, off);
+            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
+            if (!emit_indirect_arg_to_abi_slot(i, fn_it->second.param_types[i], src_off, 0, false)) {
+                return false;
+            }
         }
         
         // load stack args (index 4+) into call frame
         for (std::size_t i = 4; i < nargs; ++i) {
             std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
-            emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, src_off);
-            emit_.mov_store(x64::Reg::RSP, static_cast<std::int32_t>(32 + (i - 4) * 8), x64::Reg::RAX);
+            std::int32_t dest_off = static_cast<std::int32_t>(32 + (i - 4) * 8);
+            if (!emit_indirect_arg_to_abi_slot(i, fn_it->second.param_types[i], src_off, dest_off, true)) {
+                return false;
+            }
         }
         
         // call
@@ -9029,6 +11102,12 @@ private:
         
         // clean up frame + pushed args
         emit_.add_smart(x64::Reg::RSP, static_cast<std::int32_t>(alloc + nargs * 8));
+
+        if (fn_it->second.return_type.is_float()) {
+            emit_capture_indirect_float_return(fn_it->second.return_type);
+        } else if (fn_it->second.return_type.is_integer() || is_bool_type(fn_it->second.return_type)) {
+            emit_truncate_or_extend_rax(fn_it->second.return_type);
+        }
         
         return true;
     }
@@ -9199,60 +11278,18 @@ private:
     }
     
     [[nodiscard]] bool generate_dll_builtin_print_hex(const ast::CallExpr& call) {
-        // prints value as "0x" + 8 hex digits
+        // delegate directly to the startup print_hex helper
         if (call.args.empty()) {
             error("print_int requires an argument");
             return false;
         }
         
         if (!generate_expr(*call.args[0])) return false;
-        
-        emit_.sub_imm(x64::Reg::RSP, 64);
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
-        
-        // build "0x" prefix at [rsp+0x20]
-        emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x44); emit_.buffer().emit8(0x24); 
-        emit_.buffer().emit8(0x20); emit_.buffer().emit8(0x30);  // mov byte [rsp+0x20], '0'
-        emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x44); emit_.buffer().emit8(0x24); 
-        emit_.buffer().emit8(0x21); emit_.buffer().emit8(0x78);  // mov byte [rsp+0x21], 'x'
-        
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D); emit_.buffer().emit8(0x54);
-        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x22);  // lea rdx, [rsp+0x22]
-        emit_.buffer().emit8(0x41); emit_.buffer().emit8(0xB0); emit_.buffer().emit8(0x08);  // mov r8b, 8
-        
-        // nibble extraction loop: shift top nibble out, convert to ascii, store
-        std::size_t loop_start = emit_.buffer().pos();
-        
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xCE);  // mov rsi, rcx
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xC1); emit_.buffer().emit8(0xEE); emit_.buffer().emit8(0x1C);  // shr rsi, 28
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x83); emit_.buffer().emit8(0xE6); emit_.buffer().emit8(0x0F);  // and rsi, 0xF
-        
-        // nibble >= 10 ? 'A'-10 : '0'
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x83); emit_.buffer().emit8(0xFE); emit_.buffer().emit8(0x0A);  // cmp rsi, 10
-        emit_.buffer().emit8(0x72); emit_.buffer().emit8(0x05);                                                           // jb .digit
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x83); emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x37);  // add rsi, 'A'-10
-        emit_.buffer().emit8(0xEB); emit_.buffer().emit8(0x04);                                                           // jmp .store
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x83); emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x30);  // add rsi, '0'
-        
-        emit_.buffer().emit8(0x40); emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x32);  // mov [rdx], sil
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC2);  // inc rdx
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xC1); emit_.buffer().emit8(0xE1); emit_.buffer().emit8(0x04);  // shl rcx, 4
-        
-        emit_.buffer().emit8(0x41); emit_.buffer().emit8(0xFE); emit_.buffer().emit8(0xC8);  // dec r8b
-        emit_.buffer().emit8(0x75);  // jnz
-        std::int8_t loop_offset = static_cast<std::int8_t>(loop_start - emit_.buffer().pos() - 1);
-        emit_.buffer().emit8(static_cast<std::uint8_t>(loop_offset));
-        
-        // null-terminate and print
-        emit_.buffer().emit8(0xC6); emit_.buffer().emit8(0x02); emit_.buffer().emit8(0x00);  // mov byte [rdx], 0
-        
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D); emit_.buffer().emit8(0x4C);
-        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x20);  // lea rcx, [rsp+0x20]
-        
-        emit_startup_call(print_offset_);
-        
-        emit_.add_smart(x64::Reg::RSP, 64);
-        
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_startup_call(print_hex_offset_);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.mov_imm32(x64::Reg::RAX, 0);
         return true;
     }
 
@@ -9807,9 +11844,10 @@ private:
         if (!generate_expr(*call.args[0])) return false;
         emit_.push(x64::Reg::RAX);  // save size on stack
         
-        emit_.sub_imm(x64::Reg::RSP, 32);
+        // push above changed alignment, so reserve 40 not 32 before the call
+        emit_.sub_imm(x64::Reg::RSP, 40);
         emit_iat_call_raw(pe::iat::GetProcessHeap);
-        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.add_smart(x64::Reg::RSP, 40);
         
         // set up HeapAlloc args: rcx=heap, rdx=0, r8=size
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
@@ -9830,13 +11868,24 @@ private:
             error("free requires pointer argument");
             return false;
         }
+
+        if (call.args[0]->is<ast::IdentExpr>() && current_scope_) {
+            const auto& name = call.args[0]->as<ast::IdentExpr>().name;
+            if (Symbol* sym = current_scope_->lookup(name)) {
+                if (stack_struct_locals_.contains(sym)) {
+                    emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+                    return true;
+                }
+            }
+        }
         
         if (!generate_expr(*call.args[0])) return false;
         emit_.push(x64::Reg::RAX);  // save ptr (GetProcessHeap clobbers volatiles)
         
-        emit_.sub_imm(x64::Reg::RSP, 32);
+        // push above changed alignment, so reserve 40 not 32 before the call
+        emit_.sub_imm(x64::Reg::RSP, 40);
         emit_iat_call_raw(pe::iat::GetProcessHeap);
-        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.add_smart(x64::Reg::RSP, 40);
         
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
         emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
@@ -10246,7 +12295,7 @@ private:
         std::size_t done = emit_.jcc_rel32(x64::Emitter::CC_E);
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1); // inc rcx
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCA); // dec rdx
-        emit_.jmp_rel32(static_cast<std::int32_t>(loop_top - emit_.buffer().pos() - 5));
+        emit_jmp_rel32_to(loop_top);
 
         emit_.patch_jump(read_char);
         emit_.buffer().emit8(0x80); emit_.buffer().emit8(0x39); emit_.buffer().emit8(0x00); // cmp byte [rcx], 0
@@ -12440,13 +14489,25 @@ private:
         // r12 = context ptr (callee-saved so it survives the call)
         emit_.mov(x64::Reg::R12, x64::Reg::RCX);
 
+        auto fn_info = functions_.find(fn_name);
+        const std::vector<Type>* param_types = fn_info != functions_.end() ? &fn_info->second.param_types : nullptr;
+
         // load function ptr and args from context
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, CTX_FN_PTR);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::R12, CTX_ARG0);
-        emit_.mov_load(x64::Reg::RDX, x64::Reg::R12, CTX_ARG1);
-        emit_.mov_load(x64::Reg::R8, x64::Reg::R12, CTX_ARG2);
-        emit_.mov_load(x64::Reg::R9, x64::Reg::R12, CTX_ARG3);
-        emit_.call(x64::Reg::RAX);
+        emit_.mov_load(x64::Reg::R11, x64::Reg::R12, CTX_FN_PTR);
+        constexpr std::int32_t arg_offsets[] = {CTX_ARG0, CTX_ARG1, CTX_ARG2, CTX_ARG3};
+        for (std::size_t i = 0; i < 4; ++i) {
+            bool float_param = param_types && i < param_types->size() && (*param_types)[i].is_float();
+            if (float_param) {
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, arg_offsets[i]);
+                emit_xmm_load_f64_bits_from_reg(static_cast<std::uint8_t>(i), x64::Reg::RAX);
+                if (auto* prim = std::get_if<PrimitiveType>(&(*param_types)[i].kind); prim && *prim == PrimitiveType::F32) {
+                    emit_xmm_convert_f64_to_f32(static_cast<std::uint8_t>(i));
+                }
+            } else {
+                emit_.mov_load(x64::ARG_REGS[i], x64::Reg::R12, arg_offsets[i]);
+            }
+        }
+        emit_.call(x64::Reg::R11);
 
         // store result
         emit_.mov_store(x64::Reg::R12, CTX_RESULT, x64::Reg::RAX);
@@ -12514,6 +14575,7 @@ private:
         std::vector<std::int32_t> arg_temps;
         for (std::size_t i = 0; i < spawn.args.size(); ++i) {
             if (!generate_expr(*spawn.args[i])) return false;
+            if (!emit_coerce_rax_to_type(fn_it->second.param_types[i], spawn.args[i].get())) return false;
             auto& tmp = current_scope_->define("__spawn_arg_" + std::to_string(i) + "_" + std::to_string(sid),
                 Type::make_primitive(PrimitiveType::I64), true);
             emit_.mov_store(x64::Reg::RBP, tmp.stack_offset, x64::Reg::RAX);
@@ -12563,9 +14625,7 @@ private:
         emit_.buffer().emit8(0x05); // lea r8, [rip+disp32]
         std::size_t stub_fixup = emit_.buffer().pos();
         emit_.buffer().emit32(0);
-        std::int32_t stub_rel = static_cast<std::int32_t>(stub_offset)
-            - static_cast<std::int32_t>(stub_fixup + 4);
-        emit_.buffer().patch32(stub_fixup, static_cast<std::uint32_t>(stub_rel));
+        patch_rel32(stub_fixup, stub_offset);
         // r9 = context ptr
         emit_.mov_load(x64::Reg::R9, x64::Reg::RBP, ctx_ptr_sym.stack_offset);
         if (!emit_thread_spawn_call()) return false;
@@ -12657,6 +14717,7 @@ private:
     struct CapturedVar {
         std::string name;
         std::int32_t parent_offset;
+        Type type;
     };
 
     // emits the inner loop function that each worker thread runs
@@ -12672,6 +14733,10 @@ private:
             .return_type = Type::make_primitive(PrimitiveType::I64)
         };
         auto& body_info = functions_[layout.body_fn];
+        body_info.param_types.reserve(3);
+        body_info.param_types.push_back(Type::make_primitive(PrimitiveType::I64));
+        body_info.param_types.push_back(Type::make_primitive(PrimitiveType::I64));
+        body_info.param_types.push_back(Type::make_primitive(PrimitiveType::I64));
         body_info.code_offset = emit_.buffer().pos();
 
         std::size_t scope_mark = scopes_.size();
@@ -12692,10 +14757,22 @@ private:
         // copy captured variables from parent frame into our local frame
         // r8 still has parent rbp at this point
         for (const auto& cap : captures) {
-            auto& local = current_scope_->define(cap.name,
-                Type::make_primitive(PrimitiveType::I64), true);
-            emit_.mov_load(x64::Reg::RAX, x64::Reg::R8, cap.parent_offset);
-            emit_.mov_store(x64::Reg::RBP, local.stack_offset, x64::Reg::RAX);
+            auto& local = current_scope_->define(cap.name, cap.type.clone(), true);
+            reserve_symbol_stack_storage(local);
+            if (stack_struct_locals_.contains(&local)) {
+                auto struct_it = structs_.find(*get_struct_name(local.type));
+                std::size_t size = struct_it != structs_.end() && struct_it->second.total_size > 0
+                    ? struct_it->second.total_size
+                    : 8;
+                for (std::size_t offset = 0; offset < size; offset += 8) {
+                    auto chunk = static_cast<std::int32_t>(offset);
+                    emit_.mov_load(x64::Reg::RAX, x64::Reg::R8, cap.parent_offset + chunk);
+                    emit_.mov_store(x64::Reg::RBP, local.stack_offset + chunk, x64::Reg::RAX);
+                }
+            } else {
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::R8, cap.parent_offset);
+                emit_.mov_store(x64::Reg::RBP, local.stack_offset, x64::Reg::RAX);
+            }
         }
 
         // loop variable
@@ -12720,8 +14797,7 @@ private:
         emit_.add_smart(x64::Reg::RAX, 1);
         emit_.mov_store(x64::Reg::RBP, loop_var.stack_offset, x64::Reg::RAX);
 
-        std::int32_t loop_rel = static_cast<std::int32_t>(loop_top - emit_.buffer().pos() - 5);
-        emit_.jmp_rel32(loop_rel);
+        emit_jmp_rel32_to(loop_top);
         emit_.patch_jump(loop_exit);
 
         // return 0
@@ -12859,9 +14935,7 @@ private:
         emit_.buffer().emit8(0x05);
         std::size_t stub_fix2 = emit_.buffer().pos();
         emit_.buffer().emit32(0);
-        std::int32_t srel = static_cast<std::int32_t>(layout.stub_offset)
-            - static_cast<std::int32_t>(stub_fix2 + 4);
-        emit_.buffer().patch32(stub_fix2, static_cast<std::uint32_t>(srel));
+        patch_rel32(stub_fix2, layout.stub_offset);
 
         emit_.sub_imm(x64::Reg::RSP, 48);
         emit_.mov_imm32(x64::Reg::RAX, 0);
@@ -12962,7 +15036,7 @@ private:
                 if (name.starts_with("__pfor_")) continue;
                 if (name == pfor.name) continue;
                 if (!seen_captures.insert(name).second) continue;
-                captures.push_back({name, sym.stack_offset});
+                captures.push_back({name, sym.stack_offset, sym.type.clone()});
             }
         }
 
@@ -13107,6 +15181,23 @@ private:
                     if (stmts_mutate_ident(s.then_block, target, then_shadowed)) return true;
                     auto else_shadowed = shadowed;
                     return s.else_block && stmts_mutate_ident(*s.else_block, target, else_shadowed);
+                },
+                [&](const ast::SwitchStmt& s) -> bool {
+                    if (expr_mutates_ident(*s.subject, target, shadowed)) return true;
+                    for (const auto& branch : s.cases) {
+                        if (expr_mutates_ident(*branch.value, target, shadowed)) {
+                            return true;
+                        }
+                        auto branch_shadowed = shadowed;
+                        if (stmts_mutate_ident(branch.body, target, branch_shadowed)) {
+                            return true;
+                        }
+                    }
+                    if (s.else_block) {
+                        auto else_shadowed = shadowed;
+                        return stmts_mutate_ident(*s.else_block, target, else_shadowed);
+                    }
+                    return false;
                 },
                 [&](const ast::WhileStmt& s) -> bool {
                     if (expr_mutates_ident(*s.condition, target, shadowed)) return true;

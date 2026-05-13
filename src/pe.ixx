@@ -386,7 +386,7 @@ public:
         opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = static_cast<DWORD>(rdata_rva);
         opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = 40;
         opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].VirtualAddress = static_cast<DWORD>(imports.iat_rva);
-        opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].Size = imports.iat_size;
+        opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].Size = checked_u32(imports.iat_size, "IAT data directory size");
         opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress = static_cast<DWORD>(reloc_rva);
         opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = static_cast<DWORD>(reloc_raw_size);
         
@@ -544,9 +544,25 @@ public:
         
         IMAGE_FILE_HEADER fh{};
         std::memcpy(&fh, pe_data.data() + pe_offset + 4, sizeof(fh));
+
+        if (fh.Machine != IMAGE_FILE_MACHINE_AMD64) {
+            errors.push_back("Machine is 0x" + to_hex16(fh.Machine) + " (expected 0x8664 for AMD64)");
+        }
+        if (fh.NumberOfSections == 0) {
+            errors.push_back("NumberOfSections is zero");
+        }
         
+        if (fh.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64)) {
+            errors.push_back("SizeOfOptionalHeader (0x" + to_hex16(fh.SizeOfOptionalHeader) + ") smaller than IMAGE_OPTIONAL_HEADER64 (0x" + to_hex16(sizeof(IMAGE_OPTIONAL_HEADER64)) + ")");
+            return errors;
+        }
+
         IMAGE_OPTIONAL_HEADER64 opt{};
         std::memcpy(&opt, pe_data.data() + pe_offset + 4 + sizeof(IMAGE_FILE_HEADER), sizeof(opt));
+
+        if (opt.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+            errors.push_back("OptionalHeader.Magic is 0x" + to_hex16(opt.Magic) + " (expected 0x20B for PE32+)");
+        }
         
         DWORD file_align = opt.FileAlignment;
         DWORD sect_align = opt.SectionAlignment;
@@ -558,14 +574,32 @@ public:
             errors.push_back("SectionAlignment is zero");
             return errors;
         }
+        auto is_power_of_two = [](DWORD v) {
+            return v != 0 && (v & (v - 1)) == 0;
+        };
+        if (!is_power_of_two(file_align)) {
+            errors.push_back("FileAlignment (0x" + to_hex32(file_align) + ") is not a power of two");
+        }
+        if (!is_power_of_two(sect_align)) {
+            errors.push_back("SectionAlignment (0x" + to_hex32(sect_align) + ") is not a power of two");
+        }
+        if (file_align < 0x200 || file_align > 0x10000) {
+            errors.push_back("FileAlignment (0x" + to_hex32(file_align) + ") is outside PE-normal range 0x200..0x10000");
+        }
+        if (sect_align < file_align) {
+            errors.push_back("SectionAlignment (0x" + to_hex32(sect_align) + ") is smaller than FileAlignment (0x" + to_hex32(file_align) + ")");
+        }
         
         // SizeOfHeaders should be aligned to FileAlignment
         if (opt.SizeOfHeaders % file_align != 0) {
             errors.push_back("SizeOfHeaders (0x" + to_hex32(opt.SizeOfHeaders) + ") not aligned to FileAlignment (0x" + to_hex32(file_align) + ")");
         }
+        if (opt.SizeOfHeaders > pe_data.size()) {
+            errors.push_back("SizeOfHeaders (0x" + to_hex32(opt.SizeOfHeaders) + ") extends past end of file (0x" + to_hex32(static_cast<std::uint32_t>(pe_data.size())) + ")");
+        }
         
         // check that SizeOfHeaders covers all the actual header content
-        std::size_t actual_headers = pe_offset + 4 + sizeof(IMAGE_FILE_HEADER) + sizeof(IMAGE_OPTIONAL_HEADER64)
+        std::size_t actual_headers = pe_offset + 4 + sizeof(IMAGE_FILE_HEADER) + fh.SizeOfOptionalHeader
                                    + fh.NumberOfSections * sizeof(IMAGE_SECTION_HEADER);
         if (opt.SizeOfHeaders < actual_headers) {
             errors.push_back("SizeOfHeaders (0x" + to_hex32(opt.SizeOfHeaders) + ") smaller than actual headers (0x" + to_hex32(static_cast<DWORD>(actual_headers)) + ")");
@@ -577,6 +611,12 @@ public:
         }
         if (opt.MajorSubsystemVersion < 6) {
             errors.push_back("MajorSubsystemVersion (" + std::to_string(opt.MajorSubsystemVersion) + ") < 6");
+        }
+        if (opt.ImageBase % 0x10000 != 0) {
+            errors.push_back("ImageBase (0x" + std::format("{:016X}", opt.ImageBase) + ") is not aligned to 64KB");
+        }
+        if (opt.NumberOfRvaAndSizes < IMAGE_DIRECTORY_ENTRY_BASERELOC + 1) {
+            errors.push_back("NumberOfRvaAndSizes (" + std::to_string(opt.NumberOfRvaAndSizes) + ") does not cover required data directories");
         }
         
         // parse section headers
@@ -593,26 +633,72 @@ public:
         }
         
         DWORD prev_rva = 0;
+        std::size_t prev_virtual_end = 0;
+        std::string prev_virtual_name;
+        std::size_t prev_raw_end = opt.SizeOfHeaders;
+        std::string prev_raw_name = "PE headers";
         for (int i = 0; i < static_cast<int>(sections.size()); i++) {
             const auto& s = sections[i];
             char name[9]{};
             std::memcpy(name, s.Name, 8);
+            std::string section_name(name);
             
             // rva alignment
             if (s.VirtualAddress % sect_align != 0) {
-                errors.push_back("section " + std::string(name) + " VirtualAddress (0x" + to_hex32(s.VirtualAddress) + ") not aligned to SectionAlignment (0x" + to_hex32(sect_align) + ")");
+                errors.push_back("section " + section_name + " VirtualAddress (0x" + to_hex32(s.VirtualAddress) + ") not aligned to SectionAlignment (0x" + to_hex32(sect_align) + ")");
             }
             
             // file offset alignment (0 is ok, means uninitialized)
             if (s.PointerToRawData != 0 && s.PointerToRawData % file_align != 0) {
-                errors.push_back("section " + std::string(name) + " PointerToRawData (0x" + to_hex32(s.PointerToRawData) + ") not aligned to FileAlignment (0x" + to_hex32(file_align) + ")");
+                errors.push_back("section " + section_name + " PointerToRawData (0x" + to_hex32(s.PointerToRawData) + ") not aligned to FileAlignment (0x" + to_hex32(file_align) + ")");
+            }
+
+            if (s.SizeOfRawData != 0 && s.PointerToRawData == 0) {
+                errors.push_back("section " + section_name + " has SizeOfRawData (0x" + to_hex32(s.SizeOfRawData) + ") but PointerToRawData is zero");
+            }
+
+            if (s.SizeOfRawData == 0 && s.PointerToRawData != 0) {
+                errors.push_back("section " + section_name + " has PointerToRawData (0x" + to_hex32(s.PointerToRawData) + ") but SizeOfRawData is zero");
+            }
+
+            if (s.SizeOfRawData != 0) {
+                if (s.PointerToRawData < opt.SizeOfHeaders) {
+                    errors.push_back("section " + section_name + " PointerToRawData (0x" + to_hex32(s.PointerToRawData) + ") overlaps PE headers ending at 0x" + to_hex32(opt.SizeOfHeaders));
+                }
+                if (!range_fits(static_cast<std::size_t>(s.PointerToRawData),
+                                static_cast<std::size_t>(s.SizeOfRawData),
+                                pe_data.size())) {
+                    errors.push_back("section " + section_name + " raw span [0x" + to_hex32(s.PointerToRawData) + ", 0x" + to_hex32(s.PointerToRawData + s.SizeOfRawData) + ") extends past end of file (0x" + to_hex32(static_cast<std::uint32_t>(pe_data.size())) + ")");
+                }
+
+                std::size_t raw_start = s.PointerToRawData;
+                std::size_t raw_end = raw_start + s.SizeOfRawData;
+                if (raw_start < prev_raw_end) {
+                    errors.push_back("section " + section_name + " raw data overlaps previous span ending at 0x" + to_hex32(static_cast<std::uint32_t>(prev_raw_end)) + " (" + prev_raw_name + ")");
+                } else {
+                    prev_raw_end = raw_end;
+                    prev_raw_name = section_name;
+                }
             }
             
             // monotonically increasing rvas
             if (i > 0 && s.VirtualAddress < prev_rva) {
-                errors.push_back("section " + std::string(name) + " VirtualAddress (0x" + to_hex32(s.VirtualAddress) + ") < previous section RVA (0x" + to_hex32(prev_rva) + ") - not monotonically increasing");
+                errors.push_back("section " + section_name + " VirtualAddress (0x" + to_hex32(s.VirtualAddress) + ") < previous section RVA (0x" + to_hex32(prev_rva) + ") - not monotonically increasing");
             }
             prev_rva = s.VirtualAddress;
+
+            std::size_t virtual_span = (std::max)(static_cast<std::size_t>(s.Misc.VirtualSize),
+                                                  static_cast<std::size_t>(s.SizeOfRawData));
+            if (virtual_span != 0) {
+                std::size_t virtual_start = s.VirtualAddress;
+                std::size_t virtual_end = virtual_start + val_align_up(static_cast<DWORD>(virtual_span), sect_align);
+                if (!prev_virtual_name.empty() && virtual_start < prev_virtual_end) {
+                    errors.push_back("section " + section_name + " virtual span overlaps previous section span ending at 0x" + to_hex32(static_cast<std::uint32_t>(prev_virtual_end)) + " (" + prev_virtual_name + ")");
+                } else {
+                    prev_virtual_end = virtual_end;
+                    prev_virtual_name = section_name;
+                }
+            }
         }
         
         // SizeOfImage should match last section rva + aligned virtual size
@@ -687,11 +773,28 @@ private:
         return static_cast<std::int32_t>(delta);
     }
 
+    static std::int8_t checked_rel8(std::int64_t delta, const char* what) {
+        if (delta < (std::numeric_limits<std::int8_t>::min)() ||
+            delta > (std::numeric_limits<std::int8_t>::max)()) {
+            throw std::overflow_error(std::string(what) + " does not fit in rel8");
+        }
+        return static_cast<std::int8_t>(delta);
+    }
+
     static std::uint32_t checked_u32(std::size_t value, const char* what) {
         if (value > (std::numeric_limits<std::uint32_t>::max)()) {
             throw std::overflow_error(std::string(what) + " does not fit in u32");
         }
         return static_cast<std::uint32_t>(value);
+    }
+
+    static void fail_slot_overflow(const char* name, std::size_t actual, std::size_t slot_size) {
+        std::println(std::cerr,
+                     "\033[1;91mFATAL:\033[0m {} is {} bytes but slot is only {} bytes",
+                     name,
+                     actual,
+                     slot_size);
+        std::abort();
     }
     
     struct ImportResult {
@@ -750,8 +853,9 @@ private:
             if (offset % 2) offset++;
         }
         // strings area
+        constexpr std::size_t TITLE_STORAGE_SIZE = 32;
         std::size_t str_title_off = align_up(offset, 8);
-        std::size_t rdata_needed = str_title_off + 0x40;  // some padding for strings
+        std::size_t rdata_needed = str_title_off + TITLE_STORAGE_SIZE;
         
         result.rdata.resize(rdata_needed, 0);
         
@@ -785,7 +889,7 @@ private:
         
         // string rvas
         result.str_title_rva = rdata_rva + str_title_off;
-        memset(result.rdata.data() + str_title_off, 0, 32);
+        memset(result.rdata.data() + str_title_off, 0, TITLE_STORAGE_SIZE);
         
         return result;
     }
@@ -819,6 +923,7 @@ private:
 
         if (output_is_exe(output_kind)) {
             // exe entry: call main, pass return value to ExitProcess
+            [[maybe_unused]] std::size_t entry_start = code.size();
             emit8(code, 0x55);                                     // push rbp
             emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);    // mov rbp, rsp
             emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x20);  // sub rsp, 0x20
@@ -847,10 +952,15 @@ private:
             emit32(code, static_cast<std::uint32_t>(exit_rel));
             
             emit8(code, 0xCC);  // int3 - should never reach
+            [[maybe_unused]] std::size_t entry_bytes = code.size() - entry_start;
+            if (entry_bytes > EXE_ENTRY_SIZE) {
+                fail_slot_overflow("exe entry stub", entry_bytes, EXE_ENTRY_SIZE);
+            }
             
             while (code.size() < EXE_ENTRY_SIZE) emit8(code, 0xCC);
         } else {
             // === DllMain ===
+            [[maybe_unused]] std::size_t dllmain_start = code.size();
             emit8(code, 0x55);  // push rbp
             emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);  // mov rbp, rsp
             emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x30);  // sub rsp, 0x30
@@ -885,15 +995,20 @@ private:
                 emit_call_iat(code, text_rva, imports.iat_create_thread);
             }
             
-            code[jne_fixup] = static_cast<std::uint8_t>(code.size() - jne_fixup - 1);
+            patch8(code, jne_fixup, "DllMain reason jne");
             emit8(code, 0xB8); emit32(code, 1);  // mov eax, 1
             emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xC4); emit8(code, 0x30);  // add rsp, 0x30
             emit8(code, 0x5D);  // pop rbp
             emit8(code, 0xC3);  // ret
+            [[maybe_unused]] std::size_t dllmain_bytes = code.size() - dllmain_start;
+            if (dllmain_bytes > DLLMAIN_SIZE) {
+                fail_slot_overflow("DllMain stub", dllmain_bytes, DLLMAIN_SIZE);
+            }
             
             while (code.size() < DLLMAIN_SIZE) emit8(code, 0xCC);
             
             // === thread entry - receives hModule via lpParameter, calls user main ===
+            [[maybe_unused]] std::size_t thread_start = code.size();
             emit8(code, 0x55);  // push rbp
             emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);  // mov rbp, rsp
             emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x20);  // sub rsp, 0x20
@@ -913,6 +1028,10 @@ private:
             emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xC4); emit8(code, 0x20);  // add rsp, 0x20
             emit8(code, 0x5D);  // pop rbp
             emit8(code, 0xC3);  // ret
+            [[maybe_unused]] std::size_t thread_bytes = code.size() - thread_start;
+            if (thread_bytes > THREAD_FUNC_SIZE) {
+                fail_slot_overflow("DllMain thread stub", thread_bytes, THREAD_FUNC_SIZE);
+            }
             
             while (code.size() < DLL_PRINT_OFFSET) emit8(code, 0xCC);
         }
@@ -924,6 +1043,9 @@ private:
         [[maybe_unused]] std::size_t print_start = code.size();
         build_dll_print_impl(code, text_rva, rdata_rva, imports);
         [[maybe_unused]] std::size_t print_bytes = code.size() - print_start;
+        if (print_bytes > DLL_PRINT_SIZE) {
+            fail_slot_overflow("print_impl", print_bytes, DLL_PRINT_SIZE);
+        }
         
         while (code.size() < set_title_off) emit8(code, 0xCC);
         
@@ -931,6 +1053,9 @@ private:
         [[maybe_unused]] std::size_t title_start = code.size();
         build_dll_set_title_impl(code, text_rva, rdata_rva, imports);
         [[maybe_unused]] std::size_t title_bytes = code.size() - title_start;
+        if (title_bytes > DLL_SET_TITLE_SIZE) {
+            fail_slot_overflow("set_title_impl", title_bytes, DLL_SET_TITLE_SIZE);
+        }
         
         while (code.size() < alloc_console_off) emit8(code, 0xCC);
         
@@ -938,6 +1063,9 @@ private:
         [[maybe_unused]] std::size_t alloc_start = code.size();
         build_dll_alloc_console_impl(code, text_rva, rdata_rva, imports);
         [[maybe_unused]] std::size_t alloc_bytes = code.size() - alloc_start;
+        if (alloc_bytes > DLL_ALLOC_CONSOLE_SIZE) {
+            fail_slot_overflow("alloc_console_impl", alloc_bytes, DLL_ALLOC_CONSOLE_SIZE);
+        }
         
         while (code.size() < print_hex_off) emit8(code, 0xCC);
         
@@ -955,7 +1083,7 @@ private:
         // === crash handler (VEH) ===
         [[maybe_unused]] std::size_t crash_start = code.size();
         if (healing_mode != ast::HealingMode::Off) {
-            build_crash_handler(code, text_rva, rdata_rva, imports, user_code_offset, print_off, print_hex_off, srcmap_rva, src_rva, data_rva, crash_handler_off, layout.crash_handler_size, healing_mode);
+            build_crash_handler(code, text_rva, rdata_rva, imports, user_code_offset, user_code.size(), print_off, print_hex_off, srcmap_rva, src_rva, data_rva, crash_handler_off, layout.crash_handler_size, healing_mode);
         } else {
             // release mode: catch crash, print info, freeze
             emit8(code, 0x53);                                                     // push rbx
@@ -972,14 +1100,18 @@ private:
 
             emit8(code, 0x89); emit8(code, 0xD9);                                     // mov ecx, ebx
             std::size_t hex_call1 = code.size();
-            std::int32_t hex_rel1 = static_cast<std::int32_t>((text_rva + print_hex_off) - (text_rva + hex_call1 + 5));
+            std::int32_t hex_rel1 = checked_rel32(
+                static_cast<std::int64_t>(text_rva + print_hex_off) - static_cast<std::int64_t>(text_rva + hex_call1 + 5),
+                "release crash code hex call");
             emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(hex_rel1));
 
             emit_print_inline(code, text_rva, print_off, " @0x\0", 5);
 
             emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xF1);                    // mov rcx, rsi
             std::size_t hex_call2 = code.size();
-            std::int32_t hex_rel2 = static_cast<std::int32_t>((text_rva + print_hex_off) - (text_rva + hex_call2 + 5));
+            std::int32_t hex_rel2 = checked_rel32(
+                static_cast<std::int64_t>(text_rva + print_hex_off) - static_cast<std::int64_t>(text_rva + hex_call2 + 5),
+                "release crash rip hex call");
             emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(hex_rel2));
 
             emit_print_inline(code, text_rva, print_off, "\n\0", 2);
@@ -988,6 +1120,9 @@ private:
             emit8(code, 0xEB); emit8(code, 0xFE);                                     // jmp $
         }
         [[maybe_unused]] std::size_t crash_bytes = code.size() - crash_start;
+        if (crash_bytes > layout.crash_handler_size) {
+            fail_slot_overflow("crash handler", crash_bytes, layout.crash_handler_size);
+        }
         
         while (code.size() < user_code_offset) emit8(code, 0xCC);
 
@@ -1009,11 +1144,11 @@ private:
     
     // Embedded dll_print - rcx = null-terminated string
     void build_dll_print_impl(std::vector<std::uint8_t>& code, std::size_t text_rva, 
-                               std::size_t rdata_rva, const ImportResult& imports) {
-        // push rbp; mov rbp, rsp; sub rsp, 0x30
+                               [[maybe_unused]] std::size_t rdata_rva, const ImportResult& imports) {
+        // push rbp; mov rbp, rsp; sub rsp, 0x40
         emit8(code, 0x55);
         emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);
-        emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x30);
+        emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x40);
         
         // Save string ptr in [rbp-8]
         emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0x4D); emit8(code, 0xF8);  // mov [rbp-8], rcx
@@ -1022,7 +1157,7 @@ private:
         emit8(code, 0x48); emit8(code, 0xC7); emit8(code, 0xC1);  // mov rcx, -11
         emit32(code, 0xFFFFFFF5);
         emit_call_iat(code, text_rva, imports.iat_get_std_handle);
-        emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0x45); emit8(code, 0xF0);  // mov [rbp-0x10], rax (handle)
+        emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0x45); emit8(code, 0xE8);  // mov [rbp-0x18], rax (handle)
         
         // Calculate string length (inline strlen)
         // rax = string pointer, r8d = length counter
@@ -1039,30 +1174,29 @@ private:
         emit8(code, 0x41); emit8(code, 0xFF); emit8(code, 0xC0);  // inc r8d - 3 bytes
         // jmp .loop (back to loop_start)
         emit8(code, 0xEB);  // jmp short
-        std::ptrdiff_t jmp_back_dist = static_cast<std::ptrdiff_t>(loop_start) - static_cast<std::ptrdiff_t>(code.size() + 1);
-        assert(jmp_back_dist >= -128 && jmp_back_dist <= 127 && "strlen loop jmp doesnt fit in rel8");
-        std::int8_t jmp_back = static_cast<std::int8_t>(jmp_back_dist);
-        emit8(code, static_cast<std::uint8_t>(jmp_back));
+        emit_rel8(code,
+                  static_cast<std::int64_t>(loop_start) - static_cast<std::int64_t>(code.size() + 1),
+                  "print strlen loop jmp");
         // .done: r8 now contains the length
         
         // WriteFile(handle, str, len, &written, NULL)
-        emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10] (handle)
+        emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xE8);  // mov rcx, [rbp-0x18] (handle)
         emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x55); emit8(code, 0xF8);  // mov rdx, [rbp-8] (string)
         // r8 already has the length!
-        emit8(code, 0x4C); emit8(code, 0x8D); emit8(code, 0x4D); emit8(code, 0xEC);  // lea r9, [rbp-0x14]
+        emit8(code, 0x4C); emit8(code, 0x8D); emit8(code, 0x4D); emit8(code, 0xE4);  // lea r9, [rbp-0x1C]
         emit8(code, 0x48); emit8(code, 0xC7); emit8(code, 0x44); emit8(code, 0x24); emit8(code, 0x20);
         emit32(code, 0);
         emit_call_iat(code, text_rva, imports.iat_write_file);
 
-        // add rsp, 0x30; pop rbp; ret
-        emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xC4); emit8(code, 0x30);
+        // add rsp, 0x40; pop rbp; ret
+        emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xC4); emit8(code, 0x40);
         emit8(code, 0x5D);
         emit8(code, 0xC3);
     }
     
     // dll_set_title_impl - RCX = string pointer
     void build_dll_set_title_impl(std::vector<std::uint8_t>& code, std::size_t text_rva, 
-                                   std::size_t rdata_rva, const ImportResult& imports) {
+                                   [[maybe_unused]] std::size_t rdata_rva, const ImportResult& imports) {
         emit8(code, 0x55);  // push rbp
         emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);  // mov rbp, rsp
         emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x20);  // sub rsp, 0x20
@@ -1077,7 +1211,7 @@ private:
     
     // dll_alloc_console_impl - no arguments, allocates a console window
     void build_dll_alloc_console_impl(std::vector<std::uint8_t>& code, std::size_t text_rva, 
-                                       std::size_t rdata_rva, const ImportResult& imports) {
+                                       [[maybe_unused]] std::size_t rdata_rva, const ImportResult& imports) {
         emit8(code, 0x55);  // push rbp
         emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);  // mov rbp, rsp
         emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x20);  // sub rsp, 0x20
@@ -1137,9 +1271,10 @@ private:
     //   [rbp-0x10] = stdout handle
     //   [rbp-0x22]..[rbp-0x13] = 16 hex digit buffer
     //   [rbp-0x12] = null terminator
+    //   [rbp-0x30]..[rbp-0x2D] = bytes-written scratch for WriteFile
     //   rsp = rbp - 0x50
     void build_dll_print_hex_impl(std::vector<std::uint8_t>& code, std::size_t text_rva, 
-                                   std::size_t rdata_rva, const ImportResult& imports) {
+                                   [[maybe_unused]] std::size_t rdata_rva, const ImportResult& imports) {
         emit8(code, 0x55);                                     // push rbp
         emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xE5);    // mov rbp, rsp
         emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xEC); emit8(code, 0x50);  // sub rsp, 0x50
@@ -1176,7 +1311,7 @@ private:
         emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10]
         emit8(code, 0x48); emit8(code, 0x8D); emit8(code, 0x55); emit8(code, 0xDE);  // lea rdx, [rbp-0x22]
         emit8(code, 0x41); emit8(code, 0xB8); emit32(code, 16);                    // mov r8d, 16
-        emit8(code, 0x4C); emit8(code, 0x8D); emit8(code, 0x4D); emit8(code, 0xEC);  // lea r9, [rbp-0x14]
+        emit8(code, 0x4C); emit8(code, 0x8D); emit8(code, 0x4D); emit8(code, 0xD0);  // lea r9, [rbp-0x30]
         emit8(code, 0x48); emit8(code, 0xC7); emit8(code, 0x44); emit8(code, 0x24); emit8(code, 0x20);
         emit32(code, 0);                                                       // mov qword [rsp+0x20], 0
         emit_call_iat(code, text_rva, imports.iat_write_file);
@@ -1189,11 +1324,13 @@ private:
     // jmp over inline string data, lea rcx to it, call print_impl
     void emit_print_inline(std::vector<std::uint8_t>& code, std::size_t text_rva,
                             std::size_t print_offset, const char* str, std::size_t len) {
-        // jmp over the string data
-        emit8(code, 0xEB);
-        emit8(code, static_cast<std::uint8_t>(len));
+        // use a near jump so longer inline strings cant silently overflow rel8
+        emit8(code, 0xE9);
+        std::size_t skip_fixup = code.size();
+        emit32(code, 0);
         std::size_t str_start = code.size();
         for (std::size_t i = 0; i < len; i++) emit8(code, static_cast<std::uint8_t>(str[i]));
+        patch32(code, skip_fixup);
         // lea rcx, [rip + back_to_str]
         std::size_t lea_pos = code.size();
         std::int32_t str_rel = checked_rel32(
@@ -1228,11 +1365,15 @@ private:
         emit8(code, 0x88); emit8(code, 0x16);                     // mov [rsi], dl
         emit8(code, 0x85); emit8(code, 0xC0);                     // test eax, eax
         emit8(code, 0x75);                                      // jnz digit_loop
-        emit8(code, static_cast<std::uint8_t>(digit_loop - (code.size() + 1)));
+        emit_rel8(code,
+                  static_cast<std::int64_t>(digit_loop) - static_cast<std::int64_t>(code.size() + 1),
+                  "decimal print digit loop jnz");
         // mov rcx, rsi; call print_impl
         emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xF1);
         std::size_t cp = code.size();
-        std::int32_t pr = static_cast<std::int32_t>((text_rva + print_offset) - (text_rva + cp + 5));
+        std::int32_t pr = checked_rel32(
+            static_cast<std::int64_t>(text_rva + print_offset) - static_cast<std::int64_t>(text_rva + cp + 5),
+            "decimal print call");
         emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(pr));
     }
 
@@ -1247,6 +1388,24 @@ private:
         code[fixup_pos + 3] = static_cast<std::uint8_t>((rel >> 24) & 0xFF);
     }
 
+    static void emit_rel8(std::vector<std::uint8_t>& code, std::int64_t delta, const char* what) {
+        emit8(code, static_cast<std::uint8_t>(checked_rel8(delta, what)));
+    }
+
+    static void patch8(std::vector<std::uint8_t>& code, std::size_t fixup_pos, const char* what) {
+        std::int8_t rel = checked_rel8(
+            static_cast<std::int64_t>(code.size()) - static_cast<std::int64_t>(fixup_pos + 1),
+            what);
+        code[fixup_pos] = static_cast<std::uint8_t>(rel);
+    }
+
+    static void patch8_to(std::vector<std::uint8_t>& code, std::size_t fixup_pos, std::size_t target_pos, const char* what) {
+        std::int8_t rel = checked_rel8(
+            static_cast<std::int64_t>(target_pos) - static_cast<std::int64_t>(fixup_pos + 1),
+            what);
+        code[fixup_pos] = static_cast<std::uint8_t>(rel);
+    }
+
     // crash handler - vectored exception handler
     // register usage:
     //   rbx  = module base (computed via lea rip trick)
@@ -1258,12 +1417,11 @@ private:
     //   [rbp-0x08] = EXCEPTION_POINTERS* (original rcx)
     //   [rbp-0x10] = crash RIP
     //   [rbp-0x18] = CONTEXT*
-    // note: all short jumps (jb, jae, jne, je, jmp rel8) in this function are between
-    // labels within a fixed-size handler slot, so offsets are guaranteed to fit in int8.
-    // if the handler ever grows past its slot the overflow check at the end will catch it.
+    // note: the handler still uses rel8 branches in a few tight local loops, but they are
+    // now range-checked so growth fails loudly instead of silently wrapping.
     void build_crash_handler(std::vector<std::uint8_t>& code, std::size_t text_rva, 
-                              std::size_t rdata_rva, const ImportResult& imports,
-                              std::size_t user_code_offset, std::size_t print_offset,
+                              [[maybe_unused]] std::size_t rdata_rva, const ImportResult& imports,
+                              std::size_t user_code_offset, std::size_t user_code_size, std::size_t print_offset,
                               std::size_t print_hex_offset, std::size_t srcmap_rva,
                               std::size_t src_rva, std::size_t data_rva,
                               std::size_t crash_handler_off, std::size_t crash_handler_size,
@@ -1324,8 +1482,8 @@ private:
         emit8(code, 0xC3);                                      // ret
         // .not_reentrant:
         std::size_t not_reentrant = code.size();
-        code[jb_not_reentrant] = static_cast<std::uint8_t>(not_reentrant - (jb_not_reentrant + 1));
-        code[jae_not_reentrant] = static_cast<std::uint8_t>(not_reentrant - (jae_not_reentrant + 1));
+        patch8_to(code, jb_not_reentrant, not_reentrant, "handler reentrant low bound");
+        patch8_to(code, jae_not_reentrant, not_reentrant, "handler reentrant high bound");
 
         std::size_t jne_silent_freeze = 0;
         if (healing_mode == ast::HealingMode::Freeze) {
@@ -1408,19 +1566,21 @@ private:
 
             // .av_write: tag 2
             std::size_t av_write_label = code.size();
-            code[jnz_av_write] = static_cast<std::uint8_t>(av_write_label - (jnz_av_write + 1));
+            patch8_to(code, jnz_av_write, av_write_label, "av write branch");
             emit8(code, 0xC7); emit8(code, 0x45); emit8(code, 0xD4); emit32(code, 2);  // mov dword [rbp-0x2C], 2
             const char av_write_str[] = "write to 0x\0";
             emit_print_inline(code, text_rva, print_offset, av_write_str, sizeof(av_write_str));
 
             // .av_addr: print target address from ExceptionInformation[1]
             std::size_t av_addr_label = code.size();
-            code[jmp_av_addr] = static_cast<std::uint8_t>(av_addr_label - (jmp_av_addr + 1));
+            patch8_to(code, jmp_av_addr, av_addr_label, "av addr jump");
 
             // load target address into rcx and call print_hex_impl
             emit8(code, 0x49); emit8(code, 0x8B); emit8(code, 0x4F); emit8(code, 0x28);  // mov rcx, [r15+0x28]
             std::size_t hex_call1 = code.size();
-            std::int32_t hex_rel1 = static_cast<std::int32_t>((text_rva + print_hex_offset) - (text_rva + hex_call1 + 5));
+            std::int32_t hex_rel1 = checked_rel32(
+                static_cast<std::int64_t>(text_rva + print_hex_offset) - static_cast<std::int64_t>(text_rva + hex_call1 + 5),
+                "av address hex call");
             emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(hex_rel1));
 
             const char av_close[] = ")\n\0";
@@ -1493,12 +1653,14 @@ private:
             std::size_t je_bp_found = code.size(); emit32(code, 0);
             // .bp_scan_next:
             std::size_t bp_scan_next = code.size();
-            code[jne_bp_scan_next] = static_cast<std::uint8_t>(bp_scan_next - (jne_bp_scan_next + 1));
+            patch8_to(code, jne_bp_scan_next, bp_scan_next, "bp scan next jne");
             emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xC6); emit8(code, 0x10);  // add rsi, 16
             emit8(code, 0xFF); emit8(code, 0xC7);                                     // inc edi
             emit8(code, 0xFF); emit8(code, 0xC9);                                     // dec ecx
             emit8(code, 0x75);                                                       // jnz bp_scan_loop
-            emit8(code, static_cast<std::uint8_t>(bp_scan_loop - (code.size() + 1)));
+            emit_rel8(code,
+                      static_cast<std::int64_t>(bp_scan_loop) - static_cast<std::int64_t>(code.size() + 1),
+                      "bp scan loop jnz");
 
             // not found in table -> static breakpoint
             // set bp_type = 1 in repl state
@@ -1642,6 +1804,50 @@ private:
         patch32(code, jmp_after_exc_bp);
         patch32(code, jmp_after_exc_bp_static);
 
+        const char fault_rip[] = "  Fault RIP: \0";
+        emit_print_inline(code, text_rva, print_offset, fault_rip, sizeof(fault_rip));
+        emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);      // mov rcx, [rbp-0x10]
+        {
+            std::size_t call_pos = code.size();
+            std::int32_t rel = checked_rel32(
+                static_cast<std::int64_t>(text_rva + print_hex_offset) - static_cast<std::int64_t>(text_rva + call_pos + 5),
+                "fault rip hex call");
+            emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(rel));
+        }
+        {
+            const char fault_rva_nl[] = "\n\0";
+            emit_print_inline(code, text_rva, print_offset, fault_rva_nl, sizeof(fault_rva_nl));
+        }
+
+        const char image_base[] = "  Opus image base: \0";
+        emit_print_inline(code, text_rva, print_offset, image_base, sizeof(image_base));
+        emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xD9);                            // mov rcx, rbx
+        {
+            std::size_t call_pos = code.size();
+            std::int32_t rel = checked_rel32(
+                static_cast<std::int64_t>(text_rva + print_hex_offset) - static_cast<std::int64_t>(text_rva + call_pos + 5),
+                "image base hex call");
+            emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(rel));
+        }
+        {
+            const char nl[] = "\n\0";
+            emit_print_inline(code, text_rva, print_offset, nl, sizeof(nl));
+        }
+
+        {
+            const char fault_rva[] = "  Fault RVA: 0x\0";
+            emit_print_inline(code, text_rva, print_offset, fault_rva, sizeof(fault_rva));
+            emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10]
+            emit8(code, 0x48); emit8(code, 0x29); emit8(code, 0xD9);                      // sub rcx, rbx
+            std::size_t call_pos = code.size();
+            std::int32_t rel = checked_rel32(
+                static_cast<std::int64_t>(text_rva + print_hex_offset) - static_cast<std::int64_t>(text_rva + call_pos + 5),
+                "fault rva hex call");
+            emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(rel));
+            const char fault_rva_nl[] = "\n\0";
+            emit_print_inline(code, text_rva, print_offset, fault_rva_nl, sizeof(fault_rva_nl));
+        }
+
         // ---- source context display (existing logic, restructured) ----
         if (srcmap_rva == 0 || src_rva == 0) {
             // no debug info compiled in - simple fallback
@@ -1666,6 +1872,12 @@ private:
             emit8(code, 0x0F); emit8(code, 0x88);
             std::size_t js_fallback = code.size(); emit32(code, 0);
 
+            // jae -> fallback (crash after end of user code)
+            emit8(code, 0x49); emit8(code, 0x81); emit8(code, 0xFE);
+            emit32(code, checked_u32(user_code_size, "crash handler user code size"));
+            emit8(code, 0x0F); emit8(code, 0x83);
+            std::size_t jae_fallback = code.size(); emit32(code, 0);
+
             // ---- srcmap linear scan ----
             emit8(code, 0x48); emit8(code, 0x8D); emit8(code, 0xB3);                    // lea rsi, [rbx + srcmap_rva]
             emit32(code, static_cast<std::uint32_t>(srcmap_rva));
@@ -1688,7 +1900,9 @@ private:
             emit8(code, 0x48); emit8(code, 0x83); emit8(code, 0xC6); emit8(code, 0x08);    // add rsi, 8
             emit8(code, 0xFF); emit8(code, 0xC9);                                     // dec ecx
             emit8(code, 0x75);                                                       // jnz scan_loop
-            emit8(code, static_cast<std::uint8_t>(scan_loop - (code.size() + 1)));
+            emit_rel8(code,
+                      static_cast<std::int64_t>(scan_loop) - static_cast<std::int64_t>(code.size() + 1),
+                      "srcmap scan loop jnz");
 
             // check if we found anything
             emit8(code, 0x45); emit8(code, 0x85); emit8(code, 0xE4);                    // test r12d, r12d
@@ -1746,11 +1960,13 @@ private:
             // .no_newline:
             emit8(code, 0x49); emit8(code, 0xFF); emit8(code, 0xC5);                    // inc r13
             emit8(code, 0xEB);                                                       // jmp skip_loop
-            emit8(code, static_cast<std::uint8_t>(skip_loop - (code.size() + 1)));
+            emit_rel8(code,
+                      static_cast<std::int64_t>(skip_loop) - static_cast<std::int64_t>(code.size() + 1),
+                      "source skip loop jump");
             // .done_skip:
             std::size_t done_skip = code.size();
-            code[jge_done_skip] = static_cast<std::uint8_t>(done_skip - (jge_done_skip + 1));
-            code[je_done_skip] = static_cast<std::uint8_t>(done_skip - (je_done_skip + 1));
+            patch8_to(code, jge_done_skip, done_skip, "source skip loop jge");
+            patch8_to(code, je_done_skip, done_skip, "source skip loop je");
 
             // ---- print context lines loop ----
             // edi = current line number, r13 = pointer into source
@@ -1775,12 +1991,12 @@ private:
             std::size_t jmp_after_prefix = code.size(); emit8(code, 0x00);
             // .normal_prefix:
             std::size_t normal_prefix = code.size();
-            code[jne_normal] = static_cast<std::uint8_t>(normal_prefix - (jne_normal + 1));
+            patch8_to(code, jne_normal, normal_prefix, "crash line prefix jne");
             const char spaces[] = "  \0";
             emit_print_inline(code, text_rva, print_offset, spaces, sizeof(spaces));
             // .after_prefix:
             std::size_t after_prefix = code.size();
-            code[jmp_after_prefix] = static_cast<std::uint8_t>(after_prefix - (jmp_after_prefix + 1));
+            patch8_to(code, jmp_after_prefix, after_prefix, "crash line prefix jump");
 
             // print line number
             emit8(code, 0x89); emit8(code, 0xF8);                                     // mov eax, edi
@@ -1814,12 +2030,14 @@ private:
             emit8(code, 0xFF); emit8(code, 0xC1);                                     // inc ecx
             emit8(code, 0x49); emit8(code, 0xFF); emit8(code, 0xC5);                    // inc r13
             emit8(code, 0xEB);                                                       // jmp copy_loop
-            emit8(code, static_cast<std::uint8_t>(copy_loop - (code.size() + 1)));
+            emit_rel8(code,
+                      static_cast<std::int64_t>(copy_loop) - static_cast<std::int64_t>(code.size() + 1),
+                      "source copy loop jump");
             // .end_copy:
             std::size_t end_copy = code.size();
-            code[je_end_copy1] = static_cast<std::uint8_t>(end_copy - (je_end_copy1 + 1));
-            code[je_end_copy2] = static_cast<std::uint8_t>(end_copy - (je_end_copy2 + 1));
-            code[jge_end_copy] = static_cast<std::uint8_t>(end_copy - (jge_end_copy + 1));
+            patch8_to(code, je_end_copy1, end_copy, "source copy end zero");
+            patch8_to(code, je_end_copy2, end_copy, "source copy end newline");
+            patch8_to(code, jge_end_copy, end_copy, "source copy end width");
 
             // append '\n' and null terminator
             emit8(code, 0xC6); emit8(code, 0x04); emit8(code, 0x0E); emit8(code, 0x0A);    // mov byte [rsi+rcx], '\n'
@@ -1830,7 +2048,9 @@ private:
             // lea rcx, [rbp-0x90]
             emit8(code, 0x48); emit8(code, 0x8D); emit8(code, 0x8D); emit32(code, 0xFFFFFF70);
             std::size_t cp2 = code.size();
-            std::int32_t pr2 = static_cast<std::int32_t>((text_rva + print_offset) - (text_rva + cp2 + 5));
+            std::int32_t pr2 = checked_rel32(
+                static_cast<std::int64_t>(text_rva + print_offset) - static_cast<std::int64_t>(text_rva + cp2 + 5),
+                "source line print call");
             emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(pr2));
 
             // advance r13 past the newline if we stopped on one
@@ -1846,7 +2066,9 @@ private:
 
             // jmp ctx_loop
             emit8(code, 0xE9);
-            std::int32_t ctx_back = static_cast<std::int32_t>(ctx_loop - (code.size() + 4));
+            std::int32_t ctx_back = checked_rel32(
+                static_cast<std::int64_t>(ctx_loop) - static_cast<std::int64_t>(code.size() + 4),
+                "context loop back jump");
             emit32(code, static_cast<std::uint32_t>(ctx_back));
 
             // .done_ctx:
@@ -1863,6 +2085,7 @@ private:
 
             // ---- fallback: crash outside user code ----
             patch32(code, js_fallback);
+            patch32(code, jae_fallback);
             {
                 const char outside[] = "  (crash outside user code)\n\0";
                 emit_print_inline(code, text_rva, print_offset, outside, sizeof(outside));
@@ -1895,7 +2118,9 @@ private:
                 emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x88); emit32(code, ctx_offset);
                 // call print_hex_impl
                 std::size_t call_pos = code.size();
-                std::int32_t rel = static_cast<std::int32_t>((text_rva + print_hex_offset) - (text_rva + call_pos + 5));
+                std::int32_t rel = checked_rel32(
+                    static_cast<std::int64_t>(text_rva + print_hex_offset) - static_cast<std::int64_t>(text_rva + call_pos + 5),
+                    "register dump hex call");
                 emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(rel));
             };
 
@@ -1922,8 +2147,8 @@ private:
                 const char rip_label[] = "  RIP = \0";
                 emit_print_inline(code, text_rva, print_offset, rip_label, sizeof(rip_label));
                 emit_reg_value(0xF8);
-                const char nl[] = "\n\0";
-                emit_print_inline(code, text_rva, print_offset, nl, sizeof(nl));
+                const char rip_nl[] = "\n\0";
+                emit_print_inline(code, text_rva, print_offset, rip_nl, sizeof(rip_nl));
             }
 
             // ---- subroutines (emitted before heal block so offsets are defined) ----
@@ -1948,7 +2173,7 @@ private:
             emit8(code, 0xFF); emit8(code, 0xC0);                     // inc eax (count REX)
             emit8(code, 0x48); emit8(code, 0xFF); emit8(code, 0xC1);    // inc rcx
             emit8(code, 0x0F); emit8(code, 0xB6); emit8(code, 0x11);    // movzx edx, byte [rcx]
-            code[jne_norex] = static_cast<std::uint8_t>(code.size() - (jne_norex + 1));
+            patch8(code, jne_norex, "insn decoder rex jne");
 
             // check 0x0F two-byte escape
             emit8(code, 0x80); emit8(code, 0xFA); emit8(code, 0x0F);    // cmp dl, 0x0F
@@ -1961,7 +2186,7 @@ private:
             emit8(code, 0xE9);                                      // jmp .decode_modrm
             std::size_t jmp_modrm = code.size(); emit32(code, 0);
 
-            code[jne_onebyte] = static_cast<std::uint8_t>(code.size() - (jne_onebyte + 1));
+            patch8(code, jne_onebyte, "insn decoder onebyte jne");
             emit8(code, 0xFF); emit8(code, 0xC0);                     // inc eax (count opcode)
 
             auto emit_opcode_check = [&](uint8_t opcode, std::size_t& target) {
@@ -2013,7 +2238,7 @@ private:
             emit8(code, 0x75);
             std::size_t jne_nosib = code.size(); emit8(code, 0x00);
             emit8(code, 0xFF); emit8(code, 0xC0);                     // inc eax (count SIB)
-            code[jne_nosib] = static_cast<std::uint8_t>(code.size() - (jne_nosib + 1));
+            patch8(code, jne_nosib, "insn decoder no-sib jne");
 
             // displacement
             emit8(code, 0x41); emit8(code, 0x83); emit8(code, 0xF8); emit8(code, 0x00); // cmp r8d, 0
@@ -2026,7 +2251,7 @@ private:
             emit8(code, 0xEB);
             std::size_t jmp_done1 = code.size(); emit8(code, 0x00);
 
-            code[je_mod00] = static_cast<std::uint8_t>(code.size() - (je_mod00 + 1));
+            patch8(code, je_mod00, "insn decoder mod00 je");
             emit8(code, 0x41); emit8(code, 0x83); emit8(code, 0xF9); emit8(code, 0x04); // cmp r9d, 4
             emit8(code, 0x75);
             std::size_t jne_mod00_no_sib = code.size(); emit8(code, 0x00);
@@ -2039,7 +2264,7 @@ private:
             emit8(code, 0xEB);
             std::size_t jmp_done2_from_sib = code.size(); emit8(code, 0x00);
 
-            code[jne_mod00_no_sib] = static_cast<std::uint8_t>(code.size() - (jne_mod00_no_sib + 1));
+            patch8(code, jne_mod00_no_sib, "insn decoder mod00 no-sib jne");
             emit8(code, 0x41); emit8(code, 0x83); emit8(code, 0xF9); emit8(code, 0x05); // cmp r9d, 5
             emit8(code, 0x75);
             std::size_t jne_done2 = code.size(); emit8(code, 0x00);
@@ -2047,15 +2272,15 @@ private:
             emit8(code, 0xEB);
             std::size_t jmp_done2 = code.size(); emit8(code, 0x00);
 
-            code[je_disp8] = static_cast<std::uint8_t>(code.size() - (je_disp8 + 1));
+            patch8(code, je_disp8, "insn decoder disp8 je");
             emit8(code, 0xFF); emit8(code, 0xC0);                     // inc eax (disp8)
 
-            code[je_done1] = static_cast<std::uint8_t>(code.size() - (je_done1 + 1));
-            code[jmp_done1] = static_cast<std::uint8_t>(code.size() - (jmp_done1 + 1));
-            code[jne_mod00_done] = static_cast<std::uint8_t>(code.size() - (jne_mod00_done + 1));
-            code[jmp_done2_from_sib] = static_cast<std::uint8_t>(code.size() - (jmp_done2_from_sib + 1));
-            code[jne_done2] = static_cast<std::uint8_t>(code.size() - (jne_done2 + 1));
-            code[jmp_done2] = static_cast<std::uint8_t>(code.size() - (jmp_done2 + 1));
+            patch8(code, je_done1, "insn decoder done1 je");
+            patch8(code, jmp_done1, "insn decoder done1 jump");
+            patch8(code, jne_mod00_done, "insn decoder mod00 done jne");
+            patch8(code, jmp_done2_from_sib, "insn decoder sib done jump");
+            patch8(code, jne_done2, "insn decoder done2 jne");
+            patch8(code, jmp_done2, "insn decoder done2 jump");
 
             // immediate payload for mov r/m, imm forms (opcode is at [rcx-1])
             emit8(code, 0x0F); emit8(code, 0xB6); emit8(code, 0x51); emit8(code, 0xFF);  // movzx edx, byte [rcx-1]
@@ -2066,14 +2291,14 @@ private:
             emit8(code, 0xEB);
             std::size_t jmp_decoder_done = code.size(); emit8(code, 0x00);
 
-            code[jne_imm8] = static_cast<std::uint8_t>(code.size() - (jne_imm8 + 1));
+            patch8(code, jne_imm8, "insn decoder imm8 jne");
             emit8(code, 0x80); emit8(code, 0xFA); emit8(code, 0xC6);                      // cmp dl, 0xC6
             emit8(code, 0x75);
             std::size_t jne_decoder_done = code.size(); emit8(code, 0x00);
             emit8(code, 0xFF); emit8(code, 0xC0);                                          // inc eax
 
-            code[jne_decoder_done] = static_cast<std::uint8_t>(code.size() - (jne_decoder_done + 1));
-            code[jmp_decoder_done] = static_cast<std::uint8_t>(code.size() - (jmp_decoder_done + 1));
+            patch8(code, jne_decoder_done, "insn decoder done jne");
+            patch8(code, jmp_decoder_done, "insn decoder done jump");
             emit8(code, 0xC3);                                      // ret
 
             // ---- destination register decoder subroutine ----
@@ -2093,7 +2318,7 @@ private:
             emit8(code, 0x41); emit8(code, 0x83); emit8(code, 0xD0); emit8(code, 0x00); // adc r8d, 0
             emit8(code, 0x48); emit8(code, 0xFF); emit8(code, 0xC1);    // inc rcx
             emit8(code, 0x0F); emit8(code, 0xB6); emit8(code, 0x11);    // movzx edx, byte [rcx]
-            code[jne_norex_dr] = static_cast<std::uint8_t>(code.size() - (jne_norex_dr + 1));
+            patch8(code, jne_norex_dr, "dest reg decoder rex jne");
 
             emit8(code, 0x48); emit8(code, 0xFF); emit8(code, 0xC1);    // inc rcx (skip opcode)
             emit8(code, 0x0F); emit8(code, 0xB6); emit8(code, 0x11);    // movzx edx, byte [rcx] (ModR/M)
@@ -2142,7 +2367,7 @@ private:
             std::size_t jmp_bp_return = code.size(); emit32(code, 0);
 
             // dynamic bp: set trap flag for single-step re-arm, return -1
-            code[jne_dynamic_bp] = static_cast<std::uint8_t>(code.size() - (jne_dynamic_bp + 1));
+            patch8(code, jne_dynamic_bp, "dynamic breakpoint jne");
 
             // dynamic bp: CONTEXT.RIP already points at the INT3 addr (windows VEH)
             // original byte was restored earlier, so RIP points at the restored instruction
@@ -2220,7 +2445,9 @@ private:
                     // call dest_reg_decoder(crash RIP)
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10] (crash RIP)
                     std::size_t call_dr = code.size();
-                    std::int32_t dr_rel = static_cast<std::int32_t>((handler_start + dest_reg_decoder_offset) - (call_dr + 5));
+                    std::int32_t dr_rel = checked_rel32(
+                        static_cast<std::int64_t>(handler_start + dest_reg_decoder_offset) - static_cast<std::int64_t>(call_dr + 5),
+                        "dest reg decoder call");
                     emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(dr_rel));
 
                     // eax = CONTEXT offset of dest reg, zero it
@@ -2230,7 +2457,9 @@ private:
                     // advance RIP
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10]
                     std::size_t call_il = code.size();
-                    std::int32_t il_rel = static_cast<std::int32_t>((handler_start + insn_decoder_offset) - (call_il + 5));
+                    std::int32_t il_rel = checked_rel32(
+                        static_cast<std::int64_t>(handler_start + insn_decoder_offset) - static_cast<std::int64_t>(call_il + 5),
+                        "insn decoder call read");
                     emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(il_rel));
 
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xE8);  // mov rcx, [rbp-0x18] (CONTEXT*)
@@ -2254,7 +2483,9 @@ private:
                     emit_print_inline(code, text_rva, print_offset, heal_av_read_pre, sizeof(heal_av_read_pre));
                     emit8(code, 0x49); emit8(code, 0x8B); emit8(code, 0x4F); emit8(code, 0x28);  // mov rcx, [r15+0x28]
                     std::size_t hx_r1 = code.size();
-                    std::int32_t hx_r1_rel = static_cast<std::int32_t>((text_rva + print_hex_offset) - (text_rva + hx_r1 + 5));
+                    std::int32_t hx_r1_rel = checked_rel32(
+                        static_cast<std::int64_t>(text_rva + print_hex_offset) - static_cast<std::int64_t>(text_rva + hx_r1 + 5),
+                        "heal read hex call");
                     emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(hx_r1_rel));
                     const char heal_av_read_post[] = " -> zeroed dest register, continuing\n\0";
                     emit_print_inline(code, text_rva, print_offset, heal_av_read_post, sizeof(heal_av_read_post));
@@ -2269,7 +2500,9 @@ private:
                 {
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10]
                     std::size_t call_il2 = code.size();
-                    std::int32_t il_rel2 = static_cast<std::int32_t>((handler_start + insn_decoder_offset) - (call_il2 + 5));
+                    std::int32_t il_rel2 = checked_rel32(
+                        static_cast<std::int64_t>(handler_start + insn_decoder_offset) - static_cast<std::int64_t>(call_il2 + 5),
+                        "insn decoder call write");
                     emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(il_rel2));
 
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xE8);  // mov rcx, [rbp-0x18]
@@ -2293,7 +2526,9 @@ private:
                     emit_print_inline(code, text_rva, print_offset, heal_av_write_pre, sizeof(heal_av_write_pre));
                     emit8(code, 0x49); emit8(code, 0x8B); emit8(code, 0x4F); emit8(code, 0x28);  // mov rcx, [r15+0x28]
                     std::size_t hx_w1 = code.size();
-                    std::int32_t hx_w1_rel = static_cast<std::int32_t>((text_rva + print_hex_offset) - (text_rva + hx_w1 + 5));
+                    std::int32_t hx_w1_rel = checked_rel32(
+                        static_cast<std::int64_t>(text_rva + print_hex_offset) - static_cast<std::int64_t>(text_rva + hx_w1 + 5),
+                        "heal write hex call");
                     emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(hx_w1_rel));
                     const char heal_av_write_post[] = " -> skipped instruction, continuing\n\0";
                     emit_print_inline(code, text_rva, print_offset, heal_av_write_post, sizeof(heal_av_write_post));
@@ -2315,7 +2550,9 @@ private:
                     // advance RIP
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10]
                     std::size_t call_il3 = code.size();
-                    std::int32_t il_rel3 = static_cast<std::int32_t>((handler_start + insn_decoder_offset) - (call_il3 + 5));
+                    std::int32_t il_rel3 = checked_rel32(
+                        static_cast<std::int64_t>(handler_start + insn_decoder_offset) - static_cast<std::int64_t>(call_il3 + 5),
+                        "insn decoder call div");
                     emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(il_rel3));
 
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xE8);  // mov rcx, [rbp-0x18]
@@ -2341,7 +2578,9 @@ private:
                     // advance RIP past the faulting instruction
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10] (crash RIP)
                     std::size_t call_il_so = code.size();
-                    std::int32_t il_rel_so = static_cast<std::int32_t>((handler_start + insn_decoder_offset) - (call_il_so + 5));
+                    std::int32_t il_rel_so = checked_rel32(
+                        static_cast<std::int64_t>(handler_start + insn_decoder_offset) - static_cast<std::int64_t>(call_il_so + 5),
+                        "insn decoder call stack overflow");
                     emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(il_rel_so));
 
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xE8);  // mov rcx, [rbp-0x18]
@@ -2360,7 +2599,9 @@ private:
                     // just skip past the bad opcode
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xF0);  // mov rcx, [rbp-0x10]
                     std::size_t call_il_ill = code.size();
-                    std::int32_t il_rel_ill = static_cast<std::int32_t>((handler_start + insn_decoder_offset) - (call_il_ill + 5));
+                    std::int32_t il_rel_ill = checked_rel32(
+                        static_cast<std::int64_t>(handler_start + insn_decoder_offset) - static_cast<std::int64_t>(call_il_ill + 5),
+                        "insn decoder call illegal");
                     emit8(code, 0xE8); emit32(code, static_cast<std::uint32_t>(il_rel_ill));
 
                     emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x4D); emit8(code, 0xE8);  // mov rcx, [rbp-0x18]
