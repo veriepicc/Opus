@@ -192,11 +192,9 @@ private:
     bool at_end() const { return pos_ >= tokens_.size(); }
     
     const Token& peek(std::size_t offset = 0) const {
-        if (tokens_.empty()) {
-            std::abort();
-        }
         if (pos_ + offset >= tokens_.size()) {
-            return tokens_.back(); // EOF token
+            static const Token static_eof{TokenKind::Eof, "", {}, {}};
+            return static_eof;
         }
         return tokens_[pos_ + offset];
     }
@@ -247,7 +245,7 @@ private:
         if (token_has_close_keyword_spelling(current(), spelling)) {
             std::vector<std::string> candidates{std::string(spelling)};
             error(with_suggestion(std::string(message), current().text, candidates));
-            return current();
+            return advance();  // advance past typo to avoid cascading errors
         }
         error(message);
         return current();
@@ -830,8 +828,12 @@ private:
                check(TokenKind::Class) ||
                check(TokenKind::Fn) ||
                check(TokenKind::Struct) ||
+               check(TokenKind::View) ||
                check(TokenKind::Enum) ||
                check(TokenKind::Const) ||
+               check(TokenKind::Static) ||
+               check(TokenKind::Export) ||
+               check(TokenKind::Internal) ||
                check(TokenKind::Import) ||
                check(TokenKind::Using) ||
                check(TokenKind::Extern) ||
@@ -851,6 +853,7 @@ private:
                check(TokenKind::Return) ||
                check(TokenKind::If) ||
                check(TokenKind::While) ||
+               check(TokenKind::Switch) ||
                check(TokenKind::Parallel) ||
                check(TokenKind::For) ||
                check(TokenKind::Loop) ||
@@ -870,6 +873,7 @@ private:
                check(TokenKind::FloatLit) ||
                check(TokenKind::StringLit) ||
                check(TokenKind::HexStringLit) ||
+               check(TokenKind::CharLit) ||
                check(TokenKind::True) ||
                check(TokenKind::False) ||
                check(TokenKind::Spawn) ||
@@ -2843,7 +2847,8 @@ private:
 
     std::optional<ast::StmtPtr> parse_return_stmt() {
         ast::ExprPtr value;
-        if (!check(TokenKind::Semicolon) && !check(TokenKind::RBrace) && !at_end()) {
+        if (!check(TokenKind::Semicolon) && !check(TokenKind::RBrace) &&
+            !check(TokenKind::End) && !check(TokenKind::Else) && !at_end()) {
             if (auto expr = parse_expr()) {
                 value = std::move(*expr);
             }
@@ -3614,6 +3619,20 @@ private:
             };
             return expr;
         }
+        if (match(TokenKind::CharLit)) {
+            auto expr = std::make_unique<ast::Expr>();
+            auto* val_ptr = std::get_if<std::int64_t>(&previous().value);
+            if (!val_ptr) {
+                error("internal: expected char value in CharLit token");
+                return std::nullopt;
+            }
+            std::int64_t val = *val_ptr;
+            expr->kind = ast::LiteralExpr{
+                .value = static_cast<char>(val),
+                .type = Type::make_primitive(PrimitiveType::I32)
+            };
+            return expr;
+        }
         if (match(TokenKind::True)) {
             auto expr = std::make_unique<ast::Expr>();
             expr->kind = ast::LiteralExpr{
@@ -3645,8 +3664,10 @@ private:
             std::string name(ident_tok.text);
             
             // atomic builtins need to be intercepted before normal call handling
-            if (name == "atomic_add" || name == "atomic_cas" || 
-                name == "atomic_load" || name == "atomic_store") {
+            // only if followed by '(' — otherwise treat as a regular identifier
+            if (check(TokenKind::LParen) &&
+                (name == "atomic_add" || name == "atomic_cas" || 
+                 name == "atomic_load" || name == "atomic_store")) {
                 return parse_atomic_op(name);
             }
             

@@ -179,7 +179,7 @@ public:
     // debug mode: full crash handler + repl slot + bp table
     // release mode: tiny crash handler stub, no repl, no bp table
     static constexpr std::size_t CRASH_HANDLER_SIZE_DEBUG = 0x1200;
-    static constexpr std::size_t CRASH_HANDLER_SIZE_RELEASE = 0x80;  // just enough for a minimal stub
+    static constexpr std::size_t CRASH_HANDLER_SIZE_RELEASE = 0x100;  // bumped from 0x80 to avoid overflow with healing stubs
     static constexpr std::size_t REPL_HANDLER_SIZE_DEBUG = 0x800;
 
     // runtime layout - computed based on build config
@@ -206,7 +206,7 @@ public:
             layout.crash_handler_size = CRASH_HANDLER_SIZE_RELEASE;
             layout.repl_handler_size = 0;
             layout.repl_handler_offset = 0;
-            layout.startup_code_size = crash_offset + layout.crash_handler_size;
+            layout.startup_code_size = align_up(crash_offset + layout.crash_handler_size, 16);
             layout.data_extra = 0;
             layout.has_bp_table = false;
         }
@@ -376,7 +376,7 @@ public:
         opt.SizeOfImage = static_cast<DWORD>(image_size);
         opt.SizeOfHeaders = static_cast<DWORD>(kHeaderSize);
         opt.Subsystem = output_is_exe(cfg.output_kind) ? IMAGE_SUBSYSTEM_WINDOWS_CUI : IMAGE_SUBSYSTEM_WINDOWS_GUI;
-        opt.DllCharacteristics = IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE | IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
+        opt.DllCharacteristics = IMAGE_DLLCHARACTERISTICS_NX_COMPAT;  // removed DYNAMIC_BASE since .reloc is empty stub
         opt.SizeOfStackReserve = 0x100000;
         opt.SizeOfStackCommit = 0x1000;
         opt.SizeOfHeapReserve = 0x100000;
@@ -384,7 +384,7 @@ public:
         opt.NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
         
         opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = static_cast<DWORD>(rdata_rva);
-        opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = 40;
+        opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = 2 * sizeof(IMAGE_IMPORT_DESCRIPTOR);
         opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].VirtualAddress = static_cast<DWORD>(imports.iat_rva);
         opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].Size = checked_u32(imports.iat_size, "IAT data directory size");
         opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress = static_cast<DWORD>(reloc_rva);
@@ -694,7 +694,9 @@ public:
                 std::size_t virtual_end = virtual_start + val_align_up(static_cast<DWORD>(virtual_span), sect_align);
                 if (!prev_virtual_name.empty() && virtual_start < prev_virtual_end) {
                     errors.push_back("section " + section_name + " virtual span overlaps previous section span ending at 0x" + to_hex32(static_cast<std::uint32_t>(prev_virtual_end)) + " (" + prev_virtual_name + ")");
-                } else {
+                }
+                // always extend to max end so subsequent overlaps are detected
+                if (virtual_end > prev_virtual_end) {
                     prev_virtual_end = virtual_end;
                     prev_virtual_name = section_name;
                 }

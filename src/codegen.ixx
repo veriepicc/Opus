@@ -636,8 +636,9 @@ private:
     }
 
     [[nodiscard]] bool emit_runtime_free_reg(x64::Reg ptr_reg) {
-        emit_.push(ptr_reg);
-        emit_.sub_imm(x64::Reg::RSP, 32);
+        // sub 40 = 32 shadow + 8 for the extra slot, keeps RSP 16-aligned at CALL
+        emit_.sub_imm(x64::Reg::RSP, 40);
+        emit_.mov_store(x64::Reg::RSP, 32, ptr_reg);  // save ptr in the extra slot
         emit_iat_call_raw(pe::iat::GetProcessHeap);
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
         emit_.xor_32(x64::Reg::EDX, x64::Reg::EDX);
@@ -15327,6 +15328,7 @@ private:
         if (!generate_expr(*atomic.ptr)) return false;
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RCX, 0);
+        emit_.buffer().emit8(0x0F); emit_.buffer().emit8(0xAE); emit_.buffer().emit8(0xF0); // mfence for seq-cst
         return true;
     }
 

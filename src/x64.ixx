@@ -209,6 +209,8 @@ public:
     void lea_scaled(Reg dst, Reg base, Reg index, std::uint8_t scale) {
         assert((scale == 1 || scale == 2 || scale == 4 || scale == 8) && 
                "lea scale must be 1, 2, 4, or 8");
+        assert((static_cast<std::uint8_t>(index) & 7) != 4 &&
+               "lea_scaled: RSP/R12 cannot be used as index");
         
         std::uint8_t scale_bits = 0;
         if (scale == 2) scale_bits = 1;
@@ -217,11 +219,17 @@ public:
         
         buf_.emit8(rex_sib(true, dst, index, base));
         buf_.emit8(0x8D);
-        buf_.emit8(modrm(0b00, dst, Reg(4)));  // modrm points to SIB
+        
+        bool rbp_base = (static_cast<std::uint8_t>(base) & 7) == 5;
+        std::uint8_t mod = rbp_base ? 0b01 : 0b00;
+        buf_.emit8(modrm(mod, dst, Reg(4)));  // modrm points to SIB
         // SIB byte: scale.index.base
         buf_.emit8((scale_bits << 6) | 
                    ((static_cast<std::uint8_t>(index) & 7) << 3) | 
                    (static_cast<std::uint8_t>(base) & 7));
+        if (rbp_base) {
+            buf_.emit8(0x00);  // disp8 = 0
+        }
     }
 
     // ARITHMETIC
@@ -572,15 +580,15 @@ public:
 
     // smart move - keep mov semantics and prefer smaller immediates
     void mov_smart(Reg dst, std::int64_t imm) {
-        // move 0 → xor reg, reg (3 bytes vs 10 for mov imm64)
+        // 0 → xor dst32, dst32 (3 bytes, zero-extends to 64-bit)
         if (imm == 0) {
-            mov_imm32(dst, 0);
+            xor_32(dst, dst);
             return;
         }
         
-        // move -1 → or reg, -1 (4 bytes vs 10)
+        // -1 → or reg64, -1 (4 bytes vs 10 for mov imm64)
         if (imm == -1) {
-            mov_imm32(dst, -1);
+            or_imm(dst, -1);
             return;
         }
         
@@ -827,11 +835,7 @@ public:
 
     // 32-bit xor zero-extends to 64, good for zeroing regs
     void xor_32(Reg dst, Reg src) {
-        // no REX.W so its 32-bit, which zero-extends to 64
-        std::uint8_t r = 0x40;
-        if (static_cast<std::uint8_t>(src) >= 8) r |= 0x04;
-        if (static_cast<std::uint8_t>(dst) >= 8) r |= 0x01;
-        if (r != 0x40) buf_.emit8(r);  // only emit rex if needed
+        buf_.emit8(rex(false, src, dst));
         buf_.emit8(0x31);
         buf_.emit8(modrm(0b11, src, dst));
     }
@@ -910,8 +914,8 @@ public:
         std::uint8_t b1 = mmmmm & 0x03;
         b1 |= 0x40; // X' = 1 (no SIB index extension)
         if (!(rm & 0x08))  b1 |= 0x20; // B'
-        if (!(reg & 0x08)) b1 |= 0x10; // R
-        if (!(reg & 0x10)) b1 |= 0x80; // R'
+        if (!(reg & 0x08)) b1 |= 0x80; // R̄ → bit 7 (inverted bit 3 of reg id = extends 0-7 to 8-15)
+        if (!(reg & 0x10)) b1 |= 0x10; // R̄' → bit 4 (inverted bit 4 of reg id = extends 0-15 to 16-31)
         buf_.emit8(b1);
 
         // byte 2: W vvvv 1 pp
@@ -1068,16 +1072,17 @@ public:
     // shared memory operand encoding: modrm + optional sib + displacement
     // handles rsp needing sib byte, rbp needing explicit disp, disp8 vs disp32
     void emit_mem_operand(Reg reg_field, Reg base, std::int32_t offset) {
-        if (offset == 0 && (static_cast<std::uint8_t>(base) & 7) != 5) {
+        std::uint8_t base_low = static_cast<std::uint8_t>(base) & 7;
+        if (offset == 0 && base_low != 5) {
             buf_.emit8(modrm(0b00, reg_field, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
+            if (base_low == 4) buf_.emit8(0x24);
         } else if (offset >= -128 && offset <= 127) {
             buf_.emit8(modrm(0b01, reg_field, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
+            if (base_low == 4) buf_.emit8(0x24);
             buf_.emit8(static_cast<std::uint8_t>(offset));
         } else {
             buf_.emit8(modrm(0b10, reg_field, base));
-            if ((static_cast<std::uint8_t>(base) & 7) == 4) buf_.emit8(0x24);
+            if (base_low == 4) buf_.emit8(0x24);
             buf_.emit32(static_cast<std::uint32_t>(offset));
         }
     }

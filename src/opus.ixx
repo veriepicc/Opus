@@ -149,6 +149,7 @@ extern "C" std::int64_t opus_write_file(std::int64_t filename_handle, std::int64
 }
 
 extern "C" std::int64_t opus_malloc(std::int64_t size) {
+    if (size <= 0) return 0;
     void* ptr = std::malloc(static_cast<std::size_t>(size));
     return reinterpret_cast<std::int64_t>(ptr);
 }
@@ -757,8 +758,7 @@ public:
             return std::unexpected(errors);
         }
 
-        auto it = result.function_offsets.find("main");
-        if (it == result.function_offsets.end()) {
+        if (!result.main_offset) {
             return std::unexpected("no main function found");
         }
 
@@ -766,7 +766,7 @@ public:
         pe::PeImageGenerator exe_gen;
         auto exe_bytes = exe_gen.generate({
             .code = result.code,
-            .main_offset = it->second,
+            .main_offset = result.main_offset.value(),
             .alloc_console = false,
             .iat_fixups = result.iat_fixups,
             .debug_source = opts.debug_info ? std::string(opts.source) : std::string{},
