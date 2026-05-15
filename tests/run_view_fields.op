@@ -1,0 +1,48 @@
+import mem
+
+view RuntimeState {
+    target: ptr @ 0
+    hits: int @ 8
+    ready: bool @ 12
+    marker: i64 @ 16
+}
+
+function int main() {
+    let block = mem.make_zero(24)
+    let rt = block as RuntimeState
+
+    rt.target = block
+    rt.hits = 42
+    rt.ready = true
+    rt.marker = 0x1122334455667788
+
+    if rt.target != block {
+        free(block)
+        return 1
+    }
+    if rt.hits != 42 {
+        free(block)
+        return 2
+    }
+    if rt.ready != true {
+        free(block)
+        return 3
+    }
+    if mem.read32(block + 8) != 42 {
+        free(block)
+        return 4
+    }
+    if mem.read8(block + 12) != 1 {
+        free(block)
+        return 5
+    }
+    if rt.marker != 0x1122334455667788 {
+        free(block)
+        return 6
+    }
+
+    print_int(rt.hits)
+    print_int(mem.read8(block + 12))
+    free(block)
+    return 0
+}

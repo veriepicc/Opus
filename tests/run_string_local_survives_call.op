@@ -1,0 +1,6 @@
+function int main() {
+    let text = "ABC"
+    print_int(string_length(text))
+    print_int(char_at(text, 0))
+    return 0
+}

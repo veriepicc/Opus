@@ -1,0 +1,10 @@
+struct Pair {
+    x: int
+}
+
+function int main() {
+    let a = Pair { x: 7 }
+    let b = a
+    print_int(b.x)
+    return 0
+}

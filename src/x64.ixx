@@ -337,6 +337,10 @@ public:
         buf_.emit8(modrm(0b11, Reg(EXT_IDIV), src));
     }
 
+    // REX placeholder note: Reg::RAX is used as a placeholder register argument
+    // in rex() calls where only the REX prefix bits (W/B/X/R) are needed.
+    // It does not represent the actual RAX register in these contexts.
+
     void div(Reg src) {
         buf_.emit8(rex(true, Reg::RAX, src));
         buf_.emit8(0xF7);
@@ -355,6 +359,8 @@ public:
         buf_.emit8(modrm(0b11, Reg(EXT_NEG), dst));
     }
 
+    // NOTE: INC has P4 (Pentium 4) partial-flag stall history; add_smart prefers LEA/ADD.
+    // This direct INC is used when the encoder explicitly requests it.
     void inc(Reg dst) {
         buf_.emit8(rex(true, Reg::RAX, dst));
         buf_.emit8(0xFF);
@@ -677,8 +683,10 @@ public:
 
     // setcc - set byte based on condition code
     void setcc(std::uint8_t cc, Reg dst) {
-        // always emit REX to avoid high-byte register ambiguity (AH/CH/DH/BH)
-        buf_.emit8(0x40 | (static_cast<std::uint8_t>(dst) >= 8 ? 0x01 : 0x00));
+        // emit REX.B only when base >= 8 (dst is R8-R15)
+        // for RAX-RDX (rm 0-3): no REX prefix needed, avoids AH/CH/DH/BH aliasing
+        // for R8-R15 (rm 8-15): emit 0x41 (REX.B) to extend register field
+        if (static_cast<std::uint8_t>(dst) >= 8) buf_.emit8(0x41);
         buf_.emit8(0x0F);
         buf_.emit8(0x90 + cc);
         buf_.emit8(modrm(0b11, Reg::RAX, dst));
@@ -739,7 +747,8 @@ public:
     }
 
     void call_mem(Reg base, std::int32_t offset = 0) {
-        buf_.emit8(rex(true, Reg(EXT_CALL), base));
+        // emit only REX.B when base >= 8 (matches call(Reg) pattern)
+        if (static_cast<std::uint8_t>(base) >= 8) buf_.emit8(0x41);
         buf_.emit8(0xFF);
         emit_mem_operand(Reg(EXT_CALL), base, offset);
     }
@@ -800,6 +809,10 @@ public:
         for (Reg r : save_regs) {
             push(r);
         }
+        // NOTE: if patched frame_size > INT32_MAX, patch32 wraps silently.
+        // Caller must ensure frame_size fits in signed 32-bit.
+        assert((local_size <= static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) &&
+               "prologue_patchable: frame_size exceeds INT32_MAX");
         buf_.emit8(rex(true, Reg::RAX, Reg::RSP));
         buf_.emit8(0x81);
         buf_.emit8(modrm(0b11, Reg(EXT_SUB), Reg::RSP));
@@ -808,6 +821,8 @@ public:
         return patch_site;
     }
 
+    // NOTE: save_regs contract — caller must ensure save_regs matches prologue_patchable
+    // (same register list and ordering). Mismatch causes stack imbalance.
     void epilogue(std::span<const Reg> save_regs = {}) {
         mov(Reg::RSP, Reg::RBP);
         if (!save_regs.empty()) {
@@ -881,6 +896,10 @@ public:
     // W: 0 or 1
     // vvvv: source register (inverted, 1s complement)
     // L: 1 for 256-bit
+    // LATENT LIMITATION: X̄ is hard-coded to 1, meaning no SIB index extension.
+    // If the index register is R8-R15, this encoding is incorrect — the SIB byte
+    // cannot encode extended index registers with X̄=1. Fix: emit REX.R/X or
+    // use a non-extended index register (RAX-R15, not R8-R15) until this is fixed.
     void emit_vex3(std::uint8_t mmmmm, std::uint8_t pp, bool W,
                    std::uint8_t reg, std::uint8_t vvvv, std::uint8_t rm,
                    bool L = true) {
@@ -888,8 +907,8 @@ public:
         // byte 1: R~.X~.B~.mmmmm
         std::uint8_t b1 = mmmmm & 0x1F;
         if (!(reg & 0x08)) b1 |= 0x80;   // R~ (inverted)
-        b1 |= 0x40;                        // X~ = 1 (no SIB index extension)
-        if (!(rm & 0x08)) b1 |= 0x20;     // B~ (inverted)
+        b1 |= 0x40;                      // X~ = 1 (LATENT: see above)
+        if (!(rm & 0x08)) b1 |= 0x20;   // B~ (inverted)
         buf_.emit8(b1);
         // byte 2: W.vvvv~.L.pp
         std::uint8_t b2 = pp & 0x03;
@@ -905,6 +924,8 @@ public:
     // - no broadcast/rounding
     // - 512-bit vectors
     // - up to 5-bit dst/vvvv register ids
+    // LATENT LIMITATION: X' is hard-coded to 1 (same issue as VEX X̄).
+    // If the index register is R8-R15, this encoding is incorrect.
     void emit_evex(std::uint8_t mmmmm, std::uint8_t pp, bool W,
                    std::uint8_t reg, std::uint8_t vvvv, std::uint8_t rm,
                    std::uint8_t ll = 0b10) {
@@ -912,7 +933,7 @@ public:
 
         // byte 1: R' X' B' R 0 0 mm
         std::uint8_t b1 = mmmmm & 0x03;
-        b1 |= 0x40; // X' = 1 (no SIB index extension)
+        b1 |= 0x40; // X' = 1 (LATENT: see above)
         if (!(rm & 0x08))  b1 |= 0x20; // B'
         if (!(reg & 0x08)) b1 |= 0x80; // R̄ → bit 7 (inverted bit 3 of reg id = extends 0-7 to 8-15)
         if (!(reg & 0x10)) b1 |= 0x10; // R̄' → bit 4 (inverted bit 4 of reg id = extends 0-15 to 16-31)

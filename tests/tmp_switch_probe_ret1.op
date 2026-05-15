@@ -1,0 +1,14 @@
+function int score(int state) {
+    switch state {
+    case 0:
+        return 1
+    case 1:
+        return 2
+    else:
+        return 3
+    }
+}
+
+function int main() {
+    return score(1)
+}

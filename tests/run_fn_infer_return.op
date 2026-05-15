@@ -1,0 +1,22 @@
+fn add(left: int, right: int) => left + right
+
+class Counter {
+    int base
+
+    fn bump(delta: int) => self.base + delta
+}
+
+function int main() {
+    let counter = Counter { base: 7 }
+
+    if add(2, 3) != 5 {
+        return 1
+    }
+    if counter.bump(4) != 11 {
+        return 2
+    }
+
+    print_int(add(10, 20))
+    print_int(counter.bump(5))
+    return 0
+}

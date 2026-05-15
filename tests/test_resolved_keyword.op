@@ -1,0 +1,8 @@
+resolved cache_value: int = 42
+
+function int main() {
+    if cache_value != 42 {
+        return 1
+    }
+    return 0
+}

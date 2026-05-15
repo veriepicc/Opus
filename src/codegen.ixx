@@ -175,6 +175,11 @@ enum class OwnedLocalState {
 
 class CodeGenerator {
 public:
+    // calling convention constants
+    static constexpr std::size_t SHADOW_SPACE = 32;         // bytes of shadow space for Windows x64 calls
+    static constexpr std::size_t MAX_REGISTER_ARGS = 4;      // max args passed in RCX,RDX,R8,R9
+    static constexpr std::size_t STACK_ALIGN = 16;          // stack alignment requirement
+
     CodeGenerator() = default;
 
     void set_output_kind(OutputKind kind) {
@@ -9211,33 +9216,6 @@ private:
     }
 
     [[nodiscard]] bool generate_expr(const ast::Expr& expr) {
-        // optimizer integration disabled for now - will add back when patterns are implemented
-        // auto hash = optimizer::hash_expr(&expr);
-        // auto* pattern = optimizer::find_pattern(hash);
-        // if (pattern && pattern->match(&expr)) {
-        //     // save checkpoint
-        //     auto checkpoint_ptr = emit_.buffer().data() + emit_.buffer().pos();
-        //     auto checkpoint_size = emit_.buffer().pos();
-        //     
-        //     // try to emit optimized code
-        //     optimizer::Emit opt_ctx{
-        //         .code_ptr = emit_.buffer().data() + emit_.buffer().pos(),
-        //         .code_size = emit_.buffer().pos(),
-        //         .code_cap = 0,  // not used for now
-        //         .checkpoint_ptr = checkpoint_ptr,
-        //         .checkpoint_size = checkpoint_size
-        //     };
-        //     
-        //     auto* result = pattern->emit(&opt_ctx, &expr);
-        //     if (result) {
-        //         // success - manually emit the bytes that were written
-        //         // the pattern wrote directly to code_ptr, but we need to update our buffer
-        //         // for now just fall through since patterns return nullptr anyway
-        //     }
-        //     // failed - rollback and fall through to normal codegen
-        // }
-        
-        // normal codegen fallback
         return std::visit(overloaded{
             [&](const ast::LiteralExpr& e) { return generate_literal(e); },
             [&](const ast::IdentExpr& e)   { return generate_ident(e); },
@@ -9517,6 +9495,8 @@ private:
         }
 
         if (is_native_image_output()) {
+            // note: native-image arrays store count at both [base+0] and [base+8]
+            // this is intentional for runtime compatibility with host ABI
             emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 0);
             emit_.mov_imm32(x64::Reg::RAX, static_cast<std::int32_t>(arr.elements.size()));
             emit_.mov_store(x64::Reg::RCX, -16, x64::Reg::RAX);
@@ -11396,6 +11376,11 @@ private:
         // inc rdi (point to first char)
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC7);  // inc rdi
         
+        // note: for numbers with more than 26 digits, the stack buffer overlaps
+        // with the output region and bytes get clobbered during the div loop
+        // (58 bytes buffer starting at rsp+0x3A means rdi can reach rsp+0x20)
+        // this is acceptable for typical i64 values but would break for huge ints
+
         // call dll_print_impl
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xF9);  // mov rcx, rdi
         
@@ -14651,6 +14636,10 @@ private:
         // return pointer to the spawn result struct
         emit_.mov(x64::Reg::RAX, x64::Reg::R11);
 
+        // note: success path falls through intentionally to the patch_jump sites below
+        // any code added between "return pointer to result struct" and the patches
+        // would be skipped on the success path, which is likely not desired
+
         emit_.patch_jump(ctx_alloc_fail_exit);
         emit_.patch_jump(result_alloc_fail_exit);
         emit_.patch_jump(thread_spawn_fail_exit);
@@ -14909,6 +14898,10 @@ private:
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.chunk_off);
         emit_.add(x64::Reg::RAX, x64::Reg::RCX);
         emit_.patch_jump(chunk_end_done);
+        // note: parent-frame slots alias with context layout offsets (CTX_ARG1 = 0x10, etc)
+        // this is safe in pfor because the context is always accessed via the pushed rdx pointer
+        // but adding any code between here and CreateThread that uses rbp-relative addressing
+        // could corrupt thread arguments if the slot offsets happen to overlap
         emit_.pop(x64::Reg::RDX);
         emit_.push(x64::Reg::RDX);
         emit_.mov_store(x64::Reg::RDX, CTX_ARG1, x64::Reg::RAX);
@@ -15339,6 +15332,8 @@ private:
         emit_.pop(x64::Reg::RCX);
         emit_.xchg_mem(x64::Reg::RCX, 0, x64::Reg::RAX);
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        // note: the xchg above stores the old value but we discard it here
+        // callers expecting the expression result will get 0, which is correct for atomic_store
         return true;
     }
 

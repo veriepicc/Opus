@@ -1,0 +1,7 @@
+function int main() {
+    constant answer: int = 41
+    if answer + 1 != 42 {
+        return 1
+    }
+    return 0
+}

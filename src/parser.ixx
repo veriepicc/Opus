@@ -144,6 +144,9 @@ private:
         AllowTypeKeywords,
     };
 
+    // semicolon-free syntax is intentional in C and V2 mode to match common usage patterns.
+    // match(TokenKind::Semicolon) calls are deliberately optional in statement parsing.
+    // callers may add explicit semicolon checks or warnings if strict mode is needed.
     enum class StatementMode {
         CStyle,
         V2,
@@ -232,6 +235,9 @@ private:
         return (match(kinds) || ...);
     }
 
+    // note: callers that build AST nodes from the returned token may get garbage on error.
+    // callers must check for errors via has_errors() or by checking the result's validity.
+    // parse_module() aborts on errors anyway, so this usually doesn't matter for top-level parsing.
     Token consume(TokenKind kind, std::string_view message) {
         if (check(kind)) return advance();
         error(message);
@@ -650,6 +656,10 @@ private:
         }
     }
 
+    // note: may misdiagnose patterns like `i32 global = 1` as a type-first function decl
+    // since the heuristic uses lookahead without full semantic context. a more accurate
+    // check would need to distinguish assignment from parameter lists. future improvement path:
+    // add context-aware lookahead or semantic validation to disambiguate top-level declarations.
     [[nodiscard]] bool looks_like_type_first_fn_decl_start() const {
         if (current().is_type()) return true;
         return can_begin_ambiguous_type_name(current()) &&
@@ -765,6 +775,10 @@ private:
             return false;
         }
 
+        // note: bounds check needed since brace_offset + 2 could exceed token count near EOF
+        if (brace_offset + 2 >= tokens_.size()) {
+            return false;
+        }
         const auto next_kind = peek(brace_offset + 2).kind;
         return next_kind == TokenKind::Colon ||
                next_kind == TokenKind::Comma ||
@@ -817,6 +831,9 @@ private:
         return false;
     }
 
+    // note: may misdiagnose patterns like `int x` at statement level when x is a variable
+    // declaration (not a field). the lookahead checks type + name without full context.
+    // future improvement: pass context or use a tighter heuristic for statement vs field parsing.
     [[nodiscard]] bool looks_like_typed_name_start() const {
         if (current().is_type()) return true;
         return can_begin_ambiguous_type_name(current()) &&
@@ -2155,6 +2172,7 @@ private:
         } else if (is_contextual_name_token(current(), true)) {
             Token offset_tok = advance();
             offset_name = std::string(offset_tok.text);
+            // manual dot-separated name concatenation: could use a join utility but keeping it inline for now
             while (match(TokenKind::Dot)) {
                 Token segment = consume_name("expected name after '.' in view field offset");
                 offset_name += ".";
@@ -2453,7 +2471,7 @@ private:
     std::optional<ast::DeclPtr> parse_import_decl() {
         Token path_tok = consume_name("expected module path");
         std::string path(path_tok.text);
-        
+        // manual dot-separated path concatenation: could use a join utility but keeping it inline for now
         while (match(TokenKind::Dot)) {
             Token next = consume_name("expected identifier");
             path += ".";
@@ -2817,6 +2835,9 @@ private:
         return stmt;
     }
 
+    // intentionally separate from parse_let_or_var_v2 (line ~1752) because this handles
+    // the C-style/mixed mode context where let/var declarations have different semantics
+    // and error recovery behavior. the two implementations evolved independently.
     std::optional<ast::StmtPtr> parse_let_stmt() {
         bool is_mut = match(TokenKind::Mut);
         Token name = consume_name("expected variable name");
@@ -3486,6 +3507,9 @@ private:
         return expr;
     }
 
+    // parallel for always uses V2 mode for body parsing regardless of caller's mode.
+    // this is a known limitation: body mode should be a parameter in future refactor.
+    // callers (parse_stmt_v2, parse_stmt_c) pass V2 explicitly for now.
     // parallel for i in range(start, end) { body }
     std::optional<ast::StmtPtr> parse_parallel_for() {
         consume(TokenKind::For, "expected 'for' after 'parallel'");

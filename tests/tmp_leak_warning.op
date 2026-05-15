@@ -1,0 +1,4 @@
+function int main() {
+    let s = make_string("hello")
+    return 0
+}
