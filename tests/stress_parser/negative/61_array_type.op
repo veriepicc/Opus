@@ -1,0 +1,5 @@
+function int main() {
+    let arr: [i32; 16];
+    arr[0] = 42;
+    return arr[0];
+}

@@ -1,0 +1,27 @@
+// use MessageBox to test bool handling
+// MessageBox returns different values based on which button is clicked
+// and accepts int parameters
+
+using FnMsgBox = fn(ptr, ptr, ptr, int) -> int
+
+function int main() {
+    alloc_console()
+
+    let user32 = load_library("user32.dll")
+    let msgbox = get_proc(user32, "MessageBoxA")
+    let typed_fn = msgbox as FnMsgBox
+
+    // Pass 0 for MB_OK (most basic)
+    let r1 = typed_fn(0, "test1", "title1", 0)
+    let r2 = typed_fn(0, "test2", "title2", 0)
+
+    print("msgbox(0) returns: ")
+    print_int(r1)
+    print("\n")
+
+    print("msgbox(0) again returns: ")
+    print_int(r2)
+    print("\n")
+
+    return 0
+}

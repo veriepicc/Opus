@@ -1,0 +1,9 @@
+// repro: u64 compare should use unsigned condition (jb/ja), not signed (jl/jg)
+function int main() {
+    var a: u64 = 0xFFFFFFFFFFFFFFFF as u64
+    var b: u64 = 1 as u64
+    if a < b {
+        return 1
+    }
+    return 0
+}

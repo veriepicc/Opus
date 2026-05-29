@@ -1,0 +1,23 @@
+// TEST 17: bool passed to C but C expects int
+// bool might be 0 or 1, but C might expect any non-zero
+
+using FnBool = fn(bool) -> bool
+
+function int main() {
+    alloc_console()
+
+    let kernel = get_module("kernel32.dll")
+    let tick_fn = get_proc(kernel, "GetTickCount")
+    let typed_fn = tick_fn as FnBool
+
+    // Pass boolean - should be 0 or 1
+    let result1 = typed_fn(true)
+    let result2 = typed_fn(false)
+
+    print("bool test: true->")
+    print_int(result1)
+    print(" false->")
+    print_int(result2)
+    print("\n")
+    return 0
+}

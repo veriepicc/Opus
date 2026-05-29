@@ -1,0 +1,22 @@
+// TEST: large stack frame (potential overflow in sub_imm)
+struct BigStruct {
+    a0: int; a1: int; a2: int; a3: int; a4: int
+    a5: int; a6: int; a7: int; a8: int; a9: int
+    a10: int; a11: int; a12: int; a13: int; a14: int
+    a15: int; a16: int; a17: int; a18: int; a19: int
+}
+
+function int big_frame() {
+    var s = BigStruct { a0:0,a1:0,a2:0,a3:0,a4:0,a5:0,a6:0,a7:0,a8:0,a9:0,a10:0,a11:0,a12:0,a13:0,a14:0,a15:0,a16:0,a17:0,a18:0,a19:0 }
+    s.a0 = 1; s.a1 = 2; s.a2 = 3; s.a3 = 4; s.a4 = 5
+    s.a5 = 6; s.a6 = 7; s.a7 = 8; s.a8 = 9; s.a9 = 10
+    s.a10 = 11; s.a11 = 12; s.a12 = 13; s.a13 = 14; s.a14 = 15
+    s.a15 = 16; s.a16 = 17; s.a17 = 18; s.a18 = 19; s.a19 = 20
+    return s.a0 + s.a1 + s.a2 + s.a3 + s.a4 + s.a5 + s.a6 + s.a7 + s.a8 + s.a9 + s.a10 + s.a11 + s.a12 + s.a13 + s.a14 + s.a15 + s.a16 + s.a17 + s.a18 + s.a19
+}
+
+function int main() {
+    print_int(big_frame())
+    print("\n")
+    return 0
+}

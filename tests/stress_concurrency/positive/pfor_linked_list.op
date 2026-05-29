@@ -1,0 +1,20 @@
+struct Node {
+    value: i64
+    next: ptr
+}
+
+function int main() {
+    let head = malloc(16)
+    mem_write(head, 42)
+    mem_write(head + 8, 0)
+
+    parallel for i in range(0, 100) {
+        let new_node = malloc(16)
+        mem_write(new_node, i as i64)
+        mem_write(new_node + 8, head)
+    }
+
+    print_int(mem_read(head))
+    free(head)
+    return 0
+}

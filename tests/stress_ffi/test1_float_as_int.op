@@ -1,0 +1,17 @@
+// TEST 1: float where int expected
+// the codegen might put float in XMM but the ABI expects int in RCX
+
+using FnInt = fn(int) -> int
+
+function int main() {
+    let kernel = get_module("kernel32.dll")
+    let tick_fn = get_proc(kernel, "GetTickCount")
+    let typed_fn = tick_fn as FnInt
+
+    let val = typed_fn(0xFFFFFFFF)  // pass garbage as int
+
+    print("result: ")
+    print_int(val)
+    print("\n")
+    return 0
+}

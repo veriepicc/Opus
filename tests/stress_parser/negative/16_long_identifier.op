@@ -1,0 +1,3 @@
+$identifier = "a" * 500; 
+$content = "let $identifier = 1;";
+[System.IO.File]::WriteAllText("tests/stress_parser/negative/16_long_identifier_gen.op", $content)

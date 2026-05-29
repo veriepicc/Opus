@@ -1,0 +1,14 @@
+// TEST: very deep recursion
+function int recursive_deep(int n) {
+    if n <= 1 {
+        return n
+    }
+    return n + recursive_deep(n - 1)
+}
+
+function int main() {
+    let result = recursive_deep(500)
+    print_int(result)
+    print("\n")
+    return 0
+}

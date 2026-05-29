@@ -1,0 +1,17 @@
+// TEST 19: zero-terminated string passed to C
+// C string needs null terminator - opus strings might not have it
+
+using FnStr = fn(str) -> int
+
+function int main() {
+    alloc_console()
+
+    let user32 = load_library("user32.dll")
+    let msgbox_fn = get_proc(user32, "MessageBoxA")
+    let typed_fn = msgbox_fn as FnStr
+
+    // Pass string to C function
+    let result = typed_fn("Hello from Opus!")
+
+    return 0
+}

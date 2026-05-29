@@ -1,0 +1,14 @@
+// TEST: signed comparison operations
+function int main() {
+    var a = -1
+    var b = 1
+    // signed comparison: -1 is less than 1
+    if a < b { print("1 ") }
+    if a > b { print("X ") }
+    if a <= b { print("2 ") }
+    if a >= b { print("X ") }
+    if a == b { print("X ") }
+    if a != b { print("3 ") }
+    print("\n")
+    return 0
+}

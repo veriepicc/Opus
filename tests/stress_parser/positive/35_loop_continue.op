@@ -1,0 +1,7 @@
+function int main() {
+    loop {
+        if true { break; }
+        continue;
+    }
+    return 0;
+}

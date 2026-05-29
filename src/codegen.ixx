@@ -10,6 +10,7 @@ import opus.pe;
 import opus.lexer;
 import opus.parser;
 import opus.stdlib;
+import opus.vectorize;
 import std;
 
 extern "C" {
@@ -279,7 +280,8 @@ public:
                     .is_extern = fn.attrs.is_extern(),
                     .is_resolved = fn.attrs.is_resolved_decl(),
                     .resolved_storage_name = fn.attrs.is_resolved_decl() ? resolved_storage_name_for(fn.name) : "",
-                    .resolved_init_name = fn.attrs.is_resolved_decl() ? resolved_init_name_for(fn.name) : ""
+                    .resolved_init_name = fn.attrs.is_resolved_decl() ? resolved_init_name_for(fn.name) : "",
+                    .single_use_inline_safe = !fn.attrs.is_extern() && is_single_use_inline_safe_fn(fn)
                 };
             } else if (decl->is<ast::StructDecl>()) {
                 if (!generate_struct_decl(decl->as<ast::StructDecl>())) return false;
@@ -340,6 +342,13 @@ public:
             patch_rel32(fixup.call_site, it->second.code_offset);
         }
         call_fixups_.clear();
+
+        auto peephole_start = now();
+        run_peephole();
+        if (collect_timings_) {
+            add_timing("codegen.peephole", elapsed_ms(peephole_start, now()));
+        }
+
         if (collect_timings_) {
             add_timing("codegen.patch_fixups", elapsed_ms(fixups_start, now()));
             add_timing("codegen.total", elapsed_ms(total_start, now()));
@@ -396,6 +405,78 @@ public:
             result.push_back({static_cast<std::uint32_t>(e.offset), e.line});
         }
         return result;
+    }
+
+    void run_peephole() {
+        auto& buf = emit_.buffer();
+        auto* code = buf.data();
+        auto size = buf.pos();
+        if (size < 6) return;
+
+        int eliminated = 0;
+
+        // pass 1: eliminate mov dst,src; mov src,dst (copy-back redundancy)
+        // and mov dst,reg; mov dst,[reg+offset] (dead move before load from same base)
+        for (std::size_t i = 0; i < size; ) {
+            // decode mov r64, r64 (opcode 0x89, mod=11)
+            // encoding: [REX] 89 ModRM  where ModRM = 0xC0 | (reg<<3) | rm
+            // REX = 0x40 | (W?8:0) | (reg_ext?4:0) | (rm_ext?1:0)
+            std::uint8_t rex1 = code[i];
+            bool is_rex1 = (rex1 & 0xF0) == 0x40 && (rex1 & 0x08);
+            std::uint8_t opcode1 = (i + 1 < size) ? code[i + 1] : 0;
+            std::uint8_t modrm1 = (i + 2 < size) ? code[i + 2] : 0;
+
+            if (!is_rex1 || opcode1 != 0x89 || (modrm1 >> 6) != 3) {
+                i++;
+                continue;
+            }
+
+            std::uint8_t reg1_field = (modrm1 >> 3) & 7;
+            std::uint8_t rm1_field = modrm1 & 7;
+            bool reg1_ext = (rex1 & 0x04) != 0;
+            bool rm1_ext = (rex1 & 0x01) != 0;
+            std::uint8_t full_reg1 = reg1_field + (reg1_ext ? 8 : 0);
+            std::uint8_t full_rm1 = rm1_field + (rm1_ext ? 8 : 0);
+
+            // eliminate mov reg,reg where dst == src (identity move)
+            if (full_reg1 == full_rm1) {
+                code[i] = 0x90; code[i+1] = 0x90; code[i+2] = 0x90;
+                eliminated++;
+                i += 3;
+                continue;
+            }
+
+            // check next instruction
+            if (i + 3 >= size) { i += 3; continue; }
+            std::uint8_t rex2 = code[i + 3];
+            bool is_rex2 = (rex2 & 0xF0) == 0x40 && (rex2 & 0x08);
+            std::uint8_t opcode2 = (i + 4 < size) ? code[i + 4] : 0;
+            std::uint8_t modrm2 = (i + 5 < size) ? code[i + 5] : 0;
+
+            // pattern: mov dst,src; mov src,dst (copy-back redundancy)
+            // keep the first mov (save), eliminate the second (redundant copy-back)
+            if (is_rex2 && opcode2 == 0x89 && (modrm2 >> 6) == 3) {
+                std::uint8_t reg2_field = (modrm2 >> 3) & 7;
+                std::uint8_t rm2_field = modrm2 & 7;
+                bool reg2_ext = (rex2 & 0x04) != 0;
+                bool rm2_ext = (rex2 & 0x01) != 0;
+                std::uint8_t full_reg2 = reg2_field + (reg2_ext ? 8 : 0);
+                std::uint8_t full_rm2 = rm2_field + (rm2_ext ? 8 : 0);
+
+                if (full_reg1 == full_rm2 && full_rm1 == full_reg2) {
+                    code[i+3] = 0x90; code[i+4] = 0x90; code[i+5] = 0x90;
+                    eliminated++;
+                    i += 6;
+                    continue;
+                }
+            }
+
+            i += 3;
+        }
+
+        if (eliminated > 0) {
+            emit_.set_peephole_eliminated(eliminated);
+        }
     }
 
 private:
@@ -471,6 +552,7 @@ private:
         Symbol* counter_sym = nullptr;
         std::vector<std::pair<Symbol*, x64::Reg>> bindings;
         std::vector<Update> updates;
+        bool use_simd = false;
     };
 
     struct WhileBoundPlan {
@@ -582,8 +664,7 @@ private:
     std::vector<x64::Reg> current_function_saved_regs_;
     Type current_function_return_type_;
     bool has_current_function_return_type_ = false;
-    std::unordered_map<const Symbol*, OwnedLocalState> owned_locals_;
-    struct InductionBinding {
+    std::unordered_map<const Symbol*, OwnedLocalState> owned_locals_;    struct InductionBinding {
         x64::Reg term_reg = x64::Reg::RDX;
         std::int64_t step = 0;
     };
@@ -715,6 +796,125 @@ private:
         }
     };
     std::unordered_map<std::string, StructInfo> structs_;
+
+    [[nodiscard]] static bool fits_i32_displacement(std::size_t offset) {
+        return offset <= static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)());
+    }
+
+    [[nodiscard]] bool checked_field_displacement(std::string_view type_name,
+                                                  std::string_view field_name,
+                                                  std::size_t offset,
+                                                  std::int32_t& out) {
+        if (!fits_i32_displacement(offset)) {
+            error(std::format("field offset for '{}.{}' is too large for a direct memory operand",
+                              type_name,
+                              field_name));
+            return false;
+        }
+        out = static_cast<std::int32_t>(offset);
+        return true;
+    }
+
+    [[nodiscard]] bool checked_view_offset(std::string_view type_name,
+                                           std::string_view field_name,
+                                           std::size_t offset,
+                                           std::int64_t& out) {
+        if (offset > static_cast<std::size_t>((std::numeric_limits<std::int64_t>::max)())) {
+            error(std::format("view field offset for '{}.{}' is too large",
+                              type_name,
+                              field_name));
+            return false;
+        }
+        out = static_cast<std::int64_t>(offset);
+        return true;
+    }
+
+    [[nodiscard]] bool checked_global_offset(std::string_view name, std::size_t offset, std::int32_t& out) {
+        if (!fits_i32_displacement(offset)) {
+            error(std::format("global '{}' is too far into the global data block for a direct memory operand", name));
+            return false;
+        }
+        out = static_cast<std::int32_t>(offset);
+        return true;
+    }
+
+    [[nodiscard]] bool checked_call_frame(std::string_view context,
+                                          std::size_t nargs,
+                                          std::size_t& alloc,
+                                          std::int64_t& cleanup) {
+        std::size_t stack_args = nargs > 4 ? nargs - 4 : 0;
+        if (stack_args > ((std::numeric_limits<std::size_t>::max)() - 32) / 8) {
+            error(std::format("{} has too many arguments", context));
+            return false;
+        }
+
+        alloc = 32 + stack_args * 8;
+        if (stack_args == 0 && (nargs & 1) != 0) {
+            if (alloc > (std::numeric_limits<std::size_t>::max)() - 8) {
+                error(std::format("{} call frame size overflow", context));
+                return false;
+            }
+            alloc += 8;
+        }
+
+        if (nargs > ((std::numeric_limits<std::size_t>::max)() - alloc) / 8) {
+            error(std::format("{} pushed argument size overflow", context));
+            return false;
+        }
+
+        std::size_t total = alloc + nargs * 8;
+        if (!fits_i32_displacement(alloc) || !fits_i32_displacement(total)) {
+            error(std::format("{} call frame is too large to encode safely", context));
+            return false;
+        }
+
+        cleanup = static_cast<std::int64_t>(total);
+        return true;
+    }
+
+    [[nodiscard]] bool checked_call_source_offset(std::string_view context,
+                                                  std::size_t alloc,
+                                                  std::size_t nargs,
+                                                  std::size_t index,
+                                                  std::int32_t& out) {
+        if (index >= nargs) {
+            error(std::format("{} internal argument index is out of range", context));
+            return false;
+        }
+
+        std::size_t reverse_index = nargs - 1 - index;
+        if (reverse_index > ((std::numeric_limits<std::size_t>::max)() - alloc) / 8) {
+            error(std::format("{} argument source offset overflow", context));
+            return false;
+        }
+
+        std::size_t offset = alloc + reverse_index * 8;
+        if (!fits_i32_displacement(offset)) {
+            error(std::format("{} argument source offset is too large to encode safely", context));
+            return false;
+        }
+
+        out = static_cast<std::int32_t>(offset);
+        return true;
+    }
+
+    [[nodiscard]] bool checked_call_dest_offset(std::string_view context,
+                                                std::size_t index,
+                                                std::int32_t& out) {
+        if (index < 4 || index > ((std::numeric_limits<std::size_t>::max)() - 32) / 8 + 4) {
+            error(std::format("{} internal stack argument index is out of range", context));
+            return false;
+        }
+
+        std::size_t offset = 32 + (index - 4) * 8;
+        if (!fits_i32_displacement(offset)) {
+            error(std::format("{} stack argument offset is too large to encode safely", context));
+            return false;
+        }
+
+        out = static_cast<std::int32_t>(offset);
+        return true;
+    }
     
     // Current class context (for self.field resolution in methods)
     std::string current_class_name_;
@@ -777,7 +977,56 @@ private:
     
     // auto-parallelization flag
     bool auto_parallel_ = false;
-    
+    int while_loop_depth_ = 0;
+
+    // type-context stack for binary ops. lhs type drives signed/unsigned/float dispatch.
+    std::vector<Type> binary_op_type_stack_;
+    bool binary_type_is_unsigned() const {
+        if (binary_op_type_stack_.empty()) return false;
+        const Type& t = binary_op_type_stack_.back();
+        if (auto* p = std::get_if<PrimitiveType>(&t.kind)) {
+            switch (*p) {
+                case PrimitiveType::U8:
+                case PrimitiveType::U16:
+                case PrimitiveType::U32:
+                case PrimitiveType::U64:
+                case PrimitiveType::U128:
+                case PrimitiveType::Ptr:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        if (std::holds_alternative<PointerType>(t.kind)) return true;
+        return false;
+    }
+    bool binary_type_is_float() const {
+        if (binary_op_type_stack_.empty()) return false;
+        return binary_op_type_stack_.back().is_float();
+    }
+    bool binary_type_is_f32() const {
+        if (binary_op_type_stack_.empty()) return false;
+        if (auto* p = std::get_if<PrimitiveType>(&binary_op_type_stack_.back().kind)) {
+            return *p == PrimitiveType::F32;
+        }
+        return false;
+    }
+    struct BinaryOpTypeGuard {
+        CodeGenerator* self;
+        bool active;
+        BinaryOpTypeGuard(CodeGenerator* s, std::optional<Type> t) : self(s), active(false) {
+            if (t) {
+                s->binary_op_type_stack_.push_back(std::move(*t));
+                active = true;
+            }
+        }
+        ~BinaryOpTypeGuard() {
+            if (active) self->binary_op_type_stack_.pop_back();
+        }
+        BinaryOpTypeGuard(const BinaryOpTypeGuard&) = delete;
+        BinaryOpTypeGuard& operator=(const BinaryOpTypeGuard&) = delete;
+    };
+
     // monotonic counter for deterministic spawn variable names
     std::size_t spawn_counter_ = 0;
     
@@ -1025,6 +1274,11 @@ private:
             {"simd_i64x8_sub",     [this](const ast::CallExpr& c) { return generate_builtin_simd_i64x8_sub(c); }},
             {"simd_i32x16_splat",  [this](const ast::CallExpr& c) { return generate_builtin_simd_i32x16_splat(c); }},
             {"simd_i64x8_splat",   [this](const ast::CallExpr& c) { return generate_builtin_simd_i64x8_splat(c); }},
+            {"simd_i32x16_add_avx2",  [this](const ast::CallExpr& c) { return generate_builtin_simd_i32x16_add_avx2(c); }},
+            {"simd_i64x8_add_avx2",   [this](const ast::CallExpr& c) { return generate_builtin_simd_i64x8_add_avx2(c); }},
+            {"simd_i64x8_mul_avx2",   [this](const ast::CallExpr& c) { return generate_builtin_simd_i64x8_mul_avx2(c); }},
+            {"simd_i64x8_mul_avx512", [this](const ast::CallExpr& c) { return generate_builtin_simd_i64x8_mul_avx512(c); }},
+            {"simd_i64x4_add_avx512", [this](const ast::CallExpr& c) { return generate_builtin_simd_i64x4_add_avx512(c); }},
             // ffi - windows api
             {"get_module",      [this](const ast::CallExpr& c) { return generate_builtin_ffi_one_arg(c, "get_module"); }},
             {"load_library",    [this](const ast::CallExpr& c) { return generate_builtin_ffi_one_arg(c, "load_library"); }},
@@ -1188,6 +1442,99 @@ private:
         }
     }
 
+    struct SpeculativeCodegenSnapshot {
+        struct SymbolSnapshot {
+            std::string name;
+            Type type;
+            std::int32_t stack_offset = -8;
+            bool is_param = false;
+            bool is_mut = false;
+        };
+
+        std::size_t code_mark = 0;
+        std::size_t line_map_mark = 0;
+        std::size_t break_mark = 0;
+        std::size_t continue_mark = 0;
+        Scope* scope = nullptr;
+        std::vector<SymbolSnapshot> symbols;
+        std::unordered_map<std::string, std::vector<const ast::Expr*>> inline_bindings;
+        std::int32_t next_offset = -8;
+        std::unordered_map<const Symbol*, x64::Reg> register_bindings;
+        std::unordered_map<const Symbol*, std::string> stack_struct_locals;
+        std::unordered_map<std::string, x64::Reg> pending_named_register_bindings;
+        std::unordered_map<const Symbol*, OwnedLocalState> owned_locals;
+        std::unordered_map<const Symbol*, InductionBinding> accumulator_inductions;
+        std::unordered_map<const Symbol*, InductionBinding> counter_inductions;
+    };
+
+    [[nodiscard]] SpeculativeCodegenSnapshot capture_speculative_codegen_state() const {
+        SpeculativeCodegenSnapshot snapshot;
+        snapshot.code_mark = emit_.buffer().pos();
+        snapshot.line_map_mark = line_map_.size();
+        snapshot.break_mark = break_patches_.size();
+        snapshot.continue_mark = continue_patches_.size();
+        snapshot.scope = current_scope_;
+        if (current_scope_) {
+            snapshot.symbols.reserve(current_scope_->symbols.size());
+            for (const auto& [_, sym] : current_scope_->symbols) {
+                snapshot.symbols.push_back({
+                    .name = sym.name,
+                    .type = sym.type.clone(),
+                    .stack_offset = sym.stack_offset,
+                    .is_param = sym.is_param,
+                    .is_mut = sym.is_mut,
+                });
+            }
+            snapshot.inline_bindings = current_scope_->inline_bindings;
+            snapshot.next_offset = current_scope_->next_offset;
+        }
+        snapshot.register_bindings = register_bindings_;
+        snapshot.stack_struct_locals = stack_struct_locals_;
+        snapshot.pending_named_register_bindings = pending_named_register_bindings_;
+        snapshot.owned_locals = owned_locals_;
+        snapshot.accumulator_inductions = accumulator_inductions_;
+        snapshot.counter_inductions = counter_inductions_;
+        return snapshot;
+    }
+
+    void restore_speculative_codegen_state(const SpeculativeCodegenSnapshot& snapshot) {
+        emit_.buffer().truncate(snapshot.code_mark);
+        line_map_.resize(snapshot.line_map_mark);
+        break_patches_.resize(snapshot.break_mark);
+        continue_patches_.resize(snapshot.continue_mark);
+        if (snapshot.scope) {
+            snapshot.scope->symbols.clear();
+            for (const auto& sym : snapshot.symbols) {
+                snapshot.scope->symbols.emplace(sym.name, Symbol{
+                    .name = sym.name,
+                    .type = sym.type.clone(),
+                    .stack_offset = sym.stack_offset,
+                    .is_param = sym.is_param,
+                    .is_mut = sym.is_mut,
+                });
+            }
+            snapshot.scope->inline_bindings = snapshot.inline_bindings;
+            snapshot.scope->next_offset = snapshot.next_offset;
+        }
+        current_scope_ = snapshot.scope;
+        register_bindings_ = snapshot.register_bindings;
+        stack_struct_locals_ = snapshot.stack_struct_locals;
+        pending_named_register_bindings_ = snapshot.pending_named_register_bindings;
+        owned_locals_ = snapshot.owned_locals;
+        accumulator_inductions_ = snapshot.accumulator_inductions;
+        counter_inductions_ = snapshot.counter_inductions;
+    }
+
+    template<typename EmitFn>
+    [[nodiscard]] bool try_speculative_codegen(EmitFn&& emit_fn) {
+        auto snapshot = capture_speculative_codegen_state();
+        if (emit_fn()) {
+            return true;
+        }
+        restore_speculative_codegen_state(snapshot);
+        return false;
+    }
+
     [[nodiscard]] std::optional<x64::Reg> lookup_bound_reg(const Symbol* sym) const {
         if (!sym) {
             return std::nullopt;
@@ -1260,6 +1607,40 @@ private:
         return std::nullopt;
     }
 
+    [[nodiscard]] std::optional<x64::XmmReg> pick_xmm_reg() const {
+        static constexpr std::array<x64::XmmReg, 6> candidates = {
+            x64::XmmReg::XMM6,
+            x64::XmmReg::XMM7,
+            x64::XmmReg::XMM8,
+            x64::XmmReg::XMM9,
+            x64::XmmReg::XMM10,
+            x64::XmmReg::XMM11,
+        };
+
+        for (x64::XmmReg candidate : candidates) {
+            if (xmm_reg_is_bound(candidate)) {
+                continue;
+            }
+            return candidate;
+        }
+
+        return std::nullopt;
+    }
+
+    void bind_xmm_reg(x64::XmmReg reg) {
+        xmm_bound_regs_.insert(static_cast<std::uint8_t>(reg));
+    }
+
+    void unbind_xmm_reg(x64::XmmReg reg) {
+        xmm_bound_regs_.erase(static_cast<std::uint8_t>(reg));
+    }
+
+    [[nodiscard]] bool xmm_reg_is_bound(x64::XmmReg reg) const {
+        return xmm_bound_regs_.contains(static_cast<std::uint8_t>(reg));
+    }
+
+    std::unordered_set<std::uint8_t> xmm_bound_regs_;
+
     [[nodiscard]] std::size_t scope_frame_size(std::size_t scope_mark) const {
         std::int32_t min_stack_offset = 0;
         for (std::size_t i = scope_mark; i < scopes_.size(); ++i) {
@@ -1276,9 +1657,14 @@ private:
         return static_cast<std::size_t>(-min_stack_offset);
     }
 
-    void patch_scope_frame(std::size_t patch_site, std::size_t scope_mark, std::size_t save_reg_count = 0) {
+    [[nodiscard]] bool patch_scope_frame(std::size_t patch_site, std::size_t scope_mark, std::size_t save_reg_count = 0) {
         std::size_t alloc = x64::Emitter::aligned_stack_allocation(scope_frame_size(scope_mark), save_reg_count);
+        if (alloc > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) {
+            error("stack frame is too large to encode safely");
+            return false;
+        }
         emit_.buffer().patch32(patch_site, static_cast<std::uint32_t>(alloc));
+        return true;
     }
 
     [[nodiscard]] std::int32_t rel32_from_patch(std::size_t patch_site, std::size_t target) {
@@ -1404,7 +1790,11 @@ private:
         if (!offset_opt) {
             return false;
         }
-        absolute_offset = sym->stack_offset + static_cast<std::int32_t>(*offset_opt);
+        std::int32_t field_offset = 0;
+        if (!checked_field_displacement(struct_it->first, field.field, *offset_opt, field_offset)) {
+            return false;
+        }
+        absolute_offset = sym->stack_offset + field_offset;
         return true;
     }
 
@@ -1434,7 +1824,9 @@ private:
             return false;
         }
         base_reg = *bound;
-        field_offset = static_cast<std::int32_t>(*offset_opt);
+        if (!checked_field_displacement(struct_it->first, field.field, *offset_opt, field_offset)) {
+            return false;
+        }
         return true;
     }
 
@@ -2417,7 +2809,8 @@ private:
                     .decl = &fn,
                     .is_resolved = fn.attrs.is_resolved_decl(),
                     .resolved_storage_name = fn.attrs.is_resolved_decl() ? resolved_storage_name_for(fn.name) : "",
-                    .resolved_init_name = fn.attrs.is_resolved_decl() ? resolved_init_name_for(fn.name) : ""
+                    .resolved_init_name = fn.attrs.is_resolved_decl() ? resolved_init_name_for(fn.name) : "",
+                    .single_use_inline_safe = !fn.attrs.is_extern() && is_single_use_inline_safe_fn(fn)
                 };
             } else if (decl->is<ast::ConstDecl>()) {
                 if (!register_const_decl(decl->as<ast::ConstDecl>())) {
@@ -2558,7 +2951,8 @@ private:
                         .decl = &fn,
                         .is_resolved = fn.attrs.is_resolved_decl(),
                         .resolved_storage_name = fn.attrs.is_resolved_decl() ? resolved_storage_name_for(fn.name) : "",
-                        .resolved_init_name = fn.attrs.is_resolved_decl() ? resolved_init_name_for(fn.name) : ""
+                        .resolved_init_name = fn.attrs.is_resolved_decl() ? resolved_init_name_for(fn.name) : "",
+                        .single_use_inline_safe = !fn.attrs.is_extern() && is_single_use_inline_safe_fn(fn)
                     };
                 } else if (decl->is<ast::ConstDecl>()) {
                     if (!register_const_decl(decl->as<ast::ConstDecl>())) {
@@ -2986,6 +3380,10 @@ private:
             gv.type = resolved_type->clone();
             gv.is_mut = false;
             gv.is_resolved = true;
+            if (next_global_offset_ > (std::numeric_limits<std::size_t>::max)() - 8) {
+                error("global data block size overflow");
+                return false;
+            }
             gv.offset = next_global_offset_;
             next_global_offset_ += 8;
             gv.init_fn_name = init_name;
@@ -3026,6 +3424,10 @@ private:
         gv.type = std::move(*resolved_type);
         gv.is_mut = sd.is_mut;
         gv.is_resolved = sd.attrs.is_resolved_decl();
+        if (next_global_offset_ > (std::numeric_limits<std::size_t>::max)() - 8) {
+            error("global data block size overflow");
+            return false;
+        }
         gv.offset = next_global_offset_;
         next_global_offset_ += 8;
         
@@ -3062,6 +3464,10 @@ private:
         std::size_t frame_patch = emit_.prologue_patchable();
         
         if (next_global_offset_ > 0) {
+            if (!fits_i32_displacement(next_global_offset_)) {
+                error("global data block is too large to allocate safely");
+                return;
+            }
             if (!emit_runtime_alloc_bytes(static_cast<std::int32_t>(next_global_offset_))) return;
             
             // store base pointer so other functions can find it
@@ -3083,7 +3489,9 @@ private:
                     emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
 
                     if (!emit_load_global_base_ptr(x64::Reg::RAX)) return;
-                    emit_.mov_store(x64::Reg::RAX, static_cast<std::int32_t>(gv.offset), x64::Reg::RCX);
+                    std::int32_t global_offset = 0;
+                    if (!checked_global_offset(name, gv.offset, global_offset)) return;
+                    emit_.mov_store(x64::Reg::RAX, global_offset, x64::Reg::RCX);
                 } else if (gv.init) {
                     // evaluate initializer -> RAX
                     if (!generate_expr(*gv.init)) return;
@@ -3093,12 +3501,14 @@ private:
                     if (!emit_load_global_base_ptr(x64::Reg::RAX)) return;
                     
                     // store value at base + offset
-                    emit_.mov_store(x64::Reg::RAX, static_cast<std::int32_t>(gv.offset), x64::Reg::RCX);
+                    std::int32_t global_offset = 0;
+                    if (!checked_global_offset(name, gv.offset, global_offset)) return;
+                    emit_.mov_store(x64::Reg::RAX, global_offset, x64::Reg::RCX);
                 }
             }
         }
 
-        patch_scope_frame(frame_patch, scope_mark);
+        if (!patch_scope_frame(frame_patch, scope_mark)) return;
         
         emit_.epilogue();
         pop_scope();
@@ -3135,7 +3545,14 @@ private:
             std::size_t offset = static_cast<std::size_t>(*offset_opt);
             info.fields.emplace_back(field.name, std::move(*resolved));
             info.field_offsets[field.name] = offset;
-            std::size_t end = offset + layout_field_storage_bytes(info.fields.back().second);
+            std::size_t field_size = layout_field_storage_bytes(info.fields.back().second);
+            if (offset > (std::numeric_limits<std::size_t>::max)() - field_size) {
+                error(std::format("view field '{}.{}' extends past the supported address range",
+                                  v.name,
+                                  field.name));
+                return false;
+            }
+            std::size_t end = offset + field_size;
             if (end > info.total_size) {
                 info.total_size = end;
             }
@@ -3256,7 +3673,11 @@ private:
                 return false;
             }
 
-            patch_scope_frame(frame_patch, scope_mark);
+            if (!patch_scope_frame(frame_patch, scope_mark)) {
+                has_current_function_return_type_ = false;
+                pop_scope();
+                return false;
+            }
             
             // Default return if no explicit return
             emit_.mov_imm32(x64::Reg::RAX, 0);
@@ -3968,7 +4389,12 @@ private:
             return false;
         }
 
-        patch_scope_frame(frame_patch, scope_mark, current_function_saved_regs_.size());
+        if (!patch_scope_frame(frame_patch, scope_mark, current_function_saved_regs_.size())) {
+            has_current_function_return_type_ = false;
+            pop_scope();
+            current_function_saved_regs_.clear();
+            return false;
+        }
 
         pending_named_register_bindings_.clear();
         register_bindings_.clear();
@@ -4034,7 +4460,10 @@ private:
             emit_return_float_rax_to_xmm0(current_function_return_type_);
         }
 
-        patch_scope_frame(frame_patch, scope_mark);
+        if (!patch_scope_frame(frame_patch, scope_mark)) {
+            pop_scope();
+            return false;
+        }
         emit_current_epilogue();
 
         info.code_size = emit_.buffer().pos() - info.code_offset;
@@ -4873,6 +5302,7 @@ private:
             [&](const ast::BlockExpr& e) -> std::optional<Type> {
                 return infer_block_result_type(e.block);
             },
+            // [&](const ast::TernaryExpr& e) -> std::optional<Type> { ... },
             [&](const ast::SpawnExpr&) -> std::optional<Type> {
                 return Type::make_primitive(PrimitiveType::I64);
             },
@@ -4932,14 +5362,16 @@ private:
                 emit_.buffer().emit8(0x63);
                 emit_.buffer().emit8(0xC0); // movsxd rax, eax
                 return;
+            case PrimitiveType::U32:
+                // mov eax, eax (32-bit op zero-extends to 64 on x64)
+                emit_.buffer().emit8(0x89);
+                emit_.buffer().emit8(0xC0);
+                return;
             case PrimitiveType::U8:
                 emit_.and_imm(x64::Reg::RAX, 0xFF);
                 return;
             case PrimitiveType::U16:
                 emit_.and_imm(x64::Reg::RAX, 0xFFFF);
-                return;
-            case PrimitiveType::U32:
-                emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xC0); // mov eax, eax
                 return;
             default:
                 return;
@@ -5091,19 +5523,23 @@ private:
         return true;
     }
 
-    void reserve_symbol_stack_storage(Symbol& sym) {
+    [[nodiscard]] bool reserve_symbol_stack_storage(Symbol& sym) {
         auto struct_name = get_struct_name(sym.type);
         if (!struct_name) {
-            return;
+            return true;
         }
 
         auto it = structs_.find(*struct_name);
         if (it == structs_.end()) {
-            return;
+            return true;
         }
 
         std::size_t size = it->second.total_size > 0 ? it->second.total_size : 8;
         if (!it->second.is_view && size > 8) {
+            if (size - 8 > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) {
+                error(std::format("struct '{}' is too large for stack storage", *struct_name));
+                return false;
+            }
             auto extra = static_cast<std::int32_t>(size - 8);
             sym.stack_offset -= extra;
             current_scope_->next_offset -= extra;
@@ -5111,6 +5547,7 @@ private:
         if (!it->second.is_view) {
             stack_struct_locals_[&sym] = *struct_name;
         }
+        return true;
     }
 
     [[nodiscard]] Symbol* define_let_symbol(const ast::LetStmt& let) {
@@ -5119,7 +5556,9 @@ private:
             return nullptr;
         }
         Symbol& sym = current_scope_->define(let.name, std::move(type), let.is_mut);
-        reserve_symbol_stack_storage(sym);
+        if (!reserve_symbol_stack_storage(sym)) {
+            return nullptr;
+        }
         if (auto it = pending_named_register_bindings_.find(let.name); it != pending_named_register_bindings_.end()) {
             register_bindings_[&sym] = it->second;
         }
@@ -5176,7 +5615,11 @@ private:
                     if (!generate_expr(*value_expr)) {
                         return false;
                     }
-                    emit_.mov_store(x64::Reg::RBP, sym.stack_offset + static_cast<std::int32_t>(*offset_opt), x64::Reg::RAX);
+                    std::int32_t field_offset = 0;
+                    if (!checked_field_displacement(info.name, field_name, *offset_opt, field_offset)) {
+                        return false;
+                    }
+                    emit_.mov_store(x64::Reg::RBP, sym.stack_offset + field_offset, x64::Reg::RAX);
                 }
                 if (auto bound = lookup_bound_reg(&sym)) {
                     emit_.lea(*bound, x64::Reg::RBP, sym.stack_offset);
@@ -5234,21 +5677,6 @@ private:
         if (!current_scope_ || !stmts[start_index]->is<ast::LetStmt>()) {
             return false;
         }
-
-        auto try_speculative_codegen = [&](auto&& emit_fn) -> bool {
-            std::size_t code_mark = emit_.buffer().pos();
-            std::size_t line_map_mark = line_map_.size();
-            std::size_t break_mark = break_patches_.size();
-            std::size_t continue_mark = continue_patches_.size();
-            if (emit_fn()) {
-                return true;
-            }
-            emit_.buffer().truncate(code_mark);
-            line_map_.resize(line_map_mark);
-            break_patches_.resize(break_mark);
-            continue_patches_.resize(continue_mark);
-            return false;
-        };
 
         std::size_t while_index = start_index;
         while (while_index < stmts.size() && stmts[while_index]->is<ast::LetStmt>()) {
@@ -5447,21 +5875,6 @@ private:
             }
             return true;
         }
-
-        auto try_speculative_codegen = [&](auto&& emit_fn) -> bool {
-            std::size_t code_mark = emit_.buffer().pos();
-            std::size_t line_map_mark = line_map_.size();
-            std::size_t break_mark = break_patches_.size();
-            std::size_t continue_mark = continue_patches_.size();
-            if (emit_fn()) {
-                return true;
-            }
-            emit_.buffer().truncate(code_mark);
-            line_map_.resize(line_map_mark);
-            break_patches_.resize(break_mark);
-            continue_patches_.resize(continue_mark);
-            return false;
-        };
 
         std::unordered_map<std::size_t, std::vector<std::string>> expirations;
         std::unordered_map<std::size_t, std::vector<const Symbol*>> reg_expirations;
@@ -5736,6 +6149,17 @@ private:
     }
 
     [[nodiscard]] bool generate_let(const ast::LetStmt& let) {
+        if (while_loop_depth_ > 0 && let.is_mut && let.init) {
+            auto init_type = infer_expr_type(*let.init);
+            bool is_simple_int = init_type && init_type->is_integer();
+            bool is_struct_val = init_type && get_struct_name(*init_type).has_value();
+            if (is_simple_int && !is_struct_val && available_scratch_reg_count({x64::Reg::RAX}) > 4) {
+                auto free_reg = pick_scratch_reg({x64::Reg::RAX});
+                if (free_reg) {
+                    pending_named_register_bindings_[let.name] = *free_reg;
+                }
+            }
+        }
         Symbol* sym = define_let_symbol(let);
         if (!sym) {
             return false;
@@ -6278,9 +6702,13 @@ private:
         if (!offset_opt) {
             return false;
         }
+        std::int32_t field_offset = 0;
+        if (!checked_field_displacement(struct_it->first, lhs_field->field, *offset_opt, field_offset)) {
+            return false;
+        }
 
         info.base_sym = base_sym;
-        info.field_offset = static_cast<std::int32_t>(*offset_opt);
+        info.field_offset = field_offset;
         info.op = rhs_bin->op;
         info.rhs = rhs_bin->rhs.get();
         info.has_rhs_imm = try_get_i64_immediate(*rhs_bin->rhs, info.rhs_imm);
@@ -6503,8 +6931,6 @@ private:
         }
         emit_.mov_store(x64::Reg::RBP, update.sym->stack_offset, x64::Reg::RAX);
         return true;
-
-        return false;
     }
 
     [[nodiscard]] bool generate_field_self_update_expr_stmt(const ast::Expr& expr) {
@@ -6546,6 +6972,25 @@ private:
         }
 
         if (auto bound = lookup_bound_reg(update.base_sym)) {
+            // when rhs is a simple ident with a bound register, use it directly
+            // instead of copying to a scratch first (eliminates redundant mov)
+            if (update.rhs && update.rhs->is<ast::IdentExpr>()) {
+                auto rhs_sym = current_scope_->lookup(update.rhs->as<ast::IdentExpr>().name);
+                if (rhs_sym) {
+                    auto rhs_bound = lookup_bound_reg(rhs_sym);
+                    if (rhs_bound && *rhs_bound != *bound) {
+                        auto value_reg = pick_scratch_reg({*bound, *rhs_bound, x64::Reg::RDX});
+                        if (value_reg) {
+                            emit_.mov_load(*value_reg, *bound, update.field_offset);
+                            if (!emit_binary_into_with_rhs_reg(*value_reg, update.op, *rhs_bound)) {
+                                return false;
+                            }
+                            emit_.mov_store(*bound, update.field_offset, *value_reg);
+                            return true;
+                        }
+                    }
+                }
+            }
             auto rhs_reg = pick_scratch_reg({*bound, x64::Reg::RDX});
             if (!rhs_reg) {
                 return false;
@@ -7091,6 +7536,74 @@ private:
             plan.bindings.push_back({ordered_symbols[i], value_regs[i]});
         }
 
+        plan.use_simd = ordered_symbols.size() >= 2 && plan.updates.size() >= 2;
+
+        return true;
+    }
+
+    [[nodiscard]] bool generate_while_multistate_simd(const WhileMultiStatePlan& plan) {
+        if (plan.bindings.size() < 2 || plan.updates.size() < 2) {
+            return generate_while_multistate_registerized(plan);
+        }
+
+        int simd_updates = 0;
+        for (const auto& update : plan.updates) {
+            if (update.sym != plan.counter_sym && update.has_rhs_imm && update.rhs_imm == 1) {
+                simd_updates++;
+            }
+        }
+
+        if (simd_updates < 2) {
+            return generate_while_multistate_registerized(plan);
+        }
+
+        auto xmm0 = pick_xmm_reg();
+        x64::XmmReg avoid0 = xmm0 ? *xmm0 : x64::XmmReg::XMM0;
+        bind_xmm_reg(avoid0);
+        auto xmm1_opt = pick_xmm_reg();
+        unbind_xmm_reg(avoid0);
+
+        if (!xmm0 || !xmm1_opt) {
+            return generate_while_multistate_registerized(plan);
+        }
+
+        bind_xmm_reg(*xmm0);
+        bind_xmm_reg(*xmm1_opt);
+
+        emit_.movdqu128_load(*xmm0, x64::Reg::RBP, plan.bindings[0].first->stack_offset);
+        emit_.movdqu128_load(*xmm1_opt, x64::Reg::RBP, plan.bindings[1].first->stack_offset);
+
+        std::size_t loop_start = emit_.buffer().pos();
+        emit_.cmp_smart_imm(x64::Reg::RCX, plan.limit);
+        std::size_t exit_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        emit_.mov_imm64(x64::Reg::RAX, 1);
+        emit_.vmovq_from_gpr(x64::XmmReg::XMM2, x64::Reg::RAX);
+
+        emit_.paddq(*xmm0, x64::XmmReg::XMM2);
+        emit_.paddq(*xmm1_opt, x64::XmmReg::XMM2);
+
+        for (const auto& update : plan.updates) {
+            if (!emit_multistate_while_update(plan, update)) {
+                unbind_xmm_reg(*xmm1_opt);
+                unbind_xmm_reg(*xmm0);
+                return false;
+            }
+        }
+
+        emit_.movdqu128_store(x64::Reg::RBP, plan.bindings[0].first->stack_offset, *xmm0);
+        emit_.movdqu128_store(x64::Reg::RBP, plan.bindings[1].first->stack_offset, *xmm1_opt);
+
+        emit_jmp_rel32_to(loop_start);
+
+        emit_.patch_jump(exit_patch);
+
+        for (const auto& [sym, reg] : plan.bindings) {
+            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, reg);
+        }
+
+        unbind_xmm_reg(*xmm1_opt);
+        unbind_xmm_reg(*xmm0);
         return true;
     }
 
@@ -7567,25 +8080,25 @@ private:
             if (!emit_ptr_symbol_into(sym, x64::Reg::R10)) {
                 return false;
             }
-            emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
+emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         }
-
+        
         constexpr std::int64_t kUnroll = 4;
         if (plan.limit >= kUnroll) {
             const std::int64_t threshold = plan.limit - (kUnroll - 1);
             std::size_t unroll_loop_start = emit_.buffer().pos();
             emit_.cmp_smart_imm(x64::Reg::RCX, threshold);
             std::size_t tail_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
-
+            
             for (std::int64_t i = 0; i < kUnroll; ++i) {
                 if (!emit_body()) {
                     return false;
                 }
             }
-
+            
             emit_.add_smart(x64::Reg::RCX, static_cast<std::int32_t>(kUnroll));
             emit_jmp_rel32_to(unroll_loop_start);
-
+            
             emit_.patch_jump(tail_patch);
         }
 
@@ -8219,7 +8732,20 @@ private:
         return true;
     }
 
+    // [[nodiscard]] bool generate_ternary(const ast::TernaryExpr& tern) { ... } // TEMPORARILY DISABLED
+
     [[nodiscard]] bool generate_while(const ast::WhileStmt& while_stmt) {
+        // try aggressive SIMD vectorization FIRST
+        if (vectorize::can_vectorize(while_stmt)) {
+            vectorize::LoopInfo info = vectorize::analyze_loop(while_stmt);
+            if (vectorize::is_profitable(info)) {
+                vectorize::LoopVectorizer vec(emit_);
+                if (vec.try_vectorize(while_stmt)) {
+                    return true;
+                }
+            }
+        }
+
         WhileSimdKernelPlan simd_plan;
         if (try_make_while_simd_kernel_plan(while_stmt, simd_plan)) {
             return generate_while_simd_kernel_registerized(simd_plan);
@@ -8227,6 +8753,9 @@ private:
 
         WhileMultiStatePlan multi_plan;
         if (try_make_while_multistate_plan(while_stmt, multi_plan)) {
+            if (multi_plan.use_simd) {
+                return generate_while_multistate_simd(multi_plan);
+            }
             return generate_while_multistate_registerized(multi_plan);
         }
 
@@ -8249,10 +8778,13 @@ private:
 
         // Body (with new scope)
         push_scope();
+        while_loop_depth_++;
         if (!generate_stmt_list(while_stmt.body)) {
+            while_loop_depth_--;
             pop_scope();
             return false;
         }
+        while_loop_depth_--;
         pop_scope();
 
         // continue target = loop_start (re-evaluate condition)
@@ -8303,6 +8835,8 @@ private:
     }
 
     [[nodiscard]] bool generate_for(const ast::ForStmt& for_stmt) {
+        // TODO: SIMD vectorization for range loops - needs WhileStmt/ForStmt overloads
+        // For now, use scalar path
         push_scope();
         break_patches_.push_back({});
         continue_patches_.push_back({});
@@ -8505,9 +9039,35 @@ private:
         }
     }
 
+    // unsigned-aware variant when current binary type is unsigned/pointer-like
+    [[nodiscard]] std::optional<std::uint8_t> false_branch_cc_for_current_type(ast::BinaryExpr::Op op) const {
+        using Op = ast::BinaryExpr::Op;
+        if (binary_type_is_unsigned()) {
+            switch (op) {
+                case Op::Eq: return x64::Emitter::CC_NE;
+                case Op::Ne: return x64::Emitter::CC_E;
+                case Op::Lt: return x64::Emitter::CC_AE;
+                case Op::Gt: return x64::Emitter::CC_BE;
+                case Op::Le: return x64::Emitter::CC_A;
+                case Op::Ge: return x64::Emitter::CC_B;
+                default: return std::nullopt;
+            }
+        }
+        return false_branch_cc(op);
+    }
+
     [[nodiscard]] bool emit_condition_false_jump(const ast::Expr& condition, std::size_t& jump_patch) {
         if (auto* bin = std::get_if<ast::BinaryExpr>(&condition.kind)) {
-            if (auto false_cc = false_branch_cc(bin->op)) {
+            // type-context guard for the comparison so unsigned-aware cc is selected
+            BinaryOpTypeGuard cond_guard(this, infer_expr_type(*bin->lhs));
+            // float comparisons can't use the integer cmp fast paths
+            if (binary_type_is_float()) {
+                if (!generate_expr(condition)) return false;
+                emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+                jump_patch = emit_.jcc_rel32(x64::Emitter::CC_E);
+                return true;
+            }
+            if (auto false_cc = false_branch_cc_for_current_type(bin->op)) {
                 std::int64_t rhs_imm = 0;
                 if (try_get_i64_immediate(*bin->rhs, rhs_imm)) {
                     if (current_scope_ && bin->lhs->is<ast::IdentExpr>() &&
@@ -8552,6 +9112,63 @@ private:
                     }
                     jump_patch = emit_.jcc_rel32(*false_cc);
                     return true;
+                }
+
+                // fast paths when operands are bound to registers — avoids redundant mov-to-scratch.
+                // follows inline aliases so inlined fn params resolve to their hidden binding.
+                auto try_lookup_bound_for_ident = [&](const ast::Expr& e) -> std::optional<x64::Reg> {
+                    const ast::Expr* cur = &e;
+                    while (cur && cur->is<ast::IdentExpr>()) {
+                        if (!current_scope_) return std::nullopt;
+                        const auto& name = cur->as<ast::IdentExpr>().name;
+                        if (Symbol* sym = current_scope_->lookup(name)) {
+                            if (stack_struct_locals_.contains(sym)) return std::nullopt;
+                            return lookup_bound_reg(sym);
+                        }
+                        if (const ast::Expr* inlined = current_scope_->lookup_inline(name)) {
+                            cur = inlined;
+                            continue;
+                        }
+                        return std::nullopt;
+                    }
+                    return std::nullopt;
+                };
+
+                if (auto lhs_bound = try_lookup_bound_for_ident(*bin->lhs)) {
+                    if (auto rhs_bound = try_lookup_bound_for_ident(*bin->rhs)) {
+                        emit_.cmp(*lhs_bound, *rhs_bound);
+                        jump_patch = emit_.jcc_rel32(*false_cc);
+                        return true;
+                    }
+                    // lhs bound, rhs is something else
+                    if (bin->rhs->is<ast::FieldExpr>()) {
+                        std::int32_t mem_off = 0;
+                        x64::Reg mem_base = x64::Reg::RBP;
+                        const auto& rhs_field = bin->rhs->as<ast::FieldExpr>();
+                        if (try_stack_struct_field_offset(rhs_field, mem_off) ||
+                            try_bound_struct_field_operand(rhs_field, mem_base, mem_off)) {
+                            emit_.cmp_mem(*lhs_bound, mem_base, mem_off);
+                            jump_patch = emit_.jcc_rel32(*false_cc);
+                            return true;
+                        }
+                    }
+                }
+
+                if (bin->rhs->is<ast::IdentExpr>()) {
+                    if (auto rhs_bound = try_lookup_bound_for_ident(*bin->rhs)) {
+                        if (can_generate_pure_expr(*bin->lhs)) {
+                            auto lhs_reg = pick_scratch_reg({*rhs_bound});
+                            if (!lhs_reg) return false;
+                            if (!generate_pure_expr_into(*bin->lhs, *lhs_reg)) return false;
+                            emit_.cmp(*lhs_reg, *rhs_bound);
+                            jump_patch = emit_.jcc_rel32(*false_cc);
+                            return true;
+                        }
+                        if (!generate_expr(*bin->lhs)) return false;
+                        emit_.cmp(x64::Reg::RAX, *rhs_bound);
+                        jump_patch = emit_.jcc_rel32(*false_cc);
+                        return true;
+                    }
                 }
 
                 if (bin->rhs->is<ast::IdentExpr>()) {
@@ -8637,8 +9254,136 @@ private:
         emit_.movzx_byte(dst, dst);
     }
 
+    // Signed 64-bit divide that's safe against the INT_MIN / -1 hardware trap.
+    // After the call, RAX = quotient, RDX = remainder. dividend must already be in RAX.
+    void emit_safe_idiv(x64::Reg divisor) {
+        // if divisor == -1 and rax == INT64_MIN, idiv would trap (#DE).
+        // we patch the result to (INT64_MIN, 0) to match wrapping semantics without faulting.
+        emit_.cmp_smart_imm(divisor, -1);
+        std::size_t do_idiv_a = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        // cmp rax, INT64_MIN  (need full 64-bit cmp; cmp_smart_imm uses imm32 so use mov+cmp)
+        emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::min)()));
+        emit_.cmp(x64::Reg::RAX, x64::Reg::R11);
+        std::size_t do_idiv_b = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        // trap path: rax stays as INT_MIN (correct quotient), rdx=0 (correct remainder)
+        emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
+        std::size_t skip_real = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(do_idiv_a);
+        emit_.patch_jump(do_idiv_b);
+        emit_.cqo();
+        emit_.idiv(divisor);
+        emit_.patch_jump(skip_real);
+    }
+
+
+
+    // ===== float arithmetic helpers =====
+    // values live in integer regs as raw f64 bit patterns.
+    // we move them through XMM0/XMM1, do the SSE op, then move bits back.
+    // dst is the integer reg holding lhs bits; rhs is integer reg holding rhs bits.
+    // op_byte is the SSE2 opcode after the mandatory F2 prefix:
+    //   0x58 = ADDSD, 0x5C = SUBSD, 0x59 = MULSD, 0x5E = DIVSD
+    void emit_sse_scalar_double_op(x64::Reg dst, x64::Reg rhs, std::uint8_t op_byte) {
+        emit_.sub_imm(x64::Reg::RSP, 16);
+        emit_.mov_store(x64::Reg::RSP, 0, dst);
+        emit_.mov_store(x64::Reg::RSP, 8, rhs);
+        // movsd xmm0, [rsp]      F2 0F 10 04 24
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x10); emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24);
+        // movsd xmm1, [rsp+8]    F2 0F 10 4C 24 08
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x10); emit_.buffer().emit8(0x4C); emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x08);
+        // F2 0F <op> C1   = <opsd> xmm0, xmm1
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(op_byte); emit_.buffer().emit8(0xC1);
+        // movsd [rsp], xmm0      F2 0F 11 04 24
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x11); emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24);
+        emit_.mov_load(dst, x64::Reg::RSP, 0);
+        emit_.add_smart(x64::Reg::RSP, 16);
+    }
+
+    // ucomisd xmm0, xmm1 sets ZF/PF/CF, then setcc maps to the right ordered comparison.
+    // Mapping (for x < y, x > y etc.):
+    //   <  : setb   (CF=1)              CC_B
+    //   >  : seta                       CC_A
+    //   <= : setbe                      CC_BE
+    //   >= : setae                      CC_AE
+    //   == : sete + setnp + and         (handled inline)
+    //   != : setne + setp + or          (handled inline)
+    void emit_sse_compare_double(x64::Reg dst, x64::Reg rhs, ast::BinaryExpr::Op op) {
+        using Op = ast::BinaryExpr::Op;
+        emit_.sub_imm(x64::Reg::RSP, 16);
+        emit_.mov_store(x64::Reg::RSP, 0, dst);
+        emit_.mov_store(x64::Reg::RSP, 8, rhs);
+        // movsd xmm0, [rsp]
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x10); emit_.buffer().emit8(0x04); emit_.buffer().emit8(0x24);
+        // movsd xmm1, [rsp+8]
+        emit_.buffer().emit8(0xF2); emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x10); emit_.buffer().emit8(0x4C); emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x08);
+        // free the scratch slot BEFORE ucomisd so the add doesn't trash EFLAGS
+        emit_.add_smart(x64::Reg::RSP, 16);
+        // ucomisd xmm0, xmm1     66 0F 2E C1
+        emit_.buffer().emit8(0x66); emit_.buffer().emit8(0x0F);
+        emit_.buffer().emit8(0x2E); emit_.buffer().emit8(0xC1);
+
+        switch (op) {
+            case Op::Lt: emit_bool_result(x64::Emitter::CC_B, dst); return;
+            case Op::Gt: emit_bool_result(x64::Emitter::CC_A, dst); return;
+            case Op::Le: emit_bool_result(x64::Emitter::CC_BE, dst); return;
+            case Op::Ge: emit_bool_result(x64::Emitter::CC_AE, dst); return;
+            case Op::Eq:
+                // result = (ZF=1 AND PF=0). NaN compares set PF.
+                emit_.setcc(0xB, x64::Reg::R11); // setnp r11b
+                emit_.movzx_byte(x64::Reg::R11, x64::Reg::R11); // clear upper bits
+                emit_.setcc(x64::Emitter::CC_E, dst);
+                emit_.movzx_byte(dst, dst);
+                emit_.and_(dst, x64::Reg::R11);
+                return;
+            case Op::Ne:
+                // result = (ZF=0 OR PF=1)
+                emit_.setcc(0xA, x64::Reg::R11); // setp r11b
+                emit_.movzx_byte(x64::Reg::R11, x64::Reg::R11);
+                emit_.setcc(x64::Emitter::CC_NE, dst);
+                emit_.movzx_byte(dst, dst);
+                emit_.or_(dst, x64::Reg::R11);
+                return;
+            default:
+                error("unsupported float comparison");
+                return;
+        }
+    }
+
+    // dispatch: emit a binary op honoring float / unsigned context.
+    // returns true if it handled the op fully, false to fall back to integer path.
+    [[nodiscard]] bool maybe_emit_typed_binary_into(x64::Reg dst, ast::BinaryExpr::Op op, x64::Reg rhs) {
+        using Op = ast::BinaryExpr::Op;
+        if (binary_type_is_float()) {
+            switch (op) {
+                case Op::Add: emit_sse_scalar_double_op(dst, rhs, 0x58); return true;
+                case Op::Sub: emit_sse_scalar_double_op(dst, rhs, 0x5C); return true;
+                case Op::Mul: emit_sse_scalar_double_op(dst, rhs, 0x59); return true;
+                case Op::Div: emit_sse_scalar_double_op(dst, rhs, 0x5E); return true;
+                case Op::Eq: case Op::Ne:
+                case Op::Lt: case Op::Gt:
+                case Op::Le: case Op::Ge:
+                    emit_sse_compare_double(dst, rhs, op); return true;
+                default: break;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] bool emit_binary_into_with_rhs_imm(x64::Reg dst, ast::BinaryExpr::Op op, std::int64_t imm) {
         using Op = ast::BinaryExpr::Op;
+        // floats can't go through imm path - bail to the reg path
+        if (binary_type_is_float()) {
+            // load imm bits as the f64 (interpret as int) and dispatch via reg path
+            emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
+            return emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R11);
+        }
+        const bool is_unsigned = binary_type_is_unsigned();
         switch (op) {
             case Op::Add:
                 emit_.add_smart(dst, imm);
@@ -8716,7 +9461,8 @@ private:
                 return true;
             case Op::Shr:
                 if (imm != 0) {
-                    emit_.sar_imm(dst, static_cast<std::uint8_t>(imm));
+                    if (is_unsigned) emit_.shr_imm(dst, static_cast<std::uint8_t>(imm));
+                    else             emit_.sar_imm(dst, static_cast<std::uint8_t>(imm));
                 }
                 return true;
             case Op::Eq:
@@ -8729,19 +9475,19 @@ private:
                 return true;
             case Op::Lt:
                 emit_.cmp_smart_imm(dst, imm);
-                emit_bool_result(x64::Emitter::CC_L, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_B : x64::Emitter::CC_L, dst);
                 return true;
             case Op::Gt:
                 emit_.cmp_smart_imm(dst, imm);
-                emit_bool_result(x64::Emitter::CC_G, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_A : x64::Emitter::CC_G, dst);
                 return true;
             case Op::Le:
                 emit_.cmp_smart_imm(dst, imm);
-                emit_bool_result(x64::Emitter::CC_LE, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_BE : x64::Emitter::CC_LE, dst);
                 return true;
             case Op::Ge:
                 emit_.cmp_smart_imm(dst, imm);
-                emit_bool_result(x64::Emitter::CC_GE, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_AE : x64::Emitter::CC_GE, dst);
                 return true;
             default:
                 error("unsupported binary operator");
@@ -8755,6 +9501,8 @@ private:
 
     [[nodiscard]] bool emit_binary_into_with_rhs_reg(x64::Reg dst, ast::BinaryExpr::Op op, x64::Reg rhs) {
         using Op = ast::BinaryExpr::Op;
+        if (maybe_emit_typed_binary_into(dst, op, rhs)) return true;
+        const bool is_unsigned = binary_type_is_unsigned();
         switch (op) {
             case Op::Add:
                 emit_.add(dst, rhs);
@@ -8767,13 +9515,21 @@ private:
                 return true;
             case Op::Div:
                 if (dst != x64::Reg::RAX) return false;
-                emit_.cqo();
-                emit_.idiv(rhs);
+                if (is_unsigned) {
+                    emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
+                    emit_.div(rhs);
+                } else {
+                    emit_safe_idiv(rhs);
+                }
                 return true;
             case Op::Mod:
                 if (dst != x64::Reg::RAX) return false;
-                emit_.cqo();
-                emit_.idiv(rhs);
+                if (is_unsigned) {
+                    emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
+                    emit_.div(rhs);
+                } else {
+                    emit_safe_idiv(rhs);
+                }
                 emit_.mov(dst, x64::Reg::RDX);
                 return true;
             case Op::BitAnd:
@@ -8797,7 +9553,8 @@ private:
                     if (dst == x64::Reg::RCX) return false;
                     emit_.mov(x64::Reg::RCX, rhs);
                 }
-                emit_.sar_cl(dst);
+                if (is_unsigned) emit_.shr_cl(dst);
+                else             emit_.sar_cl(dst);
                 return true;
             case Op::Eq:
                 emit_.cmp(dst, rhs);
@@ -8809,19 +9566,19 @@ private:
                 return true;
             case Op::Lt:
                 emit_.cmp(dst, rhs);
-                emit_bool_result(x64::Emitter::CC_L, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_B : x64::Emitter::CC_L, dst);
                 return true;
             case Op::Gt:
                 emit_.cmp(dst, rhs);
-                emit_bool_result(x64::Emitter::CC_G, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_A : x64::Emitter::CC_G, dst);
                 return true;
             case Op::Le:
                 emit_.cmp(dst, rhs);
-                emit_bool_result(x64::Emitter::CC_LE, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_BE : x64::Emitter::CC_LE, dst);
                 return true;
             case Op::Ge:
                 emit_.cmp(dst, rhs);
-                emit_bool_result(x64::Emitter::CC_GE, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_AE : x64::Emitter::CC_GE, dst);
                 return true;
             default:
                 error("unsupported binary operator");
@@ -8831,6 +9588,12 @@ private:
 
     [[nodiscard]] bool emit_binary_into_with_rhs_mem(x64::Reg dst, ast::BinaryExpr::Op op, x64::Reg base, std::int32_t offset) {
         using Op = ast::BinaryExpr::Op;
+        if (binary_type_is_float()) {
+            // float through reg path
+            emit_.mov_load(x64::Reg::R11, base, offset);
+            return emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R11);
+        }
+        const bool is_unsigned = binary_type_is_unsigned();
         switch (op) {
             case Op::Add:
                 emit_.add_mem(dst, base, offset);
@@ -8848,19 +9611,19 @@ private:
                 return true;
             case Op::Lt:
                 emit_.cmp_mem(dst, base, offset);
-                emit_bool_result(x64::Emitter::CC_L, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_B : x64::Emitter::CC_L, dst);
                 return true;
             case Op::Gt:
                 emit_.cmp_mem(dst, base, offset);
-                emit_bool_result(x64::Emitter::CC_G, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_A : x64::Emitter::CC_G, dst);
                 return true;
             case Op::Le:
                 emit_.cmp_mem(dst, base, offset);
-                emit_bool_result(x64::Emitter::CC_LE, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_BE : x64::Emitter::CC_LE, dst);
                 return true;
             case Op::Ge:
                 emit_.cmp_mem(dst, base, offset);
-                emit_bool_result(x64::Emitter::CC_GE, dst);
+                emit_bool_result(is_unsigned ? x64::Emitter::CC_AE : x64::Emitter::CC_GE, dst);
                 return true;
             default:
                 return false;
@@ -8926,7 +9689,9 @@ private:
 
             if (has_global_slot_) {
                 if (!emit_load_global_base_ptr(dst)) return false;
-                emit_.mov_load(dst, dst, static_cast<std::int32_t>(gv.offset));
+                std::int32_t global_offset = 0;
+                if (!checked_global_offset(ident.name, gv.offset, global_offset)) return false;
+                emit_.mov_load(dst, dst, global_offset);
                 return true;
             }
 
@@ -9060,12 +9825,19 @@ private:
             return false;
         }
 
-        std::int32_t offset = static_cast<std::int32_t>(*offset_opt);
         if (struct_it->second.is_view) {
+            std::int64_t offset = 0;
+            if (!checked_view_offset(struct_it->first, field.field, *offset_opt, offset)) {
+                return false;
+            }
             if (offset != 0) {
                 emit_.add_smart(dst, offset);
             }
             return emit_load_typed_from_address_reg(dst, *field_type);
+        }
+        std::int32_t offset = 0;
+        if (!checked_field_displacement(struct_it->first, field.field, *offset_opt, offset)) {
+            return false;
         }
         if (base_sym) {
             if (auto bound = lookup_bound_reg(base_sym)) {
@@ -9082,6 +9854,62 @@ private:
         }
 
         emit_.mov_load(dst, dst, offset);
+        return true;
+    }
+
+    [[nodiscard]] bool generate_pure_struct_field_pair_sse(
+        const ast::FieldExpr& field,
+        const std::string& struct_name,
+        Symbol* base_sym,
+        x64::XmmReg xmm_dst,
+        const std::string& field1,
+        const std::string& field2
+    ) {
+        auto struct_it = structs_.find(struct_name);
+        if (struct_it == structs_.end()) {
+            return false;
+        }
+
+        auto off1_opt = struct_it->second.get_field_offset(field1);
+        auto off2_opt = struct_it->second.get_field_offset(field2);
+        if (!off1_opt || !off2_opt) {
+            return false;
+        }
+
+        if (*off1_opt > (std::numeric_limits<std::size_t>::max)() - 8 || *off2_opt != *off1_opt + 8) {
+            return false;
+        }
+        std::int32_t offset = 0;
+        if (!checked_field_displacement(struct_it->first, field1, *off1_opt, offset)) {
+            return false;
+        }
+
+        if (base_sym) {
+            if (auto bound = lookup_bound_reg(base_sym)) {
+                emit_.movdqu128_load(xmm_dst, *bound, offset);
+                return true;
+            }
+            if (stack_struct_locals_.contains(base_sym)) {
+                emit_.movdqu128_load(xmm_dst, x64::Reg::RBP, base_sym->stack_offset + offset);
+                return true;
+            }
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, base_sym->stack_offset);
+            emit_.movdqu128_load(xmm_dst, x64::Reg::RAX, offset);
+            return true;
+        }
+
+        emit_.movdqu128_load(xmm_dst, x64::Reg::RAX, offset);
+        return true;
+    }
+
+    [[nodiscard]] bool extract_first_i64_from_xmm(x64::XmmReg src, x64::Reg dst) {
+        emit_.movq_to_gpr(dst, src);
+        return true;
+    }
+
+    [[nodiscard]] bool extract_second_i64_from_xmm(x64::XmmReg src, x64::XmmReg tmp, x64::Reg dst) {
+        emit_.psrldq(tmp, src, 8);
+        emit_.movq_to_gpr(dst, tmp);
         return true;
     }
 
@@ -9150,8 +9978,66 @@ private:
         if (auto* bin = std::get_if<ast::BinaryExpr>(&expr.kind)) {
             std::int64_t rhs_imm = 0;
             if (try_get_i64_immediate(*bin->rhs, rhs_imm) && supports_binary_rhs_imm(bin->op, rhs_imm)) {
+                // fast path: lhs is a bound ident — use 3-operand imul / lea-add to avoid
+                // the redundant `mov dst, src_bound` before the op.
+                using Op = ast::BinaryExpr::Op;
+                auto resolve_lhs_bound = [&]() -> std::optional<x64::Reg> {
+                    const ast::Expr* cur = bin->lhs.get();
+                    while (cur && cur->is<ast::IdentExpr>()) {
+                        if (!current_scope_) return std::nullopt;
+                        const auto& name = cur->as<ast::IdentExpr>().name;
+                        if (Symbol* sym = current_scope_->lookup(name)) {
+                            if (stack_struct_locals_.contains(sym)) return std::nullopt;
+                            return lookup_bound_reg(sym);
+                        }
+                        if (const ast::Expr* inlined = current_scope_->lookup_inline(name)) {
+                            cur = inlined;
+                            continue;
+                        }
+                        return std::nullopt;
+                    }
+                    return std::nullopt;
+                };
+                if (!binary_type_is_float()) {
+                    if (auto lhs_bound = resolve_lhs_bound(); lhs_bound && *lhs_bound != dst) {
+                        if (bin->op == Op::Mul && rhs_imm != 0 && rhs_imm != 1 && rhs_imm != -1 &&
+                            rhs_imm >= (std::numeric_limits<std::int32_t>::min)() &&
+                            rhs_imm <= (std::numeric_limits<std::int32_t>::max)()) {
+                            // imul dst, src, imm form
+                            emit_.imul_smart(dst, *lhs_bound, rhs_imm);
+                            return true;
+                        }
+                    }
+                }
+
                 if (!generate_pure_expr_into(*bin->lhs, dst)) return false;
                 return emit_binary_into_with_rhs_imm(dst, bin->op, rhs_imm);
+            }
+
+            // fast path: rhs is a bound ident — use the bound reg directly, no scratch copy
+            // follows inline aliases so inlined fn params resolve to their hidden binding
+            auto try_bound_for_ident = [&](const ast::Expr& e) -> std::optional<x64::Reg> {
+                const ast::Expr* cur = &e;
+                while (cur && cur->is<ast::IdentExpr>()) {
+                    const auto& name = cur->as<ast::IdentExpr>().name;
+                    if (!current_scope_) return std::nullopt;
+                    if (Symbol* sym = current_scope_->lookup(name)) {
+                        if (stack_struct_locals_.contains(sym)) return std::nullopt;
+                        return lookup_bound_reg(sym);
+                    }
+                    if (const ast::Expr* inlined = current_scope_->lookup_inline(name)) {
+                        cur = inlined;
+                        continue;
+                    }
+                    return std::nullopt;
+                }
+                return std::nullopt;
+            };
+            if (auto rhs_bound = try_bound_for_ident(*bin->rhs)) {
+                if (*rhs_bound != dst) {
+                    if (!generate_pure_expr_into(*bin->lhs, dst)) return false;
+                    return emit_binary_into_with_rhs_reg(dst, bin->op, *rhs_bound);
+                }
             }
 
             auto rhs_reg = pick_scratch_reg({dst});
@@ -9175,9 +10061,15 @@ private:
                             if (auto struct_it = structs_.find(*sn); struct_it != structs_.end()) {
                                 if (auto offset_opt = struct_it->second.get_field_offset(field.field)) {
                                     if (auto bound = lookup_bound_reg(sym)) {
-                                        if (!generate_pure_expr_into(*bin->lhs, dst)) return false;
-                                        if (emit_binary_into_with_rhs_mem(dst, bin->op, *bound, static_cast<std::int32_t>(*offset_opt))) {
-                                            return true;
+                                        if (!struct_it->second.is_view) {
+                                            std::int32_t field_offset = 0;
+                                            if (!checked_field_displacement(struct_it->first, field.field, *offset_opt, field_offset)) {
+                                                return false;
+                                            }
+                                            if (!generate_pure_expr_into(*bin->lhs, dst)) return false;
+                                            if (emit_binary_into_with_rhs_mem(dst, bin->op, *bound, field_offset)) {
+                                                return true;
+                                            }
                                         }
                                     }
                                 }
@@ -9234,6 +10126,7 @@ private:
             [&](const ast::StructExpr& e)  { return generate_struct_literal(e); },
             [&](const ast::IfExpr& e)      { return generate_if_expr(e); },
             [&](const ast::BlockExpr& e)   { return generate_block_expr(e); },
+            // [&](const ast::TernaryExpr& e) { return generate_ternary(e); },
             [&](const ast::SpawnExpr& e)   { return generate_spawn(e); },
             [&](const ast::AwaitExpr& e)   { return generate_await(e); },
             [&](const ast::AtomicLoadExpr& e){ return generate_atomic_load(e); },
@@ -9357,9 +10250,11 @@ private:
             return false;
         }
         
-        std::int32_t offset = static_cast<std::int32_t>(*offset_opt);
-
         if (struct_it->second.is_view) {
+            std::int64_t offset = 0;
+            if (!checked_view_offset(struct_it->first, field.field, *offset_opt, offset)) {
+                return false;
+            }
             if (base_sym) {
                 if (auto bound = lookup_bound_reg(base_sym)) {
                     emit_.mov(x64::Reg::RAX, *bound);
@@ -9376,7 +10271,11 @@ private:
             }
             return emit_load_typed_from_address_in_rax(*field_type);
         }
-        
+        std::int32_t offset = 0;
+        if (!checked_field_displacement(struct_it->first, field.field, *offset_opt, offset)) {
+            return false;
+        }
+
         if (base_sym) {
             if (stack_struct_locals_.contains(base_sym)) {
                 emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, base_sym->stack_offset + offset);
@@ -9411,6 +10310,10 @@ private:
         
         // Allocate memory for struct
         std::size_t size = info.total_size > 0 ? info.total_size : 8;  // min 8 bytes
+        if (!fits_i32_displacement(size)) {
+            error(std::format("struct '{}' is too large to allocate safely", lit.name));
+            return false;
+        }
         
         if (is_native_image_output()) {
             // Use HeapAlloc like generate_dll_malloc
@@ -9462,7 +10365,7 @@ private:
             
             // Store value at field offset
             if (offset > 0) {
-                emit_.add_smart(x64::Reg::RAX, static_cast<std::int32_t>(offset));
+                emit_.add_smart(x64::Reg::RAX, static_cast<std::int64_t>(offset));
             }
             emit_.mov_store(x64::Reg::RAX, 0, x64::Reg::RCX);
         }
@@ -9641,29 +10544,117 @@ private:
     [[nodiscard]] bool generate_binary(const ast::BinaryExpr& bin) {
         using Op = ast::BinaryExpr::Op;
 
+        // type-context guard: drives signed/unsigned/float dispatch in emit helpers.
+        // we always derive the operand type from lhs (falling back to rhs if lhs is
+        // not a numeric/pointer kind). This works for arithmetic AND for compares,
+        // since the operand type is what determines signedness/floatness.
+        auto pick_operand_type = [&]() -> std::optional<Type> {
+            auto lhs_t = infer_expr_type(*bin.lhs);
+            auto rhs_t = infer_expr_type(*bin.rhs);
+            auto is_useful = [](const std::optional<Type>& t) {
+                if (!t) return false;
+                if (t->is_float() || t->is_integer()) return true;
+                if (auto* p = std::get_if<PrimitiveType>(&t->kind)) {
+                    if (*p == PrimitiveType::Ptr) return true;
+                    if (*p == PrimitiveType::Bool) return true; // treat as i1, signed-ish but ok
+                }
+                return false;
+            };
+            if (lhs_t && (lhs_t->is_float() || rhs_t && rhs_t->is_float())) {
+                if (lhs_t && lhs_t->is_float()) return lhs_t;
+                return rhs_t;
+            }
+            if (is_useful(lhs_t)) return lhs_t;
+            if (is_useful(rhs_t)) return rhs_t;
+            return std::nullopt;
+        };
+        BinaryOpTypeGuard type_guard(this, pick_operand_type());
+
         // try constant folding - if both operands are literals, compute at compile time
         if (auto* lhs_lit = std::get_if<ast::LiteralExpr>(&bin.lhs->kind)) {
             if (auto* rhs_lit = std::get_if<ast::LiteralExpr>(&bin.rhs->kind)) {
-                // both are literals - try to fold
-                if (auto* lhs_val = std::get_if<std::int64_t>(&lhs_lit->value)) {
+                if (binary_type_is_float()) {
+                    // float fold path
+                    auto get_double = [](const ast::LiteralExpr& l) -> std::optional<double> {
+                        if (auto* d = std::get_if<double>(&l.value)) return *d;
+                        if (auto* i = std::get_if<std::int64_t>(&l.value)) return static_cast<double>(*i);
+                        return std::nullopt;
+                    };
+                    auto lv = get_double(*lhs_lit);
+                    auto rv = get_double(*rhs_lit);
+                    if (lv && rv) {
+                        std::optional<double> dr;
+                        switch (bin.op) {
+                            case Op::Add: dr = *lv + *rv; break;
+                            case Op::Sub: dr = *lv - *rv; break;
+                            case Op::Mul: dr = *lv * *rv; break;
+                            case Op::Div: if (*rv != 0.0) dr = *lv / *rv; break;
+                            default: break;
+                        }
+                        if (dr) {
+                            std::uint64_t bits = 0;
+                            std::memcpy(&bits, &*dr, sizeof(bits));
+                            emit_.mov_imm64(x64::Reg::RAX, bits);
+                            return true;
+                        }
+                    }
+                    // fallthrough into normal codegen for any unhandled float lit/lit
+                } else if (auto* lhs_val = std::get_if<std::int64_t>(&lhs_lit->value)) {
                     if (auto* rhs_val = std::get_if<std::int64_t>(&rhs_lit->value)) {
                         std::int64_t result = 0;
                         bool folded = false;
-                        
+                        const bool is_unsigned = binary_type_is_unsigned();
                         switch (bin.op) {
                             case Op::Add: result = *lhs_val + *rhs_val; folded = true; break;
                             case Op::Sub: result = *lhs_val - *rhs_val; folded = true; break;
                             case Op::Mul: result = *lhs_val * *rhs_val; folded = true; break;
-                            case Op::Div: if (*rhs_val != 0) { result = *lhs_val / *rhs_val; folded = true; } break;
-                            case Op::Mod: if (*rhs_val != 0) { result = *lhs_val % *rhs_val; folded = true; } break;
+                            case Op::Div:
+                                if (*rhs_val != 0 &&
+                                    !(!is_unsigned && *lhs_val == (std::numeric_limits<std::int64_t>::min)() && *rhs_val == -1)) {
+                                    if (is_unsigned) {
+                                        result = static_cast<std::int64_t>(
+                                            static_cast<std::uint64_t>(*lhs_val) / static_cast<std::uint64_t>(*rhs_val));
+                                    } else {
+                                        result = *lhs_val / *rhs_val;
+                                    }
+                                    folded = true;
+                                }
+                                break;
+                            case Op::Mod:
+                                if (*rhs_val != 0 &&
+                                    !(!is_unsigned && *lhs_val == (std::numeric_limits<std::int64_t>::min)() && *rhs_val == -1)) {
+                                    if (is_unsigned) {
+                                        result = static_cast<std::int64_t>(
+                                            static_cast<std::uint64_t>(*lhs_val) % static_cast<std::uint64_t>(*rhs_val));
+                                    } else {
+                                        result = *lhs_val % *rhs_val;
+                                    }
+                                    folded = true;
+                                }
+                                break;
                             case Op::BitAnd: result = *lhs_val & *rhs_val; folded = true; break;
-                            case Op::BitOr: result = *lhs_val | *rhs_val; folded = true; break;
+                            case Op::BitOr:  result = *lhs_val | *rhs_val; folded = true; break;
                             case Op::BitXor: result = *lhs_val ^ *rhs_val; folded = true; break;
-                            case Op::Shl: result = *lhs_val << *rhs_val; folded = true; break;
-                            case Op::Shr: result = *lhs_val >> *rhs_val; folded = true; break;
+                            case Op::Shl:
+                                if (*rhs_val >= 0 && *rhs_val < 64) {
+                                    result = static_cast<std::int64_t>(
+                                        static_cast<std::uint64_t>(*lhs_val) << *rhs_val);
+                                    folded = true;
+                                }
+                                break;
+                            case Op::Shr:
+                                if (*rhs_val >= 0 && *rhs_val < 64) {
+                                    if (is_unsigned) {
+                                        result = static_cast<std::int64_t>(
+                                            static_cast<std::uint64_t>(*lhs_val) >> *rhs_val);
+                                    } else {
+                                        result = *lhs_val >> *rhs_val;
+                                    }
+                                    folded = true;
+                                }
+                                break;
                             default: break;
                         }
-                        
                         if (folded) {
                             emit_.mov_smart(x64::Reg::RAX, result);
                             return true;
@@ -9721,6 +10712,32 @@ private:
         }
 
         if (bin.rhs->is<ast::IdentExpr>()) {
+            // fast path: rhs ident is bound to a register, use it directly
+            // follows inline aliases for inlined fn params
+            auto resolve_bound = [&](const ast::Expr& e) -> std::optional<x64::Reg> {
+                const ast::Expr* cur = &e;
+                while (cur && cur->is<ast::IdentExpr>()) {
+                    if (!current_scope_) return std::nullopt;
+                    const auto& name = cur->as<ast::IdentExpr>().name;
+                    if (Symbol* sym = current_scope_->lookup(name)) {
+                        if (stack_struct_locals_.contains(sym)) return std::nullopt;
+                        return lookup_bound_reg(sym);
+                    }
+                    if (const ast::Expr* inlined = current_scope_->lookup_inline(name)) {
+                        cur = inlined;
+                        continue;
+                    }
+                    return std::nullopt;
+                }
+                return std::nullopt;
+            };
+            if (auto rhs_bound = resolve_bound(*bin.rhs)) {
+                if (*rhs_bound != x64::Reg::RAX) {
+                    if (!generate_expr(*bin.lhs)) return false;
+                    return emit_binary_with_rhs_reg(bin.op, *rhs_bound);
+                }
+            }
+
             if (!generate_expr(*bin.lhs)) return false;
             auto rhs_reg = pick_scratch_reg({x64::Reg::RAX});
             if (!rhs_reg) return false;
@@ -9740,17 +10757,23 @@ private:
             if (field.base->is<ast::IdentExpr>()) {
                 const auto& var_name = field.base->as<ast::IdentExpr>().name;
                 if (Symbol* sym = current_scope_->lookup(var_name)) {
-                    if (auto sn = get_struct_name(sym->type)) {
-                        if (auto struct_it = structs_.find(*sn); struct_it != structs_.end()) {
-                            if (auto offset_opt = struct_it->second.get_field_offset(field.field)) {
-                                if (auto bound = lookup_bound_reg(sym)) {
-                                    if (!generate_expr(*bin.lhs)) return false;
-                                    if (emit_binary_with_rhs_mem(bin.op, *bound, static_cast<std::int32_t>(*offset_opt))) {
-                                        return true;
+                        if (auto sn = get_struct_name(sym->type)) {
+                            if (auto struct_it = structs_.find(*sn); struct_it != structs_.end()) {
+                                if (auto offset_opt = struct_it->second.get_field_offset(field.field)) {
+                                    if (auto bound = lookup_bound_reg(sym)) {
+                                        if (!struct_it->second.is_view) {
+                                            std::int32_t field_offset = 0;
+                                            if (!checked_field_displacement(struct_it->first, field.field, *offset_opt, field_offset)) {
+                                                return false;
+                                            }
+                                            if (!generate_expr(*bin.lhs)) return false;
+                                            if (emit_binary_with_rhs_mem(bin.op, *bound, field_offset)) {
+                                                return true;
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
                     }
                 }
             }
@@ -9850,9 +10873,11 @@ private:
                 error(std::format("struct '{}' has no typed field '{}'", struct_name, field.field));
                 return false;
             }
-            std::int32_t offset = static_cast<std::int32_t>(*offset_opt);
-
             if (struct_it->second.is_view) {
+                std::int64_t offset = 0;
+                if (!checked_view_offset(struct_it->first, field.field, *offset_opt, offset)) {
+                    return false;
+                }
                 if (base_sym) {
                     if (auto bound = lookup_bound_reg(base_sym)) {
                         emit_.mov(x64::Reg::RCX, *bound);
@@ -9870,6 +10895,10 @@ private:
                     return false;
                 }
                 return emit_store_typed_to_address_in_rcx(*field_type);
+            }
+            std::int32_t offset = 0;
+            if (!checked_field_displacement(struct_it->first, field.field, *offset_opt, offset)) {
+                return false;
             }
 
             if (!emit_coerce_rax_to_type(*field_type, bin.rhs.get())) {
@@ -9956,7 +10985,9 @@ private:
                 
                 // pop value into RCX, store at base + offset
                 emit_.pop(x64::Reg::RCX);
-                emit_.mov_store(x64::Reg::RAX, static_cast<std::int32_t>(it->second.offset), x64::Reg::RCX);
+                std::int32_t global_offset = 0;
+                if (!checked_global_offset(ident.name, it->second.offset, global_offset)) return false;
+                emit_.mov_store(x64::Reg::RAX, global_offset, x64::Reg::RCX);
                 return true;
             }
             
@@ -10014,7 +11045,58 @@ private:
                 error(std::format("struct '{}' has no typed field '{}'", struct_name, field.field));
                 return false;
             }
-            std::int32_t foff = static_cast<std::int32_t>(*offset_opt);
+
+            if (struct_it->second.is_view) {
+                std::int64_t foff = 0;
+                if (!checked_view_offset(struct_it->first, field.field, *offset_opt, foff)) {
+                    return false;
+                }
+
+                if (!generate_expr(*bin.rhs)) return false;
+                emit_.push(x64::Reg::RAX);
+
+                if (auto bound = lookup_bound_reg(sym)) {
+                    emit_.mov(x64::Reg::RCX, *bound);
+                } else {
+                    emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, sym->stack_offset);
+                }
+                if (foff != 0) {
+                    emit_.add_smart(x64::Reg::RCX, foff);
+                }
+                emit_.push(x64::Reg::RCX);
+
+                emit_.mov(x64::Reg::RAX, x64::Reg::RCX);
+                if (!emit_load_typed_from_address_in_rax(*field_type)) {
+                    return false;
+                }
+
+                auto rhs_reg = pick_scratch_reg({x64::Reg::RAX, x64::Reg::RDX, x64::Reg::R10});
+                if (!rhs_reg) {
+                    error("no scratch register available for field compound assignment");
+                    return false;
+                }
+                emit_.pop(x64::Reg::R10);
+                emit_.pop(*rhs_reg);
+
+                switch (bin.op) {
+                    case Op::AddAssign: emit_.add(x64::Reg::RAX, *rhs_reg); break;
+                    case Op::SubAssign: emit_.sub(x64::Reg::RAX, *rhs_reg); break;
+                    case Op::MulAssign: emit_.imul(x64::Reg::RAX, *rhs_reg); break;
+                    case Op::DivAssign: emit_.cqo(); emit_.idiv(*rhs_reg); break;
+                    case Op::ModAssign: emit_.cqo(); emit_.idiv(*rhs_reg); emit_.mov(x64::Reg::RAX, x64::Reg::RDX); break;
+                    default: error("unsupported compound op"); return false;
+                }
+                if (!emit_coerce_rax_to_type(*field_type)) {
+                    return false;
+                }
+                emit_.mov(x64::Reg::RCX, x64::Reg::R10);
+                return emit_store_typed_to_address_in_rcx(*field_type);
+            }
+
+            std::int32_t foff = 0;
+            if (!checked_field_displacement(struct_it->first, field.field, *offset_opt, foff)) {
+                return false;
+            }
             
             // eval rhs
             if (!generate_expr(*bin.rhs)) return false;
@@ -10303,30 +11385,33 @@ private:
 
         std::size_t nargs = call.args.size();
         std::size_t reg_args = nargs < 4 ? nargs : 4;
-        std::size_t stack_args = nargs > 4 ? nargs - 4 : 0;
 
         for (std::size_t i = 0; i < call.args.size(); ++i) {
-            if (!generate_expr(*call.args[i])) return false;
-            if (!emit_coerce_rax_to_type(it->second.param_types[i], call.args[i].get())) return false;
-            emit_.push(x64::Reg::RAX);
+            if (!generate_call_arg_for_push(*call.args[i], it->second.param_types[i], i)) {
+                return false;
+            }
         }
 
-        std::size_t alloc = 32 + stack_args * 8;
-        if (stack_args == 0 && (nargs & 1) != 0) {
-            alloc += 8;
+        std::size_t alloc = 0;
+        std::int64_t cleanup = 0;
+        if (!checked_call_frame("direct call", nargs, alloc, cleanup)) {
+            return false;
         }
         emit_.sub_imm(x64::Reg::RSP, static_cast<std::int32_t>(alloc));
 
         for (std::size_t i = 0; i < reg_args; ++i) {
-            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
+            std::int32_t src_off = 0;
+            if (!checked_call_source_offset("direct call", alloc, nargs, i, src_off)) return false;
             if (!emit_indirect_arg_to_abi_slot(i, it->second.param_types[i], src_off, 0, false)) {
                 return false;
             }
         }
 
         for (std::size_t i = 4; i < nargs; ++i) {
-            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
-            std::int32_t dest_off = static_cast<std::int32_t>(32 + (i - 4) * 8);
+            std::int32_t src_off = 0;
+            std::int32_t dest_off = 0;
+            if (!checked_call_source_offset("direct call", alloc, nargs, i, src_off)) return false;
+            if (!checked_call_dest_offset("direct call", i, dest_off)) return false;
             if (!emit_indirect_arg_to_abi_slot(i, it->second.param_types[i], src_off, dest_off, true)) {
                 return false;
             }
@@ -10341,7 +11426,7 @@ private:
             .target_fn = resolved_target
         });
 
-        emit_.add_smart(x64::Reg::RSP, static_cast<std::int32_t>(alloc + nargs * 8));
+        emit_.add_smart(x64::Reg::RSP, cleanup);
 
         if (it->second.return_type.is_float()) {
             emit_capture_indirect_float_return(it->second.return_type);
@@ -10653,20 +11738,50 @@ private:
                 register_bindings_[&sym] = reg_it->second;
                 bound_stack_elision_names_.back().insert(hidden_name);
             }
-            if (!generate_expr(*call.args[i])) {
-                cleanup_inline_scope();
-                return false;
+
+            // fast path: arg is a simple bound-ident → load directly into target register
+            // (skips redundant `mov rax, src_bound` + `mov dst_bound, rax`)
+            auto reg_it = inline_named_regs.find(info.decl->params[i].name);
+            x64::Reg target_reg = (reg_it != inline_named_regs.end()) ? reg_it->second : x64::Reg::RAX;
+            bool used_direct_path = false;
+            if (call.args[i]->is<ast::IdentExpr>() && current_scope_) {
+                const auto& arg_ident = call.args[i]->as<ast::IdentExpr>();
+                if (Symbol* arg_sym = current_scope_->lookup(arg_ident.name)) {
+                    if (auto arg_bound = lookup_bound_reg(arg_sym); arg_bound &&
+                        !stack_struct_locals_.contains(arg_sym) &&
+                        types_equal(arg_sym->type, info.param_types[i])) {
+                        if (target_reg != *arg_bound) {
+                            emit_.mov(target_reg, *arg_bound);
+                        }
+                        if (target_reg != x64::Reg::RAX) {
+                            // also keep RAX in sync if downstream needs RAX
+                            // (only when stack slot is not elided we also need to store)
+                        }
+                        if (!should_elide_bound_stack_slot(&sym)) {
+                            if (target_reg != x64::Reg::RAX) {
+                                emit_.mov(x64::Reg::RAX, target_reg);
+                            }
+                            emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
+                        }
+                        used_direct_path = true;
+                    }
+                }
             }
-            if (!emit_coerce_rax_to_type(info.param_types[i], call.args[i].get())) {
-                cleanup_inline_scope();
-                return false;
-            }
-            if (!should_elide_bound_stack_slot(&sym)) {
-                emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
-            }
-            if (auto reg_it = inline_named_regs.find(info.decl->params[i].name); reg_it != inline_named_regs.end() &&
-                reg_it->second != x64::Reg::RAX) {
-                emit_.mov(reg_it->second, x64::Reg::RAX);
+            if (!used_direct_path) {
+                if (!generate_expr(*call.args[i])) {
+                    cleanup_inline_scope();
+                    return false;
+                }
+                if (!emit_coerce_rax_to_type(info.param_types[i], call.args[i].get())) {
+                    cleanup_inline_scope();
+                    return false;
+                }
+                if (!should_elide_bound_stack_slot(&sym)) {
+                    emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
+                }
+                if (reg_it != inline_named_regs.end() && reg_it->second != x64::Reg::RAX) {
+                    emit_.mov(reg_it->second, x64::Reg::RAX);
+                }
             }
 
             ast::Expr alias_expr;
@@ -10918,6 +12033,63 @@ private:
         return true;
     }
 
+    [[nodiscard]] bool generate_call_arg_for_push(const ast::Expr& arg,
+                                                  const Type& param_type,
+                                                  std::size_t pushed_args) {
+        bool needs_align_pad = (pushed_args & 1) != 0;
+        if (needs_align_pad) {
+            emit_.sub_imm(x64::Reg::RSP, 8);
+        }
+
+        if (!generate_expr(arg)) {
+            return false;
+        }
+        if (!emit_coerce_rax_to_type(param_type, &arg)) {
+            return false;
+        }
+
+        if (needs_align_pad) {
+            emit_.add_smart(x64::Reg::RSP, 8);
+        }
+        emit_.push(x64::Reg::RAX);
+        return true;
+    }
+
+    [[nodiscard]] bool generate_callee_after_pushed_args(const ast::Expr& callee,
+                                                        std::size_t pushed_args) {
+        bool needs_align_pad = (pushed_args & 1) != 0;
+        if (needs_align_pad) {
+            emit_.sub_imm(x64::Reg::RSP, 8);
+        }
+
+        if (!generate_expr(callee)) {
+            return false;
+        }
+
+        if (needs_align_pad) {
+            emit_.add_smart(x64::Reg::RSP, 8);
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool generate_raw_call_arg_for_push(const ast::Expr& arg,
+                                                      std::size_t pushed_args) {
+        bool needs_align_pad = (pushed_args & 1) != 0;
+        if (needs_align_pad) {
+            emit_.sub_imm(x64::Reg::RSP, 8);
+        }
+
+        if (!generate_expr(arg)) {
+            return false;
+        }
+
+        if (needs_align_pad) {
+            emit_.add_smart(x64::Reg::RSP, 8);
+        }
+        emit_.push(x64::Reg::RAX);
+        return true;
+    }
+
     void emit_capture_indirect_float_return(const Type& ret_type) {
         emit_.sub_imm(x64::Reg::RSP, 8);
         if (auto* prim = std::get_if<PrimitiveType>(&ret_type.kind); prim && *prim == PrimitiveType::F32) {
@@ -10951,41 +12123,44 @@ private:
 
         std::size_t nargs = call.args.size();
         std::size_t reg_args = nargs < 4 ? nargs : 4;
-        std::size_t stack_args = nargs > 4 ? nargs - 4 : 0;
 
         for (std::size_t i = 0; i < nargs; ++i) {
-            if (!generate_expr(*call.args[i])) return false;
-            if (!emit_coerce_rax_to_type(*fn_type.params[i], call.args[i].get())) return false;
-            emit_.push(x64::Reg::RAX);
+            if (!generate_call_arg_for_push(*call.args[i], *fn_type.params[i], i)) {
+                return false;
+            }
         }
 
-        if (!generate_expr(*call.callee)) return false;
+        if (!generate_callee_after_pushed_args(*call.callee, nargs)) return false;
         emit_.push(x64::Reg::RAX);
         emit_.pop(x64::Reg::R11);
 
-        std::size_t alloc = 32 + stack_args * 8;
-        if (stack_args == 0 && (nargs & 1) != 0) {
-            alloc += 8;
+        std::size_t alloc = 0;
+        std::int64_t cleanup = 0;
+        if (!checked_call_frame("function pointer call", nargs, alloc, cleanup)) {
+            return false;
         }
         emit_.sub_imm(x64::Reg::RSP, static_cast<std::int32_t>(alloc));
 
         for (std::size_t i = 0; i < reg_args; ++i) {
-            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
+            std::int32_t src_off = 0;
+            if (!checked_call_source_offset("function pointer call", alloc, nargs, i, src_off)) return false;
             if (!emit_indirect_arg_to_abi_slot(i, *fn_type.params[i], src_off, 0, false)) {
                 return false;
             }
         }
 
         for (std::size_t i = 4; i < nargs; ++i) {
-            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
-            std::int32_t dest_off = static_cast<std::int32_t>(32 + (i - 4) * 8);
+            std::int32_t src_off = 0;
+            std::int32_t dest_off = 0;
+            if (!checked_call_source_offset("function pointer call", alloc, nargs, i, src_off)) return false;
+            if (!checked_call_dest_offset("function pointer call", i, dest_off)) return false;
             if (!emit_indirect_arg_to_abi_slot(i, *fn_type.params[i], src_off, dest_off, true)) {
                 return false;
             }
         }
 
         emit_.call(x64::Reg::R11);
-        emit_.add_smart(x64::Reg::RSP, static_cast<std::int32_t>(alloc + nargs * 8));
+        emit_.add_smart(x64::Reg::RSP, cleanup);
 
         if (fn_type.ret && fn_type.ret->is_float()) {
             emit_capture_indirect_float_return(*fn_type.ret);
@@ -11041,16 +12216,17 @@ private:
         
         // push explicit args left to right
         for (std::size_t i = 0; i < call.args.size(); ++i) {
-            if (!generate_expr(*call.args[i])) return false;
-            emit_.push(x64::Reg::RAX);
+            if (!generate_call_arg_for_push(*call.args[i], fn_it->second.param_types[i + 1], i + 1)) {
+                return false;
+            }
         }
         
         // allocate call frame
         std::size_t reg_args = nargs < 4 ? nargs : 4;
-        std::size_t stack_args = nargs > 4 ? nargs - 4 : 0;
-        std::size_t alloc = 32 + stack_args * 8;
-        if (stack_args == 0 && (nargs & 1) != 0) {
-            alloc += 8;
+        std::size_t alloc = 0;
+        std::int64_t cleanup = 0;
+        if (!checked_call_frame("method call", nargs, alloc, cleanup)) {
+            return false;
         }
         emit_.sub_imm(x64::Reg::RSP, static_cast<std::int32_t>(alloc));
         
@@ -11060,7 +12236,8 @@ private:
         
         // load first 4 into registers / xmm regs
         for (std::size_t i = 0; i < reg_args; ++i) {
-            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
+            std::int32_t src_off = 0;
+            if (!checked_call_source_offset("method call", alloc, nargs, i, src_off)) return false;
             if (!emit_indirect_arg_to_abi_slot(i, fn_it->second.param_types[i], src_off, 0, false)) {
                 return false;
             }
@@ -11068,8 +12245,10 @@ private:
         
         // load stack args (index 4+) into call frame
         for (std::size_t i = 4; i < nargs; ++i) {
-            std::int32_t src_off = static_cast<std::int32_t>(alloc + (nargs - 1 - i) * 8);
-            std::int32_t dest_off = static_cast<std::int32_t>(32 + (i - 4) * 8);
+            std::int32_t src_off = 0;
+            std::int32_t dest_off = 0;
+            if (!checked_call_source_offset("method call", alloc, nargs, i, src_off)) return false;
+            if (!checked_call_dest_offset("method call", i, dest_off)) return false;
             if (!emit_indirect_arg_to_abi_slot(i, fn_it->second.param_types[i], src_off, dest_off, true)) {
                 return false;
             }
@@ -11082,7 +12261,7 @@ private:
         call_fixups_.push_back({fixup_site, mangled_name});
         
         // clean up frame + pushed args
-        emit_.add_smart(x64::Reg::RSP, static_cast<std::int32_t>(alloc + nargs * 8));
+        emit_.add_smart(x64::Reg::RSP, cleanup);
 
         if (fn_it->second.return_type.is_float()) {
             emit_capture_indirect_float_return(fn_it->second.return_type);
@@ -13791,8 +14970,9 @@ private:
         }
 
         for (std::size_t i = 0; i < 2; ++i) {
-            if (!generate_expr(*call.args[i])) return false;
-            emit_.push(x64::Reg::RAX);
+            if (!generate_raw_call_arg_for_push(*call.args[i], i)) {
+                return false;
+            }
         }
 
         constexpr std::int32_t alloc = 32;
@@ -13817,8 +14997,9 @@ private:
         }
 
         for (std::size_t i = 0; i < 3; ++i) {
-            if (!generate_expr(*call.args[i])) return false;
-            emit_.push(x64::Reg::RAX);
+            if (!generate_raw_call_arg_for_push(*call.args[i], i)) {
+                return false;
+            }
         }
 
         constexpr std::int32_t alloc = 40;
@@ -14161,6 +15342,64 @@ private:
     }
 
     // ========================================================================
+    // AVX2 explicit intrinsics (256-bit YMM for processors without AVX-512)
+    // ========================================================================
+
+    [[nodiscard]] bool generate_builtin_simd_i32x16_add_avx2(const ast::CallExpr& call) {
+        // vmovdqu ymm0, [rdx] + vpaddd ymm0, ymm0, ymm1 + vmovdqu [rcx], ymm0
+        static constexpr std::array<std::uint8_t, 13> kBytes = {
+            0xC5, 0xFE, 0x6F, 0x02,  // vmovdqu ymm0, [rdx]
+            0xC4, 0xC1, 0x7D, 0xFE, 0xC8,  // vpaddd ymm0, ymm0, ymm1
+            0xC5, 0xFE, 0x7F, 0x01  // vmovdqu [rcx], ymm0
+        };
+        return generate_builtin_simd_ternary_ptr(call, kBytes, "simd_i32x16_add_avx2");
+    }
+
+    [[nodiscard]] bool generate_builtin_simd_i64x8_add_avx2(const ast::CallExpr& call) {
+        // vmovdqu ymm0, [rdx] + vpaddq ymm0, ymm0, ymm1 + vmovdqu [rcx], ymm0
+        static constexpr std::array<std::uint8_t, 13> kBytes = {
+            0xC5, 0xFE, 0x6F, 0x02,  // vmovdqu ymm0, [rdx]
+            0xC4, 0xC1, 0x7D, 0xD4, 0xC8,  // vpaddq ymm0, ymm0, ymm1
+            0xC5, 0xFE, 0x7F, 0x01  // vmovdqu [rcx], ymm0
+        };
+        return generate_builtin_simd_ternary_ptr(call, kBytes, "simd_i64x8_add_avx2");
+    }
+
+    [[nodiscard]] bool generate_builtin_simd_i64x8_mul_avx2(const ast::CallExpr& call) {
+        // vmovdqu8 ymm0, [rdx] + vpmadd52 ymm0, ymm0, ymm1 + vmovdqu [rcx], ymm0
+        static constexpr std::array<std::uint8_t, 13> kBytes = {
+            0xC5, 0xFE, 0x6F, 0x02,  // vmovdqu ymm0, [rdx]
+            0xC4, 0xC1, 0x7D, 0xB5, 0xC8,  // vpmadd52 ymm0, ymm0, ymm1
+            0xC5, 0xFE, 0x7F, 0x01  // vmovdqu [rcx], ymm0
+        };
+        return generate_builtin_simd_ternary_ptr(call, kBytes, "simd_i64x8_mul_avx2");
+    }
+
+    // ========================================================================
+    // AVX512 explicit intrinsics (512-bit ZMM for AVX-512 capable processors)
+    // ========================================================================
+
+    [[nodiscard]] bool generate_builtin_simd_i64x8_mul_avx512(const ast::CallExpr& call) {
+        // zmm0 = [rdx], zmm0 += zmm1, store to [rcx]
+        static constexpr std::array<std::uint8_t, 18> kBytes = {
+            0x62, 0xF1, 0x7E, 0x48, 0x6F, 0x02,  // vmovdqu32 zmm0, [rdx]
+            0x62, 0xD1, 0xFD, 0x48, 0xB5, 0xC8,  // vpmadd52 zmm0, zmm0, zmm1
+            0x62, 0xF1, 0x7E, 0x48, 0x7F, 0x01  // vmovdqu32 [rcx], zmm0
+        };
+        return generate_builtin_simd_ternary_ptr(call, kBytes, "simd_i64x8_mul_avx512");
+    }
+
+    [[nodiscard]] bool generate_builtin_simd_i64x4_add_avx512(const ast::CallExpr& call) {
+        // zmm0 = [rdx], zmm0 += zmm1, store to [rcx]
+        static constexpr std::array<std::uint8_t, 18> kBytes = {
+            0x62, 0xF1, 0x7E, 0x48, 0x6F, 0x02,
+            0x62, 0xD1, 0x7D, 0x48, 0xD4, 0xC8,
+            0x62, 0xF1, 0x7E, 0x48, 0x7F, 0x01
+        };
+        return generate_builtin_simd_ternary_ptr(call, kBytes, "simd_i64x4_add_avx512");
+    }
+
+    // ========================================================================
     // memory ops - direct inline codegen, no function call overhead
     // ========================================================================
 
@@ -14390,34 +15629,38 @@ private:
         }
 
         for (std::size_t i = 0; i < arg_count; ++i) {
-            if (!generate_expr(*call.args[i])) return false;
-            emit_.push(x64::Reg::RAX);
+            if (!generate_raw_call_arg_for_push(*call.args[i], i)) {
+                return false;
+            }
         }
 
         std::size_t reg_args = arg_count < 4 ? arg_count : 4;
-        std::size_t stack_args = arg_count > 4 ? arg_count - 4 : 0;
-        std::size_t alloc = 32 + stack_args * 8;
-        if (stack_args == 0 && (arg_count & 1) != 0) {
-            alloc += 8;
+        std::size_t alloc = 0;
+        std::int64_t cleanup = 0;
+        if (!checked_call_frame(fn_name, arg_count, alloc, cleanup)) {
+            return false;
         }
 
         emit_.sub_imm(x64::Reg::RSP, static_cast<std::int32_t>(alloc));
 
         for (std::size_t i = 0; i < reg_args; ++i) {
-            std::int32_t src_off = static_cast<std::int32_t>(alloc + (arg_count - 1 - i) * 8);
+            std::int32_t src_off = 0;
+            if (!checked_call_source_offset(fn_name, alloc, arg_count, i, src_off)) return false;
             emit_.mov_load(x64::ARG_REGS[i], x64::Reg::RSP, src_off);
         }
 
         for (std::size_t i = 4; i < arg_count; ++i) {
-            std::int32_t src_off = static_cast<std::int32_t>(alloc + (arg_count - 1 - i) * 8);
-            std::int32_t dest_off = static_cast<std::int32_t>(32 + (i - 4) * 8);
+            std::int32_t src_off = 0;
+            std::int32_t dest_off = 0;
+            if (!checked_call_source_offset(fn_name, alloc, arg_count, i, src_off)) return false;
+            if (!checked_call_dest_offset(fn_name, i, dest_off)) return false;
             emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, src_off);
             emit_.mov_store(x64::Reg::RSP, dest_off, x64::Reg::RAX);
         }
 
         emit_.mov_imm64(x64::Reg::RAX, reinterpret_cast<std::uint64_t>(fn_ptr));
         emit_.call(x64::Reg::RAX);
-        emit_.add_smart(x64::Reg::RSP, static_cast<std::int32_t>(alloc + arg_count * 8));
+        emit_.add_smart(x64::Reg::RSP, cleanup);
         return true;
     }
 
@@ -14660,42 +15903,29 @@ private:
         emit_.patch_jump(non_null_handle);
 
         // rax points to heap-backed spawn result struct [handle, ctx_ptr]
+        emit_.push(x64::Reg::RAX); // save spawn result struct ptr
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RAX, 0);  // handle
         emit_.mov_load(x64::Reg::RDX, x64::Reg::RAX, 8);  // ctx_ptr
-        emit_.push(x64::Reg::RAX); // result ptr
-        emit_.push(x64::Reg::RDX); // ctx ptr
-        emit_.push(x64::Reg::RCX); // handle
 
         if (!emit_thread_wait_call()) return false;
 
         emit_.test(x64::Reg::RAX, x64::Reg::RAX);
         std::size_t wait_failed = emit_.jcc_rel32(x64::Emitter::CC_NE);
 
-        emit_.pop(x64::Reg::RCX); // handle
-        if (!emit_close_handle_call()) return false;
-
-        emit_.pop(x64::Reg::RDX); // ctx ptr
-        emit_.pop(x64::Reg::R8);  // result ptr
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RDX, CTX_RESULT);
-        emit_.push(x64::Reg::RAX);
-        emit_.push(x64::Reg::R8); // preserve result ptr across runtime calls
-        if (!emit_runtime_free_reg(x64::Reg::RDX)) return false;
-        emit_.pop(x64::Reg::R8);
-        if (!emit_runtime_free_reg(x64::Reg::R8)) return false;
-        emit_.pop(x64::Reg::RAX);
-
+        // wait succeeded - load result, free ctx, close handle, free result struct, return result
+        emit_.pop(x64::Reg::R8);  // restore spawn result struct ptr into R8
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RDX, CTX_RESULT); // result value into rax
+        if (!emit_runtime_free_reg(x64::Reg::RDX)) return false;  // free ctx
+        if (!emit_close_handle_call()) return false;               // close handle
+        if (!emit_runtime_free_reg(x64::Reg::R8)) return false;    // free result struct
         std::size_t await_done = emit_.jmp_rel32_placeholder();
 
         emit_.patch_jump(wait_failed);
-        emit_.pop(x64::Reg::RCX); // handle
-        if (!emit_close_handle_call()) return false;
-        emit_.pop(x64::Reg::RDX); // ctx ptr
-        emit_.pop(x64::Reg::R8);  // result ptr
-        emit_.push(x64::Reg::R8);
-        if (!emit_runtime_free_reg(x64::Reg::RDX)) return false;
-        emit_.pop(x64::Reg::R8);
-        if (!emit_runtime_free_reg(x64::Reg::R8)) return false;
-        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        // wait failed - free ctx, close handle, free result struct, return 0
+        emit_.pop(x64::Reg::R8);  // discard saved result ptr
+        if (!emit_runtime_free_reg(x64::Reg::RDX)) return false;  // free ctx
+        if (!emit_close_handle_call()) return false;               // close handle
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX); // return 0
 
         emit_.patch_jump(await_done);
         emit_.patch_jump(null_handle_exit);
@@ -14748,7 +15978,9 @@ private:
         // r8 still has parent rbp at this point
         for (const auto& cap : captures) {
             auto& local = current_scope_->define(cap.name, cap.type.clone(), true);
-            reserve_symbol_stack_storage(local);
+            if (!reserve_symbol_stack_storage(local)) {
+                return false;
+            }
             if (stack_struct_locals_.contains(&local)) {
                 auto struct_it = structs_.find(*get_struct_name(local.type));
                 std::size_t size = struct_it != structs_.end() && struct_it->second.total_size > 0
@@ -14792,7 +16024,10 @@ private:
 
         // return 0
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-        patch_scope_frame(frame_patch, scope_mark);
+        if (!patch_scope_frame(frame_patch, scope_mark)) {
+            pop_scope();
+            return false;
+        }
         emit_.epilogue();
         pop_scope();
         body_info.code_size = emit_.buffer().pos() - body_info.code_offset;

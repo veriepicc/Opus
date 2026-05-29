@@ -1,0 +1,29 @@
+// TEST 20: double indirect call through FFI
+// FFI function returns function pointer, then call it
+
+using FnReturnsFn = fn() -> ptr
+using FnCalled = fn(int) -> int
+
+function int main() {
+    alloc_console()
+
+    let kernel = get_module("kernel32.dll")
+
+    // Get a function pointer to something
+    let my_fn = get_proc(kernel, "GetTickCount")
+
+    // Cast fn ptr to FnReturnsFn (wrong but tests the path)
+    let get_fn = my_fn as FnReturnsFn
+
+    // Get the actual function
+    let actual_fn = get_fn()
+
+    // Now call it
+    let typed_fn = actual_fn as FnCalled
+    let result = typed_fn(42)
+
+    print("double indirection result: ")
+    print_int(result)
+    print("\n")
+    return 0
+}

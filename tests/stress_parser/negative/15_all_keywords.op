@@ -1,0 +1,6 @@
+let if = 1;
+let while = 2;
+let return = 3;
+let struct = 4;
+let enum = 5;
+let function = 6;

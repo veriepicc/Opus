@@ -1,0 +1,4 @@
+function int main() {
+    let p: *int = 0;
+    return p as int;
+}

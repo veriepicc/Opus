@@ -1,0 +1,14 @@
+import mem
+
+view Payload {
+    overflow: int @ 1000000
+}
+
+function int main() {
+    let tiny = malloc(8)
+    let view = tiny as Payload
+    view.overflow = 0x41414141
+    let val = view.overflow
+    free(tiny)
+    return val
+}

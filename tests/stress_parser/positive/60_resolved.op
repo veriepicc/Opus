@@ -1,0 +1,5 @@
+resolved VALUE: int = 12345;
+
+function int main() {
+    return VALUE;
+}

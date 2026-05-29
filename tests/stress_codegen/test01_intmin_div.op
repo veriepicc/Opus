@@ -1,0 +1,14 @@
+// TEST 1: INT_MIN division edge case
+// the compiler MUST handle this correctly or it will generate wrong code
+
+function int div_int_min(int x) {
+    return -2147483648 / x
+}
+
+function int main() {
+    // INT_MIN / -1 should overflow but in some compilers does wrong thing
+    let result = div_int_min(-1)
+    print_int(result)
+    print("\n")
+    return 0
+}

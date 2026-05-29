@@ -1,0 +1,4 @@
+function int main() {
+    let s = "\xFF\xFE";
+    return 0;
+}

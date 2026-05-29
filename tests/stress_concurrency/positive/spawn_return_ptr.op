@@ -1,0 +1,11 @@
+function int main() {
+    let h = spawn worker(0)
+    let r = await h
+    print_int(r)
+    return 0
+}
+
+function int worker(int x) {
+    let ptr = malloc(16)
+    return ptr as int
+}

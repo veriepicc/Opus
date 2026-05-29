@@ -1,0 +1,14 @@
+function int main() {
+    let h1 = spawn worker(1)
+    let h2 = spawn worker(2)
+    let r2 = await h2
+    let r1 = await h1
+    print_int(r1)
+    print_int(r2)
+    return 0
+}
+
+function int worker(int id) {
+    sleep(id)
+    return id * 10
+}

@@ -1,0 +1,19 @@
+// TEST 8: nested function calls deep (test call stack)
+
+function int depth1(int x) { return depth2(x) + 1 }
+function int depth2(int x) { return depth3(x) + 1 }
+function int depth3(int x) { return depth4(x) + 1 }
+function int depth4(int x) { return depth5(x) + 1 }
+function int depth5(int x) { return depth6(x) + 1 }
+function int depth6(int x) { return depth7(x) + 1 }
+function int depth7(int x) { return depth8(x) + 1 }
+function int depth8(int x) { return depth9(x) + 1 }
+function int depth9(int x) { return depth10(x) + 1 }
+function int depth10(int x) { return x + 10 }
+
+function int main() {
+    let result = depth1(0)
+    print_int(result)
+    print("\n")
+    return 0
+}

@@ -1,0 +1,15 @@
+struct Counter {
+    count: i64
+}
+
+function int main() {
+    var c = Counter { count: 0 }
+    let h = spawn mutator(c)
+    await h
+    print_int(c.count)
+    return 0
+}
+
+function int mutator(Counter c) {
+    return 0
+}

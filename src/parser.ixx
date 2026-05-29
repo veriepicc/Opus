@@ -138,6 +138,9 @@ private:
     std::size_t loop_counter_;
     std::size_t max_iterations_;
     bool safeguard_triggered_ = false;
+    std::size_t stmt_depth_ = 0;
+    std::size_t expr_depth_ = 0;
+    static constexpr std::size_t MAX_PARSE_NESTING = 256;
 
     enum class NameMode {
         Standard,
@@ -205,7 +208,8 @@ private:
     const Token& current() const { return peek(0); }
     const Token& previous() const {
         if (tokens_.empty()) {
-            std::abort();
+            static const Token static_eof{TokenKind::Eof, "", {}, {}};
+            return static_eof;
         }
         if (pos_ == 0) {
             return tokens_.front();
@@ -2651,6 +2655,16 @@ private:
     }
 
     std::optional<ast::StmtPtr> parse_stmt_in(StatementMode mode) {
+        if (stmt_depth_ >= MAX_PARSE_NESTING) {
+            error("maximum statement nesting depth exceeded");
+            return std::nullopt;
+        }
+        struct DepthGuard {
+            std::size_t& depth;
+            explicit DepthGuard(std::size_t& depth) : depth(depth) { ++depth; }
+            ~DepthGuard() { --depth; }
+        } guard(stmt_depth_);
+
         switch (mode) {
             case StatementMode::CStyle:
                 return parse_stmt_c();
@@ -3121,7 +3135,7 @@ private:
             switch (t.kind) {
                 case TokenKind::TypeVoid:   pt = PrimitiveType::Void; break;
                 case TokenKind::TypeBool:   pt = PrimitiveType::Bool; break;
-                case TokenKind::TypeInt:    pt = PrimitiveType::I32; break;
+                case TokenKind::TypeInt:    pt = PrimitiveType::I64; break;
                 case TokenKind::TypeLong:   pt = PrimitiveType::I64; break;
                 case TokenKind::TypeShort:  pt = PrimitiveType::I16; break;
                 case TokenKind::TypeByte:   pt = PrimitiveType::I8; break;
@@ -3191,6 +3205,16 @@ private:
     // ========================================================================
 
     std::optional<ast::ExprPtr> parse_expr() {
+        if (expr_depth_ >= MAX_PARSE_NESTING) {
+            error("maximum expression nesting depth exceeded");
+            return std::nullopt;
+        }
+        struct DepthGuard {
+            std::size_t& depth;
+            explicit DepthGuard(std::size_t& depth) : depth(depth) { ++depth; }
+            ~DepthGuard() { --depth; }
+        } guard(expr_depth_);
+
         return parse_expr_prec(0);
     }
 

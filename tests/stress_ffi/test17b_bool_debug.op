@@ -1,0 +1,36 @@
+// simpler bool test comparing direct int call
+
+using FnBool = fn(bool) -> int
+using FnInt = fn(int) -> int
+
+function int main() {
+    alloc_console()
+
+    let kernel = get_module("kernel32.dll")
+    let tick = get_proc(kernel, "GetTickCount")
+
+    let int_fn_typed = tick as FnInt
+    let bool_fn_typed = tick as FnBool
+
+    // call with int
+    let r1 = int_fn_typed(1)
+    let r2 = int_fn_typed(0)
+
+    // call with bool
+    let r3 = bool_fn_typed(true)
+    let r4 = bool_fn_typed(false)
+
+    print("int_fn_typed(1)=")
+    print_int(r1)
+    print(" int_fn_typed(0)=")
+    print_int(r2)
+    print("\n")
+
+    print("bool_fn_typed(true)=")
+    print_int(r3)
+    print(" bool_fn_typed(false)=")
+    print_int(r4)
+    print("\n")
+
+    return 0
+}

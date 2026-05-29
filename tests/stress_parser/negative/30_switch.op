@@ -1,0 +1,8 @@
+function int main() {
+    switch x {
+    case 1: return 1
+    case 2: return 2
+    else:
+        return 0
+    }
+}

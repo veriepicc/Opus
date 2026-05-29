@@ -1,0 +1,13 @@
+import mem
+
+view HugeOffset {
+    x: int @ 2147483647
+}
+
+function int main() {
+    let block = mem.make_zero(8)
+    let v = block as HugeOffset
+    v.x = 123
+    free(block)
+    return 0
+}

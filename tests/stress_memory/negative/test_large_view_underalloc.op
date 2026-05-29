@@ -1,0 +1,45 @@
+import mem
+
+view LargeView {
+    a: int @ 0
+    b: int @ 8
+    c: int @ 16
+    d: int @ 24
+    e: int @ 32
+    f: int @ 40
+    g: int @ 48
+    h: int @ 56
+    i: int @ 64
+    j: int @ 72
+    k: int @ 80
+    l: int @ 88
+    m: int @ 96
+    n: int @ 104
+    o: int @ 112
+    p: int @ 120
+}
+
+function int main() {
+    let block = mem.make_zero(8)
+    let v = block as LargeView
+    
+    v.a = 1
+    v.b = 2
+    v.c = 3
+    v.d = 4
+    v.e = 5
+    v.f = 6
+    v.g = 7
+    v.h = 8
+    v.i = 9
+    v.j = 10
+    v.k = 11
+    v.l = 12
+    v.m = 13
+    v.n = 14
+    v.o = 15
+    v.p = 16
+    
+    free(block)
+    return v.a + v.p
+}

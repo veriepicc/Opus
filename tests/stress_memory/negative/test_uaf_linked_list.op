@@ -1,0 +1,25 @@
+import mem
+
+struct Node {
+    value: int
+    next: ptr
+}
+
+function int main() {
+    let head = mem.make_zero(16)
+    let n1 = mem.make_zero(16)
+    let n2 = mem.make_zero(16)
+    
+    mem.write(head, 1)
+    mem.write(head + 8, n1 as int)
+    
+    mem.write(n1, 2)
+    mem.write(n1 + 8, n2 as int)
+    
+    mem.write(n2, 3)
+    mem.write(n2 + 8, 0)
+    
+    free(head)
+    let after = mem.read(head)
+    return after
+}

@@ -1,0 +1,8 @@
+function int main() {
+    parallel for i in range(0, 8) {
+        parallel for j in range(0, 8) {
+            let x = i * j
+        }
+    }
+    return 0
+}

@@ -1,0 +1,2 @@
+function int test(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: int, j: int, k: int, l: int, m: int, n: int, o: int, p: int, q: int, r: int, s: int, t: int, u: int, v: int, w: int, x: int, y: int, z: int, aa: int, ab: int, ac: int, ad: int, ae: int, af: int, ag: int, ah: int, ai: int, aj: int, ak: int, al: int, am: int, an: int, ao: int, ap: int, aq: int, ar: int, as: int, at: int, au: int, av: int, aw: int, ax: int, ay: int, az: int) {}
+function int main() { return 0; }

@@ -1,0 +1,23 @@
+struct Large {
+    a: i64
+    b: i64
+    c: i64
+    d: i64
+}
+
+function int main() {
+    var large = Large { a: 1, b: 2, c: 3, d: 4 }
+    let h1 = spawn worker1(large)
+    let h2 = spawn worker2(large)
+    await h1
+    await h2
+    return 0
+}
+
+function int worker1(Large l) {
+    return l.a as int
+}
+
+function int worker2(Large l) {
+    return l.b as int
+}

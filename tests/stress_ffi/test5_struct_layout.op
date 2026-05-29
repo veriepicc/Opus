@@ -1,0 +1,30 @@
+// TEST 5: pass wrong struct layout to C
+// opus struct layout might not match what C expects
+
+struct WinRect {
+    left: int
+    top: int
+    right: int
+    bottom: int
+}
+
+using FnRect = fn(ptr) -> int
+
+function int main() {
+    alloc_console()
+
+    // Create rect on stack
+    let rect = WinRect { left: 100, top: 200, right: 400, bottom: 300 }
+
+    let user32 = load_library("user32.dll")
+    let box_fn = get_proc(user32, "MessageBoxA")
+    let typed_fn = box_fn as FnRect
+
+    // Pass struct - is layout right? padding?
+    let result = typed_fn(rect as ptr)
+
+    print("rect result: ")
+    print_int(result)
+    print("\n")
+    return 0
+}

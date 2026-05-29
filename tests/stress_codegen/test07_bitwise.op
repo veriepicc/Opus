@@ -1,0 +1,28 @@
+// TEST 7: bitwise operations edge cases
+
+function int bitwise_weird() {
+    var x = -1
+    return x & 0x7FFFFFFF  // should be 2147483647
+}
+
+function int bitwise_xor() {
+    var x = 0xAAAAAAAA
+    var y = 0x55555555
+    return x ^ y  // should be all 1s = -1
+}
+
+function int bitwise_or() {
+    var x = 0x00FF00FF
+    var y = 0xFF00FF00
+    return x | y  // should be 0xFFFFFFFF = -1
+}
+
+function int main() {
+    print_int(bitwise_weird())
+    print(" ")
+    print_int(bitwise_xor())
+    print(" ")
+    print_int(bitwise_or())
+    print("\n")
+    return 0
+}

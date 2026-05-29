@@ -1,0 +1,18 @@
+import mem
+
+struct Inner {
+    value: int
+}
+
+struct Outer {
+    inner: Inner
+}
+
+function int main() {
+    let ptr = mem.make_zero(8)
+    let outer = ptr as Outer
+    let inner = outer.inner
+    let val = inner.value
+    free(ptr)
+    return val
+}

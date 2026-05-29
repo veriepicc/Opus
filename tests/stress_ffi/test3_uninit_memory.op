@@ -1,0 +1,20 @@
+// TEST 3: uninitialized memory passed to C
+// opus might not zero-initialize before passing
+
+using FnInt = fn(int) -> int
+
+function int main() {
+    let mem = malloc(16)  // uninitialized
+    let kernel = get_module("kernel32.dll")
+    let my_fn = get_proc(kernel, "GetTickCount")
+    let typed_fn = my_fn as FnInt
+
+    // pass uninitialized bytes as an int
+    let val = typed_fn(mem as int)
+    free(mem)
+
+    print("uninit result: ")
+    print_int(val)
+    print("\n")
+    return 0
+}

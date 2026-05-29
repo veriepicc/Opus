@@ -1,0 +1,21 @@
+var big_global: i64 = 0
+
+function int main() {
+    let h1 = spawn increment(1)
+    let h2 = spawn increment(2)
+    let h3 = spawn increment(3)
+    let h4 = spawn increment(4)
+    await h1
+    await h2
+    await h3
+    await h4
+    print_int(big_global)
+    return 0
+}
+
+function int increment(int amount) {
+    big_global = big_global + amount
+    sleep(5)
+    big_global = big_global + amount
+    return big_global as int
+}

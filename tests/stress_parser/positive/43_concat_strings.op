@@ -1,0 +1,4 @@
+function int main() {
+    let x = "hello" + "world" + "foo" + "bar" + "baz" + "qux" + "quux" + "corge" + "grault" + "garply";
+    return 0;
+}

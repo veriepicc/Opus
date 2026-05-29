@@ -1,0 +1,23 @@
+import mem
+
+view OverlapA {
+    x: int @ 0
+    y: int @ 8
+}
+
+view OverlapB {
+    a: int @ 4
+    b: int @ 12
+}
+
+function int main() {
+    let block = mem.make_zero(32)
+    let va = block as OverlapA
+    let vb = block as OverlapB
+    va.x = 0x11111111
+    va.y = 0x22222222
+    vb.a = 0x33333333
+    vb.b = 0x44444444
+    free(block)
+    return va.x
+}

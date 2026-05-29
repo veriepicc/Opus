@@ -1,0 +1,11 @@
+// repro: 0.5 + 0.5 should equal 1.0 — but if compiler does int math on bits, no.
+function int main() {
+    var a: f64 = 0.5
+    var b: f64 = 0.5
+    var c: f64 = a + b
+    var d: f64 = 1.0
+    if c == d {
+        return 0
+    }
+    return 1
+}

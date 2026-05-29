@@ -1,0 +1,29 @@
+// TEST 14: all bitwise operators with extreme values
+
+function int main() {
+    let a = 0xFFFFFFFF
+    let b = 0xAAAAAAAA
+    let c = 0x55555555
+
+    let and_result = a & b
+    let or_result = b | c
+    let xor_result = b ^ c
+
+    print_int(and_result)
+    print(" ")
+    print_int(or_result)
+    print(" ")
+    print_int(xor_result)
+    print(" ")
+
+    // shift operations
+    let shl = 1 << 31
+    let shr = -2147483648 >> 16
+
+    print_int(shl)
+    print(" ")
+    print_int(shr)
+    print("\n")
+
+    return 0
+}

@@ -1,0 +1,14 @@
+// TEST: div with runtime variable divisor
+function int div_test(int x, int y) {
+    return x / y
+}
+
+function int main() {
+    let a = div_test(-2147483648, -1)
+    let b = div_test(100, 3)
+    let c = div_test(-100, 3)
+    print_int(a); print(" ")
+    print_int(b); print(" ")
+    print_int(c); print("\n")
+    return 0
+}

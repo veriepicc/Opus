@@ -1,0 +1,14 @@
+struct Evil {
+    data: ptr
+}
+
+function int main() {
+    let e = malloc(16)
+    let zero = malloc(1)
+    free(zero)
+    mem_write(e, zero)
+    let ptr = mem_read(e) as ptr
+    let val = mem_read(ptr)
+    free(e)
+    return val
+}

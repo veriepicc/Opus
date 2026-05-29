@@ -354,8 +354,9 @@ struct CompilerOptions {
 // C++/JS-FRIENDLY TYPE ALIASES
 // ============================================================================
 constexpr std::optional<PrimitiveType> friendly_type_to_primitive(std::string_view name) {
-    if (name == "int" || name == "Int")       return PrimitiveType::I32;
-    if (name == "integer" || name == "Integer") return PrimitiveType::I32;
+    // friendly int defaults to native 64-bit. exact-width i32 is still available.
+    if (name == "int" || name == "Int")       return PrimitiveType::I64;
+    if (name == "integer" || name == "Integer") return PrimitiveType::I64;
     if (name == "long" || name == "Long")     return PrimitiveType::I64;
     if (name == "short" || name == "Short")   return PrimitiveType::I16;
     if (name == "byte" || name == "Byte")     return PrimitiveType::I8;

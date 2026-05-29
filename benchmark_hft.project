@@ -1,0 +1,7 @@
+project HftBenchmark {
+    entry: "tests/benchmark_hft.op"
+    output: "tests/benchmark_hft.exe"
+    mode: "exe"
+    debug: true
+    healing: "freeze"
+}

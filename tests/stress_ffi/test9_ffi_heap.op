@@ -1,0 +1,29 @@
+// TEST 9: call FFI then free memory returned by C
+// use-after-free or wrong free heap
+
+using FnAlloc = fn(int) -> ptr
+using FnFree = fn(ptr) -> int
+
+function int main() {
+    alloc_console()
+
+    let kernel = get_module("kernel32.dll")
+
+    // These don't exist but we test with whatever
+    let alloc_fn = get_proc(kernel, "LocalAlloc")
+    let free_fn = get_proc(kernel, "LocalFree")
+
+    let alloc_typed = alloc_fn as FnAlloc
+    let free_typed = free_fn as FnFree
+
+    // This will likely fail but tests the path
+    let ptr = alloc_typed(128)
+    if ptr != 0 {
+        print("allocated: ")
+        print_hex(ptr)
+        print("\n")
+        free_typed(ptr)
+    }
+
+    return 0
+}

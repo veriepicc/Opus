@@ -1,0 +1,4 @@
+function int main() {
+    let x = "unclosed string
+    return 0;
+}

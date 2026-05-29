@@ -1,0 +1,4 @@
+function int main() {
+    let s = "\uD800";
+    return 0;
+}

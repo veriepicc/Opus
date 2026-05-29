@@ -1,0 +1,8 @@
+function int main() {
+    var x: f64 = 1.0
+    var y: f64 = 1.0
+    if x == y {
+        return 42
+    }
+    return 7
+}

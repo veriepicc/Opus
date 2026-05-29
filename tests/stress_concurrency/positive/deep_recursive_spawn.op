@@ -1,0 +1,14 @@
+function int recursive_spawn(int depth) {
+    if depth <= 0 {
+        return 0
+    }
+    let h = spawn recursive_spawn(depth - 1)
+    return await h
+}
+
+function int main() {
+    let h = spawn recursive_spawn(100)
+    let r = await h
+    print_int(r)
+    return 0
+}

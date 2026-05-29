@@ -1,0 +1,34 @@
+import mem
+
+struct Chain {
+    value: int
+    next: ptr
+}
+
+function int main() {
+    let n1 = mem.make_zero(16)
+    let n2 = mem.make_zero(16)
+    let n3 = mem.make_zero(16)
+    let n4 = mem.make_zero(16)
+    
+    mem.write(n1, 1)
+    mem.write(n1 + 8, n2)
+    
+    mem.write(n2, 2)
+    mem.write(n2 + 8, n3)
+    
+    mem.write(n3, 3)
+    mem.write(n3 + 8, n4)
+    
+    mem.write(n4, 4)
+    mem.write(n4 + 8, 0)
+    
+    free(n2)
+    
+    let val = mem.read(n3)
+    free(n1)
+    free(n3)
+    free(n4)
+    
+    return val
+}

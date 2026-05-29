@@ -1,0 +1,17 @@
+struct VeryLongStructNameThatGoesOnForWayTooLongToBeReasonable {
+    int someField
+    int anotherField
+    int yetAnotherField
+    int stillOneMore
+    int gettingOld
+    int almostThere
+    int thisIsRidiculous
+    int whyWouldYou
+    int everNeed
+    int thisMany
+    int fields
+}
+
+function int main() {
+    return 0;
+}

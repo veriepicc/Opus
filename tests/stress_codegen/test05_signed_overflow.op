@@ -1,0 +1,18 @@
+// TEST 5: signed overflow in addition
+
+function int signed_overflow() {
+    var x = 2147483647
+    x = x + 1  // should be -2147483648 but UB in C
+    return x
+}
+
+function int main() {
+    // this tests constant folding with overflow
+    let a = 2147483647 + 1
+    let b = -2147483648 - 1
+    print_int(a)
+    print(" ")
+    print_int(b)
+    print("\n")
+    return 0
+}

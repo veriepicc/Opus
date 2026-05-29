@@ -1,0 +1,5 @@
+function int main() {
+    let x = "incomplete\x
+end";
+    return 0;
+}

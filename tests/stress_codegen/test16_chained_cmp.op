@@ -1,0 +1,34 @@
+// TEST 16: chained comparisons (might generate bad short-circuit code)
+
+function int chained_lt(int a, int b, int c) {
+    if a < b && b < c {
+        return 1
+    }
+    return 0
+}
+
+function int chained_gt(int a, int b, int c) {
+    if a > b && b > c {
+        return 1
+    }
+    return 0
+}
+
+function int mixed_chain(int a, int b, int c) {
+    if a < b && b <= c {
+        return 1
+    }
+    return 0
+}
+
+function int main() {
+    let a = chained_lt(1, 2, 3)
+    let b = chained_lt(1, 1, 3)
+    let c = chained_gt(3, 2, 1)
+    let d = mixed_chain(1, 2, 3)
+    print_int(a); print(" ")
+    print_int(b); print(" ")
+    print_int(c); print(" ")
+    print_int(d); print("\n")
+    return 0
+}

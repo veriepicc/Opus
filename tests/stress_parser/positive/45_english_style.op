@@ -1,0 +1,7 @@
+define function add with x as i64, y as i64 returning i64
+    return x + y
+end function
+
+function int main() {
+    return add(1, 2);
+}

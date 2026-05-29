@@ -1,0 +1,9 @@
+// repro: u32 widening should be zero-extend, not sign-extend
+function int main() {
+    var x: u32 = 0xFFFFFFFF as u32
+    var y: i64 = x as i64
+    if y < 0 {
+        return 1
+    }
+    return 0
+}

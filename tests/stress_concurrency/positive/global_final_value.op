@@ -1,0 +1,17 @@
+var big_struct: i64 = 0
+
+function int worker(int val) {
+    big_struct = val
+    return big_struct as int
+}
+
+function int main() {
+    let h1 = spawn worker(111)
+    let h2 = spawn worker(222)
+    let r1 = await h1
+    let r2 = await h2
+    print_int(big_struct)
+    print_int(r1)
+    print_int(r2)
+    return 0
+}

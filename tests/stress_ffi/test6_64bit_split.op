@@ -1,0 +1,20 @@
+// TEST 6: pass 64-bit in wrong register split on x64
+// opus might split i64 wrong into rcx/rdx
+
+using FnI64 = fn(long) -> long
+
+function int main() {
+    alloc_console()
+
+    let kernel = get_module("kernel32.dll")
+    let my_fn = get_proc(kernel, "GetTickCount64")
+    let typed_fn = my_fn as FnI64
+
+    // Pass big 64-bit value
+    let val = typed_fn(0x123456789ABCDEF0)
+
+    print("i64 result: ")
+    print_hex(val)
+    print("\n")
+    return 0
+}

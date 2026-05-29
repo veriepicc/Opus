@@ -1,0 +1,4 @@
+function int main() {
+    let x = 0xFFFFFFFFFFFFFFFFF;  // very long hex
+    return 0;
+}

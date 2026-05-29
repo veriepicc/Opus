@@ -87,6 +87,8 @@ Compile-verified examples that match the current compiler.
 | [dll.md](dll.md) | DLL-specific behavior and native output notes |
 | [debugger.md](debugger.md) | debug sections and healing runtime |
 
+| [simd.md](simd.md) | AVX2 and AVX-512 SIMD intrinsics |
+
 ## Layout
 
 ```text

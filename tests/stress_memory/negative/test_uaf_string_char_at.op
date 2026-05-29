@@ -1,0 +1,6 @@
+function int main() {
+    let s = make_string("test")
+    free(s)
+    let c = string_char_at(s, 0)
+    return c
+}

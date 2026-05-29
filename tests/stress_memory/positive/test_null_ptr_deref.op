@@ -1,0 +1,5 @@
+function int main() {
+    let ptr: ptr = 0
+    let val = mem_read(ptr)
+    return 0
+}

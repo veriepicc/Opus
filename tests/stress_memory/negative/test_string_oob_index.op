@@ -1,0 +1,8 @@
+function int main() {
+    let s = make_string("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    let len = string_length(s)
+    let idx = len + 100
+    let c = string_char_at(s, idx)
+    free(s)
+    return c
+}

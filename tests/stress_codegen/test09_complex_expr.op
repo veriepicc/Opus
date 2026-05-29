@@ -1,0 +1,12 @@
+// TEST 9: complex expression that might cause register spills
+
+function int complex_expr(int a, int b, int c, int d, int e, int f) {
+    return (a * b + c * d) * (e + f) / (a - b + c)
+}
+
+function int main() {
+    let result = complex_expr(7, 11, 13, 17, 19, 23)
+    print_int(result)
+    print("\n")
+    return 0
+}

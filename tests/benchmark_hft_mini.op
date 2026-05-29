@@ -1,0 +1,13 @@
+fn mix(i: i64, salt: i64) -> i64 {
+    return i + salt
+}
+
+fn main() -> i64 {
+    let mut counter: i64 = 0
+    let mut accumulator: i64 = 0
+    while counter < 100 {
+        accumulator = accumulator + mix(counter, 17)
+        counter = counter + 1
+    }
+    return accumulator
+}

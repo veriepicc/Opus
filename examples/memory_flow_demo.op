@@ -1,0 +1,47 @@
+// memory flow hover demo
+// good hover targets:
+// - the alloc lines
+// - mem.write32(slot, ...)
+// - mem.read32(slot)
+// - mem.copy(mirror, block, 32)
+// - mem.write(block + 16, ...)
+// - the free_ptr lines
+// - the leaked clone allocation
+
+import mem
+
+function int read_score(ptr block) {
+    return mem.read32(block + 8)
+}
+
+function int main() {
+    let block = mem.make_zero(32)
+    let slot = block + 8
+
+    mem.write32(slot, 1337)
+    let score = mem.read32(slot)
+
+    let mirror = mem.make_zero(32)
+    mem.copy(mirror, block, 32)
+    let echoed = mem.read32(mirror + 8)
+
+    let clone = mem.make_copy(block, 32)
+    let cloned = read_score(clone)
+
+    mem.write(block + 16, score + echoed + cloned)
+    let total = mem.read(block + 16)
+
+    print("score: ")
+    print_int(score)
+    print("echoed: ")
+    print_int(echoed)
+    print("cloned: ")
+    print_int(cloned)
+    print("total: ")
+    print_int(total)
+
+    mem.free_ptr(mirror)
+    mem.free_ptr(block)
+    mem.free_ptr(clone)
+    return 0
+}

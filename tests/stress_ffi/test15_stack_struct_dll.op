@@ -1,0 +1,31 @@
+// TEST 15: pass stack-allocated struct across DLL boundary
+// stack struct might be in wrong location when C accesses it
+
+struct Point2D {
+    x: float
+    y: float
+}
+
+using FnPoint = fn(ptr) -> int
+
+function int main() {
+    alloc_console()
+
+    // Create on stack - might not survive DLL call
+    let pt1 = Point2D { x: 1.5, y: 2.5 }
+    let pt2 = Point2D { x: 3.5, y: 4.5 }
+
+    let kernel = get_module("kernel32.dll")
+    let my_fn = get_proc(kernel, "GetTickCount")
+    let typed_fn = my_fn as FnPoint
+
+    // Pass stack pointers to C function
+    let r1 = typed_fn(pt1 as ptr)
+    let r2 = typed_fn(pt2 as ptr)
+
+    print("stack struct test done\n")
+    print("r1=")
+    print_int(r1)
+    print("\n")
+    return 0
+}

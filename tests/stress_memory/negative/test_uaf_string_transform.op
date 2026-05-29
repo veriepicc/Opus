@@ -1,0 +1,6 @@
+function int main() {
+    var s = make_string("test")
+    free(s)
+    let upper = string_to_uppercase(s)
+    return 0
+}

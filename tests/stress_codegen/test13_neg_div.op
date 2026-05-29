@@ -1,0 +1,20 @@
+// TEST 13: negative division (sign issues)
+
+function int neg_div(int a, int b) {
+    return a / b
+}
+
+function int main() {
+    // various negative divisions
+    let a = -100 / 3    // should be -33
+    let b = -100 / -3   // should be 33
+    let c = 100 / -3    // should be -33
+    let d = -100 % 3    // should be -1
+    let e = -100 % -3   // should be -1
+    print_int(a); print(" ")
+    print_int(b); print(" ")
+    print_int(c); print(" ")
+    print_int(d); print(" ")
+    print_int(e); print("\n")
+    return 0
+}

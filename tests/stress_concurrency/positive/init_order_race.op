@@ -1,0 +1,22 @@
+var global_init_order: i64 = 0
+
+function int main() {
+    global_init_order = 42
+    let h1 = spawn read_global()
+    let h2 = spawn write_global()
+    let r1 = await h1
+    let r2 = await h2
+    print_int(global_init_order)
+    print_int(r1)
+    print_int(r2)
+    return 0
+}
+
+function int read_global() {
+    return global_init_order as int
+}
+
+function int write_global() {
+    global_init_order = 100
+    return global_init_order as int
+}

@@ -1,0 +1,9 @@
+view MemoryBlock {
+    ptr data @ 0
+    int size @ 8
+    bool valid @ 12
+}
+
+function int main() {
+    return 0;
+}

@@ -791,12 +791,11 @@ private:
     }
 
     static void fail_slot_overflow(const char* name, std::size_t actual, std::size_t slot_size) {
-        std::println(std::cerr,
-                     "\033[1;91mFATAL:\033[0m {} is {} bytes but slot is only {} bytes",
-                     name,
-                     actual,
-                     slot_size);
-        std::abort();
+        throw std::logic_error(std::format(
+            "{} is {} bytes but slot is only {} bytes",
+            name,
+            actual,
+            slot_size));
     }
     
     struct ImportResult {
@@ -1076,8 +1075,7 @@ private:
         build_dll_print_hex_impl(code, text_rva, rdata_rva, imports);
         std::size_t hex_bytes = code.size() - hex_start;
         if (hex_bytes > DLL_PRINT_HEX_SIZE) {
-            std::println(std::cerr, "\033[1;91mFATAL:\033[0m print_hex_impl is {} bytes but slot is only {} bytes", hex_bytes, DLL_PRINT_HEX_SIZE);
-            std::abort();
+            fail_slot_overflow("print_hex_impl", hex_bytes, DLL_PRINT_HEX_SIZE);
         }
         
         while (code.size() < crash_handler_off) emit8(code, 0xCC);
@@ -2674,8 +2672,7 @@ private:
         // sanity check - make sure we didnt overflow the handler slot
         std::size_t handler_bytes = code.size() - handler_start;
         if (handler_bytes > crash_handler_size) {
-            std::println(std::cerr, "\033[1;91mFATAL:\033[0m crash handler is {} bytes but slot is only {} bytes", handler_bytes, crash_handler_size);
-            std::abort();
+            fail_slot_overflow("crash_handler", handler_bytes, crash_handler_size);
         }
     }
     

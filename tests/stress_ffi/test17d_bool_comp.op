@@ -1,0 +1,42 @@
+// compare bool true vs int 1 in a simple test
+
+using FnInt = fn(int) -> int
+
+function int main() {
+    alloc_console()
+
+    let kernel = get_module("kernel32.dll")
+    let tick = get_proc(kernel, "GetTickCount")
+    let my_fn = tick as FnInt
+
+    // GetTickCount returns time since boot in ms
+    // we want to see if the PARAMETER affects the return value
+    // In reality GetTickCount ignores its parameter and just returns time
+    // So all these should return similar values (within ms of each other)
+
+    let r1 = my_fn(1)
+    let r2 = my_fn(0)
+    let r3 = my_fn(true)
+    let r4 = my_fn(false)
+
+    print("fn(1)=")
+    print_int(r1)
+    print("\n")
+
+    print("fn(0)=")
+    print_int(r2)
+    print("\n")
+
+    print("fn(true)=")
+    print_int(r3)
+    print("\n")
+
+    print("fn(false)=")
+    print_int(r4)
+    print("\n")
+
+    // If the codegen for bool is broken, the values might be different
+    // in ways that indicate bool was passed wrong
+
+    return 0
+}

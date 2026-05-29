@@ -1,0 +1,27 @@
+import mem
+
+struct DeepNesting {
+    a: int
+    b: int
+}
+
+struct NestL2 {
+    deep: DeepNesting
+}
+
+struct NestL3 {
+    l2: NestL2
+}
+
+struct NestL4 {
+    l3: NestL3
+}
+
+function int main() {
+    let ptr = malloc(4)
+    let n4 = ptr as NestL4
+    n4.l3.l2.deep.a = 42
+    let val = n4.l3.l2.deep.a
+    free(ptr)
+    return val
+}

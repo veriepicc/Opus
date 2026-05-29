@@ -1,0 +1,41 @@
+// TEST 10: struct with pointers modified by C
+// pass struct to FFI that C will mutate
+
+import mem
+
+struct Point {
+    x: int
+    y: int
+}
+
+using FnMutate = fn(ptr) -> int
+
+function int main() {
+    alloc_console()
+
+    let mem_block = mem.make_zero(8)
+    let pt = mem_block as Point
+    pt.x = 100
+    pt.y = 200
+
+    // Pass to hypothetical mutate function
+    // In reality just test that passing ptr to struct works
+    let kernel = get_module("kernel32.dll")
+    let my_fn = get_proc(kernel, "GetTickCount")
+    let typed_fn = my_fn as FnMutate
+
+    let result = typed_fn(mem_block)
+    print("struct ptr result: ")
+    print_int(result)
+    print("\n")
+
+    // Check if x/y were mutated (they won't be but let's see)
+    print("x=")
+    print_int(pt.x)
+    print(" y=")
+    print_int(pt.y)
+    print("\n")
+
+    free(mem_block)
+    return 0
+}

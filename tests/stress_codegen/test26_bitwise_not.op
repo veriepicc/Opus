@@ -1,0 +1,10 @@
+// TEST: bitwise not and complement
+function int main() {
+    let a = ~0
+    let b = ~12345
+    let c = ~(-1)
+    print_int(a); print(" ")
+    print_int(b); print(" ")
+    print_int(c); print("\n")
+    return 0
+}
