@@ -1,16 +1,26 @@
 name: Continuous Compiler Fuzzing
 
 on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
   schedule:
-    # Run every 12 hours (00:00 UTC and 12:00 UTC)
+    # Run every 12 hours (00:00 UTC and 12:00 UTC) -> 5.5h run, 6.5h sleep
     - cron: '0 0,12 * * *'
+  push:
+    branches: [fuzzing]
   workflow_dispatch:
     inputs:
       duration_minutes:
         description: 'Duration to fuzz in minutes (max 330)'
         required: false
-        default: '300'
+        default: '330'
         type: string
+
+concurrency:
+  group: fuzz-cycle
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -38,7 +48,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: build-compiler
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 340
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +71,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: fuzzing
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -86,9 +98,9 @@ jobs:
       - name: Run Sable Fuzzer
         shell: bash
         run: |
-          MINS="${{ inputs.duration_minutes || '300' }}"
+          MINS="${{ inputs.duration_minutes || '330' }}"
           DURATION=$((MINS * 60))
-          echo "Starting fuzzer in mode ${{ matrix.mode }} for ${DURATION}s..."
+          echo "Starting fuzzer in mode ${{ matrix.mode }} for ${DURATION}s (5.5 hours)..."
           python tools/fuzzer.py \
             --compiler bin/Release/sable.exe \
             --mode ${{ matrix.mode }} \
