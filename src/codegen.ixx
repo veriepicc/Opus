@@ -1561,9 +1561,9 @@ private:
     std::unordered_set<std::uint8_t> scratch_regs_in_use_;
 
     struct ScopedScratchReg {
-        CodeGen& cg;
+        CodeGenerator& cg;
         x64::Reg reg;
-        ScopedScratchReg(CodeGen& cg, x64::Reg reg) : cg(cg), reg(reg) {
+        ScopedScratchReg(CodeGenerator& cg, x64::Reg reg) : cg(cg), reg(reg) {
             cg.scratch_regs_in_use_.insert(static_cast<std::uint8_t>(reg));
         }
         ~ScopedScratchReg() {
