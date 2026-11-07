@@ -664,6 +664,7 @@ private:
     std::vector<x64::Reg> current_function_saved_regs_;
     Type current_function_return_type_;
     bool has_current_function_return_type_ = false;
+    bool current_function_return_seen_ = false;
     std::unordered_map<const Symbol*, OwnedLocalState> owned_locals_;    struct InductionBinding {
         x64::Reg term_reg = x64::Reg::RDX;
         std::int64_t step = 0;
@@ -4247,6 +4248,7 @@ private:
         info.single_use_inline_safe = is_single_use_inline_safe_fn(fn);
         current_function_return_type_ = info.return_type.clone();
         has_current_function_return_type_ = true;
+        current_function_return_seen_ = false;
         owned_locals_.clear();
 
         FunctionLeafRegisterPlan leaf_plan;
@@ -4404,11 +4406,15 @@ private:
 
         // If no explicit return, add one
         if (info.return_type.is_void()) {
-            warn_live_owned_locals_on_exit();
+            if (!current_function_return_seen_) {
+                warn_live_owned_locals_on_exit();
+            }
             emit_current_epilogue();
         } else {
             // Default return 0
-            warn_live_owned_locals_on_exit();
+            if (!current_function_return_seen_) {
+                warn_live_owned_locals_on_exit();
+            }
             emit_.mov_imm32(x64::Reg::RAX, 0);
             emit_current_epilogue();
         }
@@ -6172,6 +6178,7 @@ private:
     }
 
     [[nodiscard]] bool generate_return(const ast::ReturnStmt& ret) {
+        current_function_return_seen_ = true;
         warn_live_owned_locals_on_exit(ret.value.get());
         if (ret.value) {
             if (!generate_expr(*ret.value)) return false;
