@@ -582,6 +582,19 @@ class FuzzCoordinator:
         with open(self.findings_file, "a", encoding="utf-8") as f:
             f.write(finding_entry)
 
+        # Immediately publish finding to GitHub in real-time
+        try:
+            subprocess.run(["git", "add", str(self.findings_file), str(crash_path)], cwd=ROOT, capture_output=True, timeout=10)
+            subprocess.run(["git", "commit", "-m", f"fuzz: finding {content_hash} ({category}) in {self.mode}"], cwd=ROOT, capture_output=True, timeout=10)
+            subprocess.run(["git", "pull", "--rebase", "origin", "fuzzing"], cwd=ROOT, capture_output=True, timeout=20)
+            p = subprocess.run(["git", "push", "origin", "fuzzing"], cwd=ROOT, capture_output=True, text=True, timeout=20)
+            if p.returncode == 0:
+                print(f"[LIVE PUSH] Successfully pushed finding {content_hash} to origin/fuzzing")
+            else:
+                print(f"[LIVE PUSH WARNING] Push failed: {p.stderr.strip() if p.stderr else 'unknown'}")
+        except Exception as e:
+            print(f"[LIVE PUSH ERROR] {e}")
+
     def run(self):
         self.start_time = time.time()
         print(f"=== Sable Compiler Fuzzing Session Started ===")
