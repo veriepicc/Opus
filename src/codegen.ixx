@@ -10929,6 +10929,37 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             return true;
         }
 
+        // handle array element assignment (e.g., arr[2] = 99)
+        if (bin.lhs->is<ast::IndexExpr>()) {
+            const auto& idx = bin.lhs->as<ast::IndexExpr>();
+            if (idx.base->is<ast::IdentExpr>()) {
+                const std::string& var_name = idx.base->as<ast::IdentExpr>().name;
+                Symbol* sym = current_scope_->lookup(var_name);
+                if (!sym) {
+                    error_undefined_name("variable", var_name, collect_value_name_candidates());
+                    return false;
+                }
+                if (!sym->is_mut) {
+                    error(describe_rebinding_target("variable", var_name));
+                    return false;
+                }
+            }
+            // value is already in RAX; save it while we compute the element address
+            emit_.push(x64::Reg::RAX);
+            if (!generate_expr(*idx.base)) return false;
+            emit_.push(x64::Reg::RAX);
+            if (!generate_expr(*idx.index)) return false;
+            emit_.pop(x64::Reg::RCX);
+            emit_.lea_scaled(x64::Reg::RAX, x64::Reg::RCX, x64::Reg::RAX, 8);
+            if (!is_native_image_output()) {
+                emit_.add_smart(x64::Reg::RAX, 8); // host fallback arrays store length at arr[0]
+            }
+            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+            emit_.pop(x64::Reg::RAX);
+            emit_.mov_store(x64::Reg::RCX, 0, x64::Reg::RAX);
+            return true;
+        }
+
         // Left side must be an identifier
         if (!bin.lhs->is<ast::IdentExpr>()) {
             error("left side of assignment must be an identifier or field access");
