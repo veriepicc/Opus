@@ -2,18 +2,18 @@
 
 - **Date:** 2026-11-07
 - **Host:** `Windows AMD64`
-- **CPU:** `Intel(R) Xeon(R) 6973P-C`
+- **CPU:** `AMD EPYC 7763 64-Core Processor`
 - **Toolchains:** Opus (native x64), MSVC (`/O2 /Ob2 /Oi /Ot /GS-`), GCC (`-O3 -fwrapv`), TCC
 
 ## Master Showdown
 
 | Workload | Metric | Opus | MSVC | GCC | TCC | Winner |
 | :--- | :--- | ---: | ---: | ---: | ---: | :---: |
-| **Math Loop (80M iter)** | Compile<br>Size<br>Runtime | 18.1ms<br>4.5 KiB<br>**4.12ms** | 5265.0ms<br>105.0 KiB<br>17.13ms | 4664.4ms<br>14.5 KiB<br>5.44ms | 13.4ms<br>2.5 KiB<br>78.82ms | 🏆 **Opus** |
-| **State Accumulation (50M iter)** | Compile<br>Size<br>Runtime | 9.2ms<br>4.5 KiB<br>**4.01ms** | 151.4ms<br>105.0 KiB<br>17.44ms | 88.6ms<br>14.5 KiB<br>5.39ms | 8.7ms<br>2.5 KiB<br>48.87ms | 🏆 **Opus** |
-| **Branch Parity (40M iter)** | Compile<br>Size<br>Runtime | 7.8ms<br>4.5 KiB<br>**3.63ms** | 86.3ms<br>105.0 KiB<br>15.02ms | 483.5ms<br>14.5 KiB<br>14.71ms | 8.6ms<br>2.5 KiB<br>32.37ms | 🏆 **Opus** |
-| **General Logic (6M iter)** | Compile<br>Size<br>Runtime | 7.8ms<br>4.5 KiB<br>14.26ms | 105.4ms<br>105.5 KiB<br>**11.28ms** | 186.0ms<br>14.5 KiB<br>12.11ms | 8.3ms<br>2.5 KiB<br>28.49ms | ⚡ **MSVC** |
-| **HFT Order Book (12M iter)** | Compile<br>Size<br>Runtime | 8.2ms<br>7.0 KiB<br>189.97ms | 147.1ms<br>106.0 KiB<br>93.68ms | 227.9ms<br>15.0 KiB<br>**87.07ms** | 9.2ms<br>4.0 KiB<br>207.35ms | ⚡ **GCC** |
+| **Math Loop (80M iter)** | Compile<br>Size<br>Runtime | 20.1ms<br>4.5 KiB<br>**4.36ms** | 4203.0ms<br>105.0 KiB<br>31.35ms | 3668.8ms<br>14.5 KiB<br>5.70ms | 15.2ms<br>2.5 KiB<br>131.15ms | **Opus** |
+| **State Accumulation (50M iter)** | Compile<br>Size<br>Runtime | 10.6ms<br>4.5 KiB<br>**4.29ms** | 105.3ms<br>105.0 KiB<br>21.37ms | 103.8ms<br>14.5 KiB<br>5.72ms | 10.0ms<br>2.5 KiB<br>84.77ms | **Opus** |
+| **Branch Parity (40M iter)** | Compile<br>Size<br>Runtime | 10.4ms<br>4.5 KiB<br>**4.47ms** | 99.2ms<br>105.0 KiB<br>30.94ms | 385.3ms<br>14.5 KiB<br>20.87ms | 10.2ms<br>2.5 KiB<br>51.23ms | **Opus** |
+| **General Logic (6M iter)** | Compile<br>Size<br>Runtime | 9.4ms<br>4.5 KiB<br>21.70ms | 118.5ms<br>105.5 KiB<br>19.00ms | 178.7ms<br>14.5 KiB<br>**18.08ms** | 10.2ms<br>2.5 KiB<br>48.28ms | **GCC** |
+| **HFT Order Book (12M iter)** | Compile<br>Size<br>Runtime | 10.4ms<br>7.0 KiB<br>427.16ms | 132.7ms<br>106.0 KiB<br>141.46ms | 209.2ms<br>15.0 KiB<br>**131.95ms** | 11.1ms<br>4.0 KiB<br>400.29ms | **GCC** |
 
 ## Reproduction
 
@@ -25,12 +25,12 @@ python benchmarks/run.py --iterations 5 --warmup 2
 
 | Architecture & Host | Processor Model | Math (80M) | State (50M) | Branch (40M) | General (6M) | HFT (12M) |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
-| **Windows AMD64** | `Intel(R) Xeon(R) 6973P-C` | 4.12 ms | 4.01 ms | 3.63 ms | 14.26 ms | 189.97 ms |
-| **Windows AMD64** | `AMD EPYC 7763 64-Core Processor` | 3.37 ms | 3.02 ms | 3.11 ms | 20.45 ms | 419.87 ms |
-| **Windows ARM64 (Prism x64)** | `Cobalt 100` | 14.56 ms | 15.12 ms | 15.14 ms | 31.59 ms | 579.25 ms |
-| **Linux x86_64** | `Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz` | 1412.68 ms | 1436.18 ms | 1432.73 ms | 1429.45 ms | 1437.42 ms |
+| **Windows AMD64** | `AMD EPYC 7763 64-Core Processor` | 4.36 ms | 4.29 ms | 4.47 ms | 21.70 ms | 427.16 ms |
+| **Windows AMD64** | `AMD EPYC 9V74 80-Core Processor` | 2.54 ms | 2.45 ms | 2.47 ms | 15.87 ms | 215.93 ms |
+| **Windows ARM64 (Prism x64)** | `Cobalt 100` | 16.00 ms | 14.81 ms | 15.32 ms | 31.75 ms | 576.31 ms |
+| **Linux x86_64** | `AMD EPYC 7763 64-Core Processor` | 0.01 ms | 0.01 ms | 0.01 ms | 0.01 ms | 8.33 ms |
 
-Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepicc/Opus/actions/runs/42394055315) · Source: `b5078ce6b763`.
+Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepicc/Opus/actions/runs/42395720972) · Source: `aaab0e807ad9`.
 
 ## Reproduction
 

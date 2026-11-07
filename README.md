@@ -2,35 +2,35 @@
 
 ## Performance
 
-Up to **290.2× faster compilation** than MSVC · **4.5 KiB** smallest Opus executable.
+Up to **209.2× faster compilation** than MSVC · **4.5 KiB** smallest Opus executable.
 
 | Workload | Opus compile | Opus runtime | vs MSVC | vs GCC | vs TCC |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| math | 18.1 ms | **4.12 ms** | **4.2× faster** (17.13ms) | **1.3× faster** (5.44ms) | **19.1× faster** (78.82ms) |
-| state | 9.2 ms | **4.01 ms** | **4.3× faster** (17.44ms) | **1.3× faster** (5.39ms) | **12.2× faster** (48.87ms) |
-| branch | 7.8 ms | **3.63 ms** | **4.1× faster** (15.02ms) | **4.1× faster** (14.71ms) | **8.9× faster** (32.37ms) |
-| general | 7.8 ms | **14.26 ms** | 1.3× slower (11.28ms) | 1.2× slower (12.11ms) | **2.0× faster** (28.49ms) |
-| hft | 8.2 ms | **189.97 ms** | 2.0× slower (93.68ms) | 2.2× slower (87.07ms) | **1.1× faster** (207.35ms) |
+| math | 20.1 ms | **4.36 ms** | **7.2× faster** (31.35ms) | **1.3× faster** (5.70ms) | **30.1× faster** (131.15ms) |
+| state | 10.6 ms | **4.29 ms** | **5.0× faster** (21.37ms) | **1.3× faster** (5.72ms) | **19.7× faster** (84.77ms) |
+| branch | 10.4 ms | **4.47 ms** | **6.9× faster** (30.94ms) | **4.7× faster** (20.87ms) | **11.5× faster** (51.23ms) |
+| general | 9.4 ms | **21.70 ms** | 1.1× slower (19.00ms) | 1.2× slower (18.08ms) | **2.2× faster** (48.28ms) |
+| hft | 10.4 ms | **427.16 ms** | 3.0× slower (141.46ms) | 3.2× slower (131.95ms) | 1.1× slower (400.29ms) |
 
 Windows AMD64 · 5 measured runs · 2 warmups · minimum runtime.
 [Full results & methodology](BENCHMARKS.md)
 
-[Benchmark CI run](https://github.com/veriepicc/Opus/actions/runs/42394055315) · Source: `b5078ce6b763`.
+[Benchmark CI run](https://github.com/veriepicc/Opus/actions/runs/42395720972) · Source: `aaab0e807ad9`.
 
 
 ## Core CI Build Status
 
 | Host & Toolchain | Target | Configuration | Build |
 | :--- | :---: | :---: | :---: |
-| Windows Server 2022 · MSVC | x64 | Release | [Passed](https://github.com/veriepicc/Opus/actions/runs/42394055315) |
+| Windows Server 2022 · MSVC | x64 | Release | [Passed](https://github.com/veriepicc/Opus/actions/runs/42395720972) |
 
 ## Platform CI Test Status
 
 | Test Host | Execution | Passed | Failed | Skipped | Result |
 | :--- | :--- | ---: | ---: | ---: | :---: |
-| Windows Server 2022 | Native x64 | 331 | 0 | 4 | [Passed](https://github.com/veriepicc/Opus/actions/runs/42394055315) |
-| Windows Server 2025 | Native x64 | 331 | 0 | 4 | [Passed](https://github.com/veriepicc/Opus/actions/runs/42394055315) |
-| Windows 11 on Arm | x64 emulation | 331 | 0 | 4 | [Passed](https://github.com/veriepicc/Opus/actions/runs/42394055315) |
-| Ubuntu 24.04 | Wine x64 | 331 | 0 | 4 | [Passed](https://github.com/veriepicc/Opus/actions/runs/42394055315) |
+| Windows Server 2022 | Native x64 | 331 | 0 | 4 | [Passed](https://github.com/veriepicc/Opus/actions/runs/42395720972) |
+| Windows Server 2025 | Native x64 | 331 | 0 | 4 | [Passed](https://github.com/veriepicc/Opus/actions/runs/42395720972) |
+| Windows 11 on Arm | x64 emulation | 331 | 0 | 4 | [Passed](https://github.com/veriepicc/Opus/actions/runs/42395720972) |
+| Ubuntu 24.04 | Wine x64 | 331 | 0 | 4 | [Passed](https://github.com/veriepicc/Opus/actions/runs/42395720972) |
 
-Results: [CI run](https://github.com/veriepicc/Opus/actions/runs/42394055315) · Source: `b5078ce6b763`.
+Results: [CI run](https://github.com/veriepicc/Opus/actions/runs/42395720972) · Source: `aaab0e807ad9`.
