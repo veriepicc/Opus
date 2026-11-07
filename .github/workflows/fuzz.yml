@@ -1,0 +1,113 @@
+name: Continuous Compiler Fuzzing
+
+on:
+  schedule:
+    # Run every 12 hours (00:00 UTC and 12:00 UTC)
+    - cron: '0 0,12 * * *'
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'Duration to fuzz in minutes (max 330)'
+        required: false
+        default: '300'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-compiler:
+    name: Build Compiler / Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build Release x64
+        run: ./tools/ci-build.ps1
+      - name: Upload compiler
+        uses: actions/upload-artifact@v4
+        with:
+          name: sable-fuzz-compiler
+          path: bin/Release/sable.exe
+          if-no-files-found: error
+
+  fuzz:
+    name: ${{ matrix.name }}
+    needs: build-compiler
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            mode: parser
+            name: Windows 2022 / Parser Mutations
+          - os: windows-2022
+            mode: types
+            name: Windows 2022 / Types & Semantic Stress
+          - os: windows-2025
+            mode: codegen
+            name: Windows 2025 / Arithmetic & Codegen Edge Cases
+          - os: windows-2025
+            mode: memory
+            name: Windows 2025 / Memory & View Layout Stress
+          - os: ubuntu-24.04
+            mode: control_flow
+            name: Ubuntu 24.04 / Control Flow Stress (Wine)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Wine (Ubuntu only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wine wine64 xvfb
+          mkdir -p "$HOME/.wine"
+          wineserver -p
+          WINEDEBUG=-all wineboot --init
+
+      - name: Download compiler
+        uses: actions/download-artifact@v4
+        with:
+          name: sable-fuzz-compiler
+          path: bin/Release/
+
+      - name: Run Sable Fuzzer
+        shell: bash
+        run: |
+          MINS="${{ inputs.duration_minutes || '300' }}"
+          DURATION=$((MINS * 60))
+          echo "Starting fuzzer in mode ${{ matrix.mode }} for ${DURATION}s..."
+          python tools/fuzzer.py \
+            --compiler bin/Release/sable.exe \
+            --mode ${{ matrix.mode }} \
+            --duration $DURATION \
+            --output-dir fuzzer \
+            --findings FINDINGS.md
+
+      - name: Upload Crashes & Repro Artifacts
+        if: always()
+        shell: bash
+        run: |
+          if [ -d "fuzzer/crashes" ] && [ "$(ls -A fuzzer/crashes 2>/dev/null)" ]; then
+            echo "CRASHES_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "CRASHES_FOUND=false" >> $GITHUB_ENV
+          fi
+
+      - name: Save Fuzzer Artifacts
+        if: env.CRASHES_FOUND == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzer-findings-${{ matrix.mode }}-${{ matrix.os }}
+          path: fuzzer/
+          if-no-files-found: ignore
