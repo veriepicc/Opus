@@ -1558,7 +1558,23 @@ private:
         return false;
     }
 
+    std::unordered_set<std::uint8_t> scratch_regs_in_use_;
+
+    struct ScopedScratchReg {
+        CodeGen& cg;
+        x64::Reg reg;
+        ScopedScratchReg(CodeGen& cg, x64::Reg reg) : cg(cg), reg(reg) {
+            cg.scratch_regs_in_use_.insert(static_cast<std::uint8_t>(reg));
+        }
+        ~ScopedScratchReg() {
+            cg.scratch_regs_in_use_.erase(static_cast<std::uint8_t>(reg));
+        }
+    };
+
     [[nodiscard]] bool reg_is_bound(x64::Reg reg) const {
+        if (scratch_regs_in_use_.contains(static_cast<std::uint8_t>(reg))) {
+            return true;
+        }
         for (const auto& [_, bound] : register_bindings_) {
             if (bound == reg) {
                 return true;
@@ -4612,8 +4628,6 @@ private:
                     case Op::Add:
                     case Op::Sub:
                     case Op::Mul:
-                    case Op::Div:
-                    case Op::Mod:
                     case Op::BitAnd:
                     case Op::BitOr:
                     case Op::BitXor:
@@ -9268,9 +9282,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // we patch the result to (INT64_MIN, 0) to match wrapping semantics without faulting.
         emit_.cmp_smart_imm(divisor, -1);
         std::size_t do_idiv_a = emit_.jcc_rel32(x64::Emitter::CC_NE);
-        // cmp rax, INT64_MIN  (need full 64-bit cmp; cmp_smart_imm uses imm32 so use mov+cmp)
-        emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::min)()));
-        emit_.cmp(x64::Reg::RAX, x64::Reg::R11);
+        // cmp rax, INT64_MIN  (need full 64-bit cmp; divisor cannot be RDX since idiv/cqo uses RDX, so RDX is safe scratch here)
+        emit_.mov_imm64(x64::Reg::RDX, static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::min)()));
+        emit_.cmp(x64::Reg::RAX, x64::Reg::RDX);
         std::size_t do_idiv_b = emit_.jcc_rel32(x64::Emitter::CC_NE);
         // trap path: rax stays as INT_MIN (correct quotient), rdx=0 (correct remainder)
         emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
@@ -9521,7 +9535,21 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 emit_.imul(dst, rhs);
                 return true;
             case Op::Div:
-                if (dst != x64::Reg::RAX) return false;
+                if (dst != x64::Reg::RAX) {
+                    emit_.push(x64::Reg::RAX);
+                    emit_.push(x64::Reg::RDX);
+                    emit_.mov(x64::Reg::RAX, dst);
+                    if (is_unsigned) {
+                        emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
+                        emit_.div(rhs);
+                    } else {
+                        emit_safe_idiv(rhs);
+                    }
+                    emit_.mov(dst, x64::Reg::RAX);
+                    emit_.pop(x64::Reg::RDX);
+                    emit_.pop(x64::Reg::RAX);
+                    return true;
+                }
                 if (is_unsigned) {
                     emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
                     emit_.div(rhs);
@@ -9530,7 +9558,21 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 }
                 return true;
             case Op::Mod:
-                if (dst != x64::Reg::RAX) return false;
+                if (dst != x64::Reg::RAX) {
+                    emit_.push(x64::Reg::RAX);
+                    emit_.push(x64::Reg::RDX);
+                    emit_.mov(x64::Reg::RAX, dst);
+                    if (is_unsigned) {
+                        emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
+                        emit_.div(rhs);
+                    } else {
+                        emit_safe_idiv(rhs);
+                    }
+                    emit_.mov(dst, x64::Reg::RDX);
+                    emit_.pop(x64::Reg::RDX);
+                    emit_.pop(x64::Reg::RAX);
+                    return true;
+                }
                 if (is_unsigned) {
                     emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
                     emit_.div(rhs);
@@ -10051,6 +10093,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             if (!rhs_reg) {
                 return false;
             }
+            ScopedScratchReg hold_rhs(*this, *rhs_reg);
+            ScopedScratchReg hold_dst(*this, dst);
 
             if (bin->rhs->is<ast::FieldExpr>()) {
                 const auto& field = bin->rhs->as<ast::FieldExpr>();
@@ -10124,6 +10168,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             [&](const ast::IndexExpr& e)   { return generate_index(e); },
             [&](const ast::FieldExpr& e)   { return generate_field(e); },
             [&](const ast::CastExpr& e)    {
+                if (auto sn = get_struct_name(e.target_type); sn && !is_pointer_like_type(e.target_type)) {
+                    error(std::format("cannot cast value to struct type '{}'", *sn));
+                    return false;
+                }
                 if (!generate_expr(*e.expr)) {
                     return false;
                 }
@@ -11419,6 +11467,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         if (should_inline_direct_call(call, it->second)) {
             return generate_inlined_safe_call(call, it->second);
+        }
+
+        if (call.args.size() != it->second.param_types.size()) {
+            error(std::format("function '{}' expects {} argument(s), got {}",
+                              resolved_target, it->second.param_types.size(), call.args.size()));
+            return false;
         }
 
         std::size_t nargs = call.args.size();
