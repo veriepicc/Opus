@@ -29,6 +29,15 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# Suppress Windows modal crash dialogs (WerFault.exe) in headless CI
+if os.name == 'nt':
+    try:
+        import ctypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+    except Exception:
+        pass
+
 # ============================================================================
 # RUNTIME & OS HELPERS
 # ============================================================================
@@ -46,21 +55,38 @@ def run_proc(argv, timeout=10, cwd=None, env=None):
         cmd.append("wine")
     cmd.extend(str(a) for a in argv)
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=cwd or ROOT,
-            env=env
-        )
-        return proc.returncode, proc.stdout + proc.stderr, False
-    except subprocess.TimeoutExpired as e:
-        out = (e.stdout or b"").decode("utf-8", "replace") + (e.stderr or b"").decode("utf-8", "replace")
-        return -999, out, True
-    except Exception as e:
-        return -998, str(e), False
+    with tempfile.TemporaryFile() as output:
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                cwd=cwd or ROOT,
+                env=env,
+                start_new_session=os.name != 'nt'
+            )
+            proc.wait(timeout=timeout)
+            output.seek(0)
+            text = output.read().decode('utf-8', errors='replace')
+            return proc.returncode, text, False
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            if os.name == 'nt':
+                subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            else:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            output.seek(0)
+            text = output.read().decode('utf-8', errors='replace')
+            return -999, text, True
+        except Exception as e:
+            return -998, str(e), False
 
 def classify_outcome(code: int, output: str, timed_out: bool) -> tuple[bool, str, str]:
     """Returns (is_finding, category, description)."""
@@ -608,13 +634,12 @@ class FuzzCoordinator:
         # Use relative scratch directory inside repo to avoid path conversion issues
         scratch_dir = ROOT / ".fuzz_work"
         scratch_dir.mkdir(parents=True, exist_ok=True)
-        src_file = scratch_dir / f"fuzz_input_{self.mode}.sb"
-        exe_file = scratch_dir / f"fuzz_input_{self.mode}.exe"
 
         try:
             while time.time() - self.start_time < self.duration:
                 self.total_iterations += 1
                 sample = self.generate_candidate()
+                src_file = scratch_dir / f"fuzz_cand_{self.mode}_{self.total_iterations % 20}.sb"
                 src_file.write_text(sample, encoding="utf-8")
 
                 # Step 1: Compile with --fast --quiet
