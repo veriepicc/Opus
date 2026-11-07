@@ -9,21 +9,21 @@
 
 | Workload | Sable | MSVC | GCC | TCC | Winner |
 | :--- | ---: | ---: | ---: | ---: | :---: |
-| **Math Loop (80M iter)** | **4.59 ms** | 31.36 ms | 5.63 ms | 132.05 ms | **Sable** |
-| **State Accumulation (50M iter)** | **4.40 ms** | 22.30 ms | 5.92 ms | 84.75 ms | **Sable** |
-| **Branch Parity (40M iter)** | **4.45 ms** | 31.57 ms | 20.85 ms | 51.27 ms | **Sable** |
-| **General Logic (6M iter)** | 22.20 ms | 19.39 ms | **18.45 ms** | 48.75 ms | **GCC** |
-| **HFT Order Book (12M iter)** | 427.51 ms | 141.52 ms | **132.06 ms** | 399.85 ms | **GCC** |
+| **Math Loop (80M iter)** | **4.42 ms** | 30.49 ms | 5.51 ms | 131.29 ms | **Sable** |
+| **State Accumulation (50M iter)** | **4.28 ms** | 21.17 ms | 5.68 ms | 84.07 ms | **Sable** |
+| **Branch Parity (40M iter)** | **4.33 ms** | 31.26 ms | 20.44 ms | 50.80 ms | **Sable** |
+| **General Logic (6M iter)** | 21.52 ms | 18.53 ms | **17.79 ms** | 47.69 ms | **GCC** |
+| **HFT Order Book (12M iter)** | 427.83 ms | 140.78 ms | **131.77 ms** | 400.74 ms | **GCC** |
 
 ## Compilation Speed & Binary Size
 
 | Workload | Sable | MSVC (`/O2`) | GCC (`-O3`) | TCC |
 | :--- | ---: | ---: | ---: | ---: |
-| **Math Loop (80M iter)** | 19.7 ms (4.5 KiB) | 3995.9 ms (105.0 KiB) | 3620.2 ms (14.5 KiB) | **14.9 ms (2.5 KiB)** |
-| **State Accumulation (50M iter)** | **9.6 ms (4.5 KiB)** | 114.3 ms (105.0 KiB) | 103.6 ms (14.5 KiB) | 11.1 ms (2.5 KiB) |
-| **Branch Parity (40M iter)** | **10.0 ms (4.5 KiB)** | 105.9 ms (105.0 KiB) | 373.9 ms (14.5 KiB) | 10.4 ms (2.5 KiB) |
-| **General Logic (6M iter)** | **9.5 ms (4.5 KiB)** | 127.3 ms (105.5 KiB) | 179.9 ms (14.5 KiB) | 10.7 ms (2.5 KiB) |
-| **HFT Order Book (12M iter)** | **10.5 ms (7.0 KiB)** | 133.0 ms (106.0 KiB) | 215.9 ms (15.0 KiB) | 10.6 ms (4.0 KiB) |
+| **Math Loop (80M iter)** | 18.7 ms (4.5 KiB) | 3622.0 ms (105.0 KiB) | 3102.7 ms (14.5 KiB) | **15.0 ms (2.5 KiB)** |
+| **State Accumulation (50M iter)** | **9.0 ms (4.5 KiB)** | 104.2 ms (105.0 KiB) | 109.4 ms (14.5 KiB) | 9.9 ms (2.5 KiB) |
+| **Branch Parity (40M iter)** | **9.1 ms (4.5 KiB)** | 100.0 ms (105.0 KiB) | 339.4 ms (14.5 KiB) | 10.3 ms (2.5 KiB) |
+| **General Logic (6M iter)** | 10.9 ms (4.5 KiB) | 122.8 ms (105.5 KiB) | 180.4 ms (14.5 KiB) | **10.1 ms (2.5 KiB)** |
+| **HFT Order Book (12M iter)** | **9.6 ms (7.0 KiB)** | 130.1 ms (106.0 KiB) | 198.6 ms (15.0 KiB) | 10.5 ms (4.0 KiB) |
 
 ## Reproduction
 
@@ -35,12 +35,12 @@ python benchmarks/run.py --iterations 5 --warmup 2
 
 | Architecture & Host | Processor Model | Math (80M) | State (50M) | Branch (40M) | General (6M) | HFT (12M) |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Windows AMD64** | `AMD EPYC 7763 64-Core Processor` | 20ms / **4.59ms** | 10ms / **4.40ms** | 10ms / **4.45ms** | 10ms / **22.20ms** | 10ms / **427.51ms** |
-| **Windows AMD64** | `AMD EPYC 9V74 80-Core Processor` | 9ms / **2.47ms** | 6ms / **2.43ms** | 6ms / **2.44ms** | 6ms / **15.69ms** | 7ms / **215.78ms** |
-| **Windows ARM64 (Prism x64)** | `Cobalt 100` | 93ms / **14.53ms** | 28ms / **13.54ms** | 27ms / **13.91ms** | 36ms / **30.03ms** | 31ms / **578.58ms** |
-| **Linux x86_64** | `AMD EPYC 9V74 80-Core Processor` | 26ms / **19.47ms** | 80ms / **20.85ms** | 50ms / **19.41ms** | 27ms / **32.59ms** | 27ms / **233.57ms** |
+| **Windows AMD64** | `AMD EPYC 7763 64-Core Processor` | 19ms / **4.42ms** | 9ms / **4.28ms** | 9ms / **4.33ms** | 11ms / **21.52ms** | 10ms / **427.83ms** |
+| **Windows AMD64** | `AMD EPYC 7763 64-Core Processor` | 16ms / **3.01ms** | 7ms / **2.99ms** | 7ms / **3.11ms** | 8ms / **20.40ms** | 8ms / **419.92ms** |
+| **Windows ARM64 (Prism x64)** | `Cobalt 100` | 106ms / **16.08ms** | 31ms / **15.87ms** | 30ms / **15.67ms** | 40ms / **31.73ms** | 35ms / **581.96ms** |
+| **Linux x86_64** | `AMD EPYC 7763 64-Core Processor` | 31ms / **22.17ms** | 35ms / **21.85ms** | 113ms / **22.09ms** | 30ms / **39.13ms** | 30ms / **441.08ms** |
 
-Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepicc/Sable/actions/runs/42425082235) · Source: `82fb8eb33a4b`.
+Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepicc/Sable/actions/runs/42426212342) · Source: `8a9ed2faeff7`.
 
 ## Reproduction
 
