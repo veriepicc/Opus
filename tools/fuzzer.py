@@ -631,11 +631,11 @@ class FuzzCoordinator:
                     if run_find:
                         self.log_finding(sample, f"RUNTIME_{run_cat}", f"Executable Fault during --run: {run_desc}", run_code, run_out)
 
-                if self.total_iterations % 500 == 0:
+                if self.total_iterations % 25 == 0:
                     elapsed = time.time() - self.start_time
                     speed = self.total_iterations / elapsed if elapsed > 0 else 0
                     valid_pct = (self.valid_compiles / self.total_iterations) * 100
-                    print(f"[{elapsed:.1f}s / {self.duration}s] Tests: {self.total_iterations:,} ({speed:.1f}/s) | Valid: {valid_pct:.1f}% | Bugs: {self.total_crashes}")
+                    print(f"[{elapsed:.1f}s / {self.duration}s] Tests: {self.total_iterations:,} ({speed:.1f}/s) | Valid: {valid_pct:.1f}% | Bugs: {self.total_crashes}", flush=True)
         finally:
             try:
                 shutil.rmtree(scratch_dir, ignore_errors=True)
