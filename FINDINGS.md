@@ -254,3 +254,61 @@ function int main() {
 1023000
 ```
 ---
+
+## Finding `7a76e0cabcec` — RUNTIME_HANG
+- **Timestamp**: `2026-11-07 23:59:00Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_7a76e0cabcec.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+struct Point_92317 {
+    x: int;
+    y: int;
+}
+
+view Header_9191 {
+    magic: int @ 0;
+    flags: int @ 8;
+}
+
+function int helper_89954(int a_89232, int b_45938) {
+    print_int((-42 | b_45938));
+    switch b_45938 {
+        case 0: return 0;
+        case 1: return 1;
+        else: return 0;
+    }
+    b_45938 = a_89232;
+    let x_31254 = (2 & b_45938);
+    return ((x_31254 - 10) ^ (x_31254 ^ x_31254));
+}
+
+function int main() {
+    let res = helper_89954(10, 20);
+    print_int(res);
+    for i_99683 in 0..10 {
+        i_99683 = (i_99683 ^ (i_99683 * i_99683));
+    }
+    if false {
+        let x_50525 = i_99683;
+    } else {
+        let x_2616 = (i_99683 ^ (100 * 1));
+    }
+    for i_99430 in 0..5 {
+        let x_55878 = (-1 / -10);
+    }
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+-42
+0
+```
+---
