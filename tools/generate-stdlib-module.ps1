@@ -37,11 +37,11 @@ $maxChunkChars = 8192
 $builder = New-Object System.Text.StringBuilder
 [void]$builder.AppendLine("// generated file - do not edit by hand")
 [void]$builder.AppendLine()
-[void]$builder.AppendLine("export module opus.stdlib;")
+[void]$builder.AppendLine("export module sable.stdlib;")
 [void]$builder.AppendLine()
 [void]$builder.AppendLine("import std;")
 [void]$builder.AppendLine()
-[void]$builder.AppendLine("export namespace opus {")
+[void]$builder.AppendLine("export namespace sable {")
 [void]$builder.AppendLine("export inline const std::unordered_map<std::string, std::string>& embedded_stdlib_sources() {")
 [void]$builder.AppendLine("    static const std::unordered_map<std::string, std::string> sources = {")
 

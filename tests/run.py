@@ -166,7 +166,7 @@ def execute(case, compiler, workspace, timeout):
             copied = isolated / source.name
             shutil.copy2(source, copied)
             source = copied
-            (isolated / 'opus.project').write_text(
+            (isolated / 'sable.project').write_text(
                 'project Recovery {\n'
                 f'    entry: "{source.name}"\n'
                 '    mode: "exe"\n    debug: true\n    healing: "auto"\n}\n')
@@ -209,7 +209,8 @@ def execute(case, compiler, workspace, timeout):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--compiler', '-c', type=Path, default=ROOT / 'bin/Release/opus.exe')
+    default_compiler = ROOT / 'bin/Release/sable.exe' if (ROOT / 'bin/Release/sable.exe').is_file() else ROOT / 'bin/Release/sable.exe'
+    parser.add_argument('--compiler', '-c', type=Path, default=default_compiler)
     parser.add_argument('--jobs', '-j', type=int, default=1)
     parser.add_argument('--timeout', type=float, default=30)
     parser.add_argument('--filter', '-f', default='')
@@ -231,7 +232,7 @@ def main():
         parser.error(f'compiler not found: {compiler}')
     results = []
     # run only in a disposable copy; never delete outputs in the source tree
-    with tempfile.TemporaryDirectory(prefix='opus-tests-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='sable-tests-') as temporary:
         workspace = Path(temporary)
         for folder in ('tests', 'stdlib'):
             shutil.copytree(ROOT / folder, workspace / folder,

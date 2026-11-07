@@ -1,6 +1,6 @@
 # Standard Library
 
-Opus ships with a growing standard library embedded into the compiler.
+Sable ships with a growing standard library embedded into the compiler.
 
 Import modules explicitly:
 
@@ -89,7 +89,7 @@ import text
 import fmt
 
 function int main() {
-    let trimmed = text_trim("  opus  ")
+    let trimmed = text_trim("  sable  ")
     let pair = fmt_pair("mode", trimmed)
     print(pair)
     print("\n")
@@ -107,7 +107,7 @@ import json
 
 function int main() {
     let path = "tests/tmp_doc_example.json"
-    let src = "{\"name\":\"opus\",\"fast\":true}"
+    let src = "{\"name\":\"sable\",\"fast\":true}"
     if !fs_write_ok(path, src) {
         return 1
     }
@@ -173,5 +173,5 @@ function int main() {
 ## Notes
 
 - The standard library examples in the docs are aligned with the current parser and tests.
-- `test_stdlib_expanded.op` is a good reality check for what is currently expected to work together.
+- `test_stdlib_expanded.sb` is a good reality check for what is currently expected to work together.
 - For raw builtins vs module helpers, the docs prefer the module surface whenever both exist.

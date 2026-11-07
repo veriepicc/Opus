@@ -1,0 +1,7 @@
+project AutoHeal {
+    entry: "main.sb"
+    output: "AutoHeal.exe"
+    mode: "exe"
+    debug: true
+    healing: "auto"
+}

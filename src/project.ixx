@@ -1,13 +1,13 @@
-// opus project system
+// sable project system
 
-export module opus.project;
+export module sable.project;
 
-import opus.lexer;
-import opus.parser;
-import opus.ast;
+import sable.lexer;
+import sable.parser;
+import sable.ast;
 import std;
 
-export namespace opus {
+export namespace sable {
 
 struct ProjectConfig {
     std::string name;
@@ -92,8 +92,11 @@ std::vector<std::filesystem::path> discover_files(const std::filesystem::path& d
             ec.clear();
             continue;
         }
-        if (it->is_regular_file() && it->path().extension() == ".op") {
-            files.push_back(it->path());
+        if (it->is_regular_file()) {
+            auto ext = it->path().extension();
+            if (ext == ".sb" || ext == ".op") {
+                files.push_back(it->path());
+            }
         }
     }
     
@@ -105,7 +108,11 @@ std::optional<std::filesystem::path> find_project_file(const std::filesystem::pa
     std::filesystem::path current = start_dir;
     
     while (true) {
-        std::filesystem::path project_file = current / "opus.project";
+        std::filesystem::path project_file = current / "sable.project";
+        if (std::filesystem::exists(project_file)) {
+            return project_file;
+        }
+        project_file = current / "sable.project";
         if (std::filesystem::exists(project_file)) {
             return project_file;
         }
@@ -118,4 +125,6 @@ std::optional<std::filesystem::path> find_project_file(const std::filesystem::pa
     return std::nullopt;
 }
 
-} // namespace opus
+} // namespace sable
+
+namespace opus = sable;

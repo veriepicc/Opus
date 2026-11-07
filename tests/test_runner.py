@@ -1,4 +1,4 @@
-"""Harness checks that never execute Opus or Wine."""
+"""Harness checks that never execute Sable or Wine."""
 
 import importlib.util
 import json
@@ -14,7 +14,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
-spec = importlib.util.spec_from_file_location('opus_runner', Path(__file__).with_name('run.py'))
+spec = importlib.util.spec_from_file_location('sable_runner', Path(__file__).with_name('run.py'))
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
@@ -33,8 +33,8 @@ class RunnerTests(unittest.TestCase):
     def test_recovery_requires_fault_report_continuation_and_zero_exit(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            (workspace / 'case.op').write_text('fixture')
-            case = dict(Name='fixture', File='case.op', kind='stress', Healing='auto',
+            (workspace / 'case.sb').write_text('fixture')
+            case = dict(Name='fixture', File='case.sb', kind='stress', Healing='auto',
                         ExpectedExit=0, ExpectedRuntimeOutputContains=['ACCESS_VIOLATION', 'recovered'])
             output_dir = workspace / '.recovery/case'
             output_dir.mkdir(parents=True)
@@ -49,8 +49,8 @@ class RunnerTests(unittest.TestCase):
                         subprocess.CompletedProcess([], 0, ''),
                         subprocess.CompletedProcess([], code, output)]):
                     self.assertEqual(runner.execute(case, Path('compiler'), workspace, 1)['status'], status)
-            self.assertIn('healing: "auto"', (output_dir / 'opus.project').read_text())
-            self.assertFalse((workspace / 'opus.project').exists())
+            self.assertIn('healing: "auto"', (output_dir / 'sable.project').read_text())
+            self.assertFalse((workspace / 'sable.project').exists())
 
     @unittest.skipIf(os.name == 'nt', 'posix child cleanup')
     def test_inherited_output_handle_does_not_block_parent(self):
@@ -76,7 +76,7 @@ class RunnerTests(unittest.TestCase):
             (root / 'tests').mkdir()
             (root / 'stdlib').mkdir()
             (root / 'compiler.exe').write_bytes(b'fixture')
-            (root / 'tests/cases.json').write_text(json.dumps([{'Name': 'fixture', 'kind': 'compile', 'File': 'tests/case.op'}]))
+            (root / 'tests/cases.json').write_text(json.dumps([{'Name': 'fixture', 'kind': 'compile', 'File': 'tests/case.sb'}]))
             report = root / 'report.json'
             failure = dict(name='fixture', kind='compile', status='FAIL', error='test failure', milliseconds=1)
             with patch.object(runner, 'ROOT', root), \
@@ -89,8 +89,8 @@ class RunnerTests(unittest.TestCase):
 
     def test_gui_tests_never_launch(self):
         cases = json.loads(Path(__file__).with_name('cases.json').read_text())
-        gui_names = ('test12_variadic_mismatch.op', 'test17e_msgbox_test.op',
-                     'test19_str_to_c.op', 'test5_struct_layout.op')
+        gui_names = ('test12_variadic_mismatch.sb', 'test17e_msgbox_test.sb',
+                     'test19_str_to_c.sb', 'test5_struct_layout.sb')
         gui = [c for c in cases if Path(c.get('File', '')).name in gui_names]
         self.assertEqual(len(gui), 4)
         with patch.object(runner, 'invoke') as launch:
@@ -116,8 +116,8 @@ class RunnerTests(unittest.TestCase):
     def test_runtime_output_is_checked(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            (workspace / 'case.op').write_text('fixture')
-            case = dict(Name='fixture', File='case.op', kind='run', ExpectedExit=0, ExpectedOutput='expected')
+            (workspace / 'case.sb').write_text('fixture')
+            case = dict(Name='fixture', File='case.sb', kind='run', ExpectedExit=0, ExpectedOutput='expected')
             with patch.object(runner, 'invoke', return_value=subprocess.CompletedProcess([], 0, 'wrong')):
                 self.assertEqual(runner.execute(case, Path('compiler'), workspace, 1)['status'], 'FAIL')
 
@@ -185,9 +185,9 @@ class BenchmarkTests(unittest.TestCase):
         for code in (0, 1):
             with self.subTest(build_exit=code), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                source = root / 'fixture.op'
+                source = root / 'fixture.sb'
                 source.write_text('fixture')
-                fixture = dict(id='math', name='Math', desc='fixture', opus_file=source, c_macro=1)
+                fixture = dict(id='math', name='Math', desc='fixture', sable_file=source, c_macro=1)
 
                 def compile_fixture(cmd, **kwargs):
                     if code == 0:
@@ -198,7 +198,7 @@ class BenchmarkTests(unittest.TestCase):
                 with patch.object(benchmarks, 'ROOT_DIR', root), \
                         patch.object(benchmarks, 'OUT_DIR', root / '.work'), \
                         patch.object(benchmarks, 'BENCHMARKS', [fixture]), \
-                        patch.object(benchmarks, 'find_opus_bin', return_value=root / 'opus.exe'), \
+                        patch.object(benchmarks, 'find_sable_bin', return_value=root / 'sable.exe'), \
                         patch.object(benchmarks, 'find_compiler', return_value=None), \
                         patch.object(benchmarks, 'ensure_tcc', return_value=None), \
                         patch.object(benchmarks, 'run_proc', side_effect=compile_fixture), \
@@ -225,7 +225,7 @@ class BenchmarkTests(unittest.TestCase):
             (artifact / 'benchmark-summary.md').write_text('## Performance\n\nmeasured summary\n')
             (artifact / 'BENCHMARKS.md').write_text('# Full measurements\n')
             readme = root / 'README.md'
-            readme.write_text('# Opus\nsource README stays unchanged\n')
+            readme.write_text('# Sable\nsource README stays unchanged\n')
             output = root / 'published'
             with patch.object(ci_status, 'ROOT', root), patch.object(sys, 'argv', [
                     'update-ci-status.py', str(reports), '--output', str(output),
@@ -234,7 +234,7 @@ class BenchmarkTests(unittest.TestCase):
             text = (output / 'README.md').read_text()
             self.assertLess(text.index('measured summary'), text.index('Core CI Build Status'))
             self.assertIn('Source: `abc123`', text)
-            self.assertEqual(readme.read_text(), '# Opus\nsource README stays unchanged\n')
+            self.assertEqual(readme.read_text(), '# Sable\nsource README stays unchanged\n')
             self.assertFalse((root / 'BENCHMARKS.md').exists())
             self.assertIn('# Full measurements', (output / 'BENCHMARKS.md').read_text())
             for name in ('build.svg', 'tests.svg', 'benchmarks.svg'):
@@ -244,7 +244,7 @@ class BenchmarkTests(unittest.TestCase):
         return {
             'errors': [], 'host': 'Windows AMD64', 'iterations': 5, 'warmup': 2,
             'benchmarks': {'math': {'name': 'Math', 'results': {
-                'Opus': {'compile_ms': 10, 'size_bytes': 4096, 'runtime_min_ms': 2},
+                'Sable': {'compile_ms': 10, 'size_bytes': 4096, 'runtime_min_ms': 2},
                 'MSVC': {'compile_ms': 100, 'size_bytes': 16384, 'runtime_min_ms': 3},
                 'GCC': {'compile_ms': 20, 'size_bytes': 8192, 'runtime_min_ms': 1},
             }}},
@@ -257,9 +257,9 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIn('| math | 10.0 ms | **2.00 ms** | **1.5× faster** (3.00ms) | 2.0× slower (1.00ms) | — |', text)
         self.assertIn('5 measured runs', text)
 
-    def test_no_speedup_claim_when_opus_is_slower_or_measurements_fail(self):
+    def test_no_speedup_claim_when_sable_is_slower_or_measurements_fail(self):
         report = self.report()
-        report['benchmarks']['math']['results']['Opus']['compile_ms'] = 200
+        report['benchmarks']['math']['results']['Sable']['compile_ms'] = 200
         self.assertNotIn('faster compilation', benchmarks.generate_readme_summary(report))
         report['errors'] = ['checksum mismatch']
         text = benchmarks.generate_readme_summary(report)

@@ -1,13 +1,13 @@
 // generated file - do not edit by hand
 
-export module opus.stdlib;
+export module sable.stdlib;
 
 import std;
 
-export namespace opus {
+export namespace sable {
 export inline const std::unordered_map<std::string, std::string>& embedded_stdlib_sources() {
     static const std::unordered_map<std::string, std::string> sources = {
-        {"algo", R"OPALGO(import mem
+        {"algo", R"SBALGO(import mem
 
 // General utility algorithms for 8-byte cells and integers.
 
@@ -190,8 +190,8 @@ function void algo_sort_i64(ptr values, int len) {
     }
 }
 
-)OPALGO"},
-        {"ascii", R"OPASCII(import text
+)SBALGO"},
+        {"ascii", R"SBASCII(import text
 
 // ASCII-oriented helpers for formatting, parsing, and quick protocol work.
 // Ownership:
@@ -254,8 +254,8 @@ function str ascii_hex_byte(int byte_value) {
     free(lo)
     return out
 }
-)OPASCII"},
-        {"cpp_vector", R"OPCPPVECTO(import mem
+)SBASCII"},
+        {"cpp_vector", R"SBCPPVECTO(import mem
 import vec
 
 using CppVectorSizeFn = fn(ptr) -> i64
@@ -398,8 +398,8 @@ function void cpp_vector_call_push_back_i64(ptr method_addr, ptr this_vec, i64 i
     method(this_vec, item)
 }
 
-)OPCPPVECTO"},
-        {"demo", R"OPDEMO(import mem
+)SBCPPVECTO"},
+        {"demo", R"SBDEMO(import mem
 import text
 import vec
 import cpp_vector
@@ -561,8 +561,8 @@ function int main() {
 
     return 0
 }
-)OPDEMO"},
-        {"fmt", R"OPFMT(import ascii
+)SBDEMO"},
+        {"fmt", R"SBFMT(import ascii
 import text
 
 // Small formatting helpers that make ordinary output code much less repetitive.
@@ -611,8 +611,8 @@ function str fmt_hex_byte(int byte_value) {
     free(body)
     return out
 }
-)OPFMT"},
-        {"fs", R"OPFS(import text
+)SBFMT"},
+        {"fs", R"SBFS(import text
 
 // Filesystem-style helpers over the builtin file/string layer.
 // Ownership:
@@ -657,8 +657,8 @@ function bool fs_contains(str file_path, str needle) {
     free(content)
     return ok
 }
-)OPFS"},
-        {"http", R"OPHTTP(// DONOTUSE: ffi_call0..7 are radioactive compat junk until typed abi control replaces them
+)SBFS"},
+        {"http", R"SBHTTP(// DONOTUSE: ffi_call0..7 are radioactive compat junk until typed abi control replaces them
 
 struct HttpUrl {
     secure: int,
@@ -936,7 +936,7 @@ function ptr http_url_path_utf16(HttpUrl parsed) {
 }
 
 function ptr http_open_session(ptr open_fn, ptr set_timeouts_fn) {
-    let user_agent_w = http_utf16z("Opus/WinHTTP")
+    let user_agent_w = http_utf16z("Sable/WinHTTP")
     if user_agent_w == 0 {
         return 0
     }
@@ -1037,8 +1037,8 @@ function HttpUrl http_parse_url(str url) {
               char_at(url, 4) == 58 and
               char_at(url, 5) == 47 and
               char_at(url, 6) == 47 {
-        parsed.secure =)OPHTTP"
-            R"OPHTTP( 0
+        parsed.secure =)SBHTTP"
+            R"SBHTTP( 0
         parsed.port = 80
         start = 7
     }
@@ -1210,7 +1210,7 @@ function int http_debug_fetch_stage(str url) {
     }
     return 905
 
-    let user_agent_w = http_utf16z("Opus/WinHTTP")
+    let user_agent_w = http_utf16z("Sable/WinHTTP")
     let method_w = http_utf16z("GET")
     let path_w = http_url_path_utf16(parsed)
     if user_agent_w == 0 or method_w == 0 or path_w == 0 {
@@ -1262,8 +1262,8 @@ function str http_get(str url) {
     free(response)
     return body_text
 }
-)OPHTTP"},
-        {"json", R"OPJSON(import ascii
+)SBHTTP"},
+        {"json", R"SBJSON(import ascii
 import mem
 import text
 
@@ -1577,8 +1577,8 @@ function str json_parse_string_raw(JsonCursor cursor) {
                     return 0
                 }
 
-                out_idx = json_write_utf8(out_buf, out_idx, codepo)OPJSON"
-            R"OPJSON(int)
+                out_idx = json_write_utf8(out_buf, out_idx, codepo)SBJSON"
+            R"SBJSON(int)
             } else {
                 free(out_buf)
                 json_fail(cursor)
@@ -1907,8 +1907,8 @@ function void json_free(JsonValue value_node) {
         child = next_child
     }
 
-    if value_node.key)OPJSON"
-            R"OPJSON( != 0 {
+    if value_node.key)SBJSON"
+            R"SBJSON( != 0 {
         free(value_node.key)
     }
     if value_node.text != 0 {
@@ -2217,8 +2217,8 @@ function int json_find_value_start(str source, str key_name) {
     return -1
 }
 
-function str json_get_string(s)OPJSON"
-            R"OPJSON(tr source, str key_name) {
+function str json_get_string(s)SBJSON"
+            R"SBJSON(tr source, str key_name) {
     let start = json_find_value_start(source, key_name)
     if start < 0 or char_at(source, start) != 34 {
         return json_owned_empty()
@@ -2282,8 +2282,8 @@ function bool json_get_bool(str source, str key_name, bool fallback) {
 function bool json_has_key(str source, str key_name) {
     return json_find_value_start(source, key_name) >= 0
 }
-)OPJSON"},
-        {"mem", R"OPMEM(// Memory convenience wrappers built on top of the compiler builtins.
+)SBJSON"},
+        {"mem", R"SBMEM(// Memory convenience wrappers built on top of the compiler builtins.
 
 function ptr make(int size) {
     return malloc(size)
@@ -2441,9 +2441,9 @@ function ptr mem_offset(ptr base, int offset) {
 function ptr mem_end(ptr base, int offset) {
     return after(base, offset)
 }
-)OPMEM"},
-        {"option", R"OPOPTION(// Specialized optional value wrappers.
-// Opus does not have generics yet, so we keep the most useful payload shapes.
+)SBMEM"},
+        {"option", R"SBOPTION(// Specialized optional value wrappers.
+// Sable does not have generics yet, so we keep the most useful payload shapes.
 
 struct OptI64 {
     has_value: i64,
@@ -2656,8 +2656,8 @@ function void opt_bool_free(OptBool opt) {
         free(opt)
     }
 }
-)OPOPTION"},
-        {"owner", R"OPOWNER(import mem
+)SBOPTION"},
+        {"owner", R"SBOWNER(import mem
 import text
 
 // Manual ownership helpers.
@@ -2878,8 +2878,8 @@ function void owned_block_reset(*OwnedBlock block, ptr value_ptr, int size, bool
     block.size = size
     block.owned = take_ownership
 }
-)OPOWNER"},
-        {"path", R"OPPATH(import text
+)SBOWNER"},
+        {"path", R"SBPATH(import text
 
 // Lightweight path helpers for common tooling tasks.
 // Ownership:
@@ -2953,8 +2953,8 @@ function str path_stem(str source) {
     free(base)
     return out
 }
-)OPPATH"},
-        {"prelude", R"OPPRELUDE(import ascii
+)SBPATH"},
+        {"prelude", R"SBPRELUDE(import ascii
 import fmt
 import fs
 import json
@@ -2970,8 +2970,8 @@ import option
 import result
 import owner
 import algo
-)OPPRELUDE"},
-        {"process", R"OPPROCESS(// Process and runtime host helpers.
+)SBPRELUDE"},
+        {"process", R"SBPROCESS(// Process and runtime host helpers.
 
 using MessageBoxAFn = fn(ptr, str, str, int) -> int
 
@@ -3013,8 +3013,8 @@ function int process_msgbox(str title, str body, int flags) {
 function void process_exit(int code) {
     exit(code)
 }
-)OPPROCESS"},
-        {"rand", R"OPRAND(import time
+)SBPROCESS"},
+        {"rand", R"SBRAND(import time
 
 // Small deterministic random helpers for gameplay, tooling, and tests.
 
@@ -3072,8 +3072,8 @@ function int rand_pick2(int a, int b) {
     }
     return b
 }
-)OPRAND"},
-        {"result", R"OPRESULT(// Result wrappers with a small error record.
+)SBRAND"},
+        {"result", R"SBRESULT(// Result wrappers with a small error record.
 // These are intentionally specialized instead of generic.
 
 struct ResI64 {
@@ -3318,8 +3318,8 @@ function void res_void_free(ResVoid result) {
         free(result)
     }
 }
-)OPRESULT"},
-        {"simd", R"OPSIMD(// Explicit SIMD helpers over raw pointer buffers.
+)SBRESULT"},
+        {"simd", R"SBSIMD(// Explicit SIMD helpers over raw pointer buffers.
 // The public surface prefers language-friendly names like intx8 and longx8.
 // Raw width-flavored aliases stay available for compatibility and low-level work.
 
@@ -3406,8 +3406,8 @@ function void i64x8_add(ptr dst, ptr a, ptr b) { longx8_add(dst, a, b) }
 function void i64x8_sub(ptr dst, ptr a, ptr b) { longx8_sub(dst, a, b) }
 function void i32x16_splat(ptr dst, int lane_value) { intx16_splat(dst, lane_value) }
 function void i64x8_splat(ptr dst, long lane_value) { longx8_splat(dst, lane_value) }
-)OPSIMD"},
-        {"text", R"OPTEXT(// Text helpers layered over the builtin string primitives.
+)SBSIMD"},
+        {"text", R"SBTEXT(// Text helpers layered over the builtin string primitives.
 
 function int text_len(str text) {
     return string_length(text)
@@ -3659,8 +3659,8 @@ function str text_surround(str text, str left, str right) {
     free(inner)
     return out
 }
-)OPTEXT"},
-        {"time", R"OPTIME(// Time and delay helpers layered over the native builtins.
+)SBTEXT"},
+        {"time", R"SBTIME(// Time and delay helpers layered over the native builtins.
 
 function int time_tick_ms() {
     return get_tick_count()
@@ -3684,8 +3684,8 @@ function int time_elapsed_ms(int start_tick) {
 function bool time_after_ms(int start_tick, int duration_ms) {
     return time_elapsed_ms(start_tick) >= duration_ms
 }
-)OPTIME"},
-        {"vec", R"OPVEC(import mem
+)SBTIME"},
+        {"vec", R"SBVEC(import mem
 
 // A growable vector layered over the builtin array storage.
 // The vector owns its backing array when created via vec_new or vec_copy.
@@ -4018,7 +4018,7 @@ function Vec vec_free(Vec vec) {
     return vec
 }
 
-)OPVEC"},
+)SBVEC"},
     };
     return sources;
 }

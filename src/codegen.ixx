@@ -1,32 +1,32 @@
 // codegen - AST to x64
 
-export module opus.codegen;
+export module sable.codegen;
 
-import opus.types;
-import opus.ast;
-import opus.errors;
-import opus.x64;
-import opus.pe;
-import opus.lexer;
-import opus.parser;
-import opus.stdlib;
-import opus.vectorize;
+import sable.types;
+import sable.ast;
+import sable.errors;
+import sable.x64;
+import sable.pe;
+import sable.lexer;
+import sable.parser;
+import sable.stdlib;
+import sable.vectorize;
 import std;
 
 extern "C" {
-    std::int64_t opus_get_module(std::int64_t name_handle);
-    std::int64_t opus_load_library(std::int64_t name_handle);
-    std::int64_t opus_get_proc(std::int64_t module, std::int64_t name_handle);
-    std::int64_t opus_get_last_error();
-    std::int64_t opus_virtual_protect(std::int64_t address, std::int64_t size, std::int64_t new_protect);
-    std::int64_t opus_get_current_process();
-    std::int64_t opus_get_current_process_id();
-    std::int64_t opus_alloc_console();
-    void opus_free_console();
-    void opus_set_console_title(std::int64_t title_handle);
+    std::int64_t sable_get_module(std::int64_t name_handle);
+    std::int64_t sable_load_library(std::int64_t name_handle);
+    std::int64_t sable_get_proc(std::int64_t module, std::int64_t name_handle);
+    std::int64_t sable_get_last_error();
+    std::int64_t sable_virtual_protect(std::int64_t address, std::int64_t size, std::int64_t new_protect);
+    std::int64_t sable_get_current_process();
+    std::int64_t sable_get_current_process_id();
+    std::int64_t sable_alloc_console();
+    void sable_free_console();
+    void sable_set_console_title(std::int64_t title_handle);
 }
 
-export namespace opus {
+export namespace sable {
 
 // visitor helper for std::visit dispatch
 template<typename... Ts> struct overloaded : Ts... { using Ts::operator()...; };
@@ -315,7 +315,7 @@ public:
             add_timing("codegen.generate_decls", elapsed_ms(second_pass_start, now()));
         }
         
-        // generate __opus_init if we have globals
+        // generate __sable_init if we have globals
         auto global_init_start = now();
         if (!globals_.empty()) {
             generate_global_init();
@@ -664,6 +664,7 @@ private:
     std::vector<x64::Reg> current_function_saved_regs_;
     Type current_function_return_type_;
     bool has_current_function_return_type_ = false;
+    bool current_function_return_seen_ = false;
     std::unordered_map<const Symbol*, OwnedLocalState> owned_locals_;    struct InductionBinding {
         x64::Reg term_reg = x64::Reg::RDX;
         std::int64_t step = 0;
@@ -1031,7 +1032,7 @@ private:
     std::size_t spawn_counter_ = 0;
     
     // rip-relative slot in code buffer that holds the global data base pointer
-    // __opus_init writes HeapAlloc result here, all global accesses load from here
+    // __sable_init writes HeapAlloc result here, all global accesses load from here
     std::size_t global_base_slot_ = 0;
     bool has_global_slot_ = false;
 
@@ -1557,7 +1558,23 @@ private:
         return false;
     }
 
+    std::unordered_set<std::uint8_t> scratch_regs_in_use_;
+
+    struct ScopedScratchReg {
+        CodeGenerator& cg;
+        x64::Reg reg;
+        ScopedScratchReg(CodeGenerator& cg, x64::Reg reg) : cg(cg), reg(reg) {
+            cg.scratch_regs_in_use_.insert(static_cast<std::uint8_t>(reg));
+        }
+        ~ScopedScratchReg() {
+            cg.scratch_regs_in_use_.erase(static_cast<std::uint8_t>(reg));
+        }
+    };
+
     [[nodiscard]] bool reg_is_bound(x64::Reg reg) const {
+        if (scratch_regs_in_use_.contains(static_cast<std::uint8_t>(reg))) {
+            return true;
+        }
         for (const auto& [_, bound] : register_bindings_) {
             if (bound == reg) {
                 return true;
@@ -2452,24 +2469,32 @@ private:
     }
 
     std::vector<std::filesystem::path> resolve_import_candidates(std::string_view module_path) const {
-        std::string rel_path(module_path);
-        for (auto& c : rel_path) {
+        std::string rel_base(module_path);
+        for (auto& c : rel_base) {
             if (c == '.') c = '/';
         }
-        rel_path += ".op";
+
+        std::array<const char*, 2> exts = {".sb", ".op"};
+        if (source_path_.ends_with(".op")) {
+            exts = {".op", ".sb"};
+        }
 
         std::vector<std::filesystem::path> matches;
         for (const auto& root : import_search_roots()) {
-            std::error_code ec;
-            auto candidate = std::filesystem::weakly_canonical(root / rel_path, ec);
-            if (ec) {
-                candidate = (root / rel_path).lexically_normal();
-            }
-            if (!std::filesystem::exists(candidate)) {
-                continue;
-            }
-            if (std::find(matches.begin(), matches.end(), candidate) == matches.end()) {
-                matches.push_back(std::move(candidate));
+            for (const char* ext : exts) {
+                std::string rel_path = rel_base + ext;
+                std::error_code ec;
+                auto candidate = std::filesystem::weakly_canonical(root / rel_path, ec);
+                if (ec) {
+                    candidate = (root / rel_path).lexically_normal();
+                }
+                if (!std::filesystem::exists(candidate)) {
+                    continue;
+                }
+                if (std::find(matches.begin(), matches.end(), candidate) == matches.end()) {
+                    matches.push_back(std::move(candidate));
+                }
+                break;
             }
         }
         return matches;
@@ -2480,7 +2505,11 @@ private:
         for (auto& c : rel_path) {
             if (c == '.') c = '/';
         }
-        rel_path += ".op";
+        if (source_path_.ends_with(".op")) {
+            rel_path += ".op";
+        } else {
+            rel_path += ".sb";
+        }
         return rel_path;
     }
 
@@ -3410,7 +3439,7 @@ private:
         if (!resolved_type) return false;
         // imports collect globals during metadata pre-pass using a temporary parsed
         // module. When we later compile the real imported module, refresh the
-        // initializer pointer so __opus_init never walks a dangling AST node.
+        // initializer pointer so __sable_init never walks a dangling AST node.
         if (auto it = globals_.find(sd.name); it != globals_.end()) {
             it->second.type = resolved_type->clone();
             it->second.is_mut = sd.is_mut;
@@ -3448,15 +3477,15 @@ private:
         return true;
     }
     
-    // generate __opus_init function that allocates globals and runs initializers
+    // generate __sable_init function that allocates globals and runs initializers
     void generate_global_init() {
         // register function
-        functions_["__opus_init"] = FunctionInfo{
-            .name = "__opus_init",
+        functions_["__sable_init"] = FunctionInfo{
+            .name = "__sable_init",
             .return_type = Type::make_primitive(PrimitiveType::Void)
         };
         
-        auto& info = functions_["__opus_init"];
+        auto& info = functions_["__sable_init"];
         info.code_offset = emit_.buffer().pos();
         
         std::size_t scope_mark = scopes_.size();
@@ -4114,30 +4143,8 @@ private:
                 }
                 return true;
             },
-            [&](const ast::SwitchStmt& s) {
-                if (!expr_has_only_local_side_effects(*s.subject, locals)) {
-                    return false;
-                }
-                for (const auto& branch : s.cases) {
-                    if (!expr_has_only_local_side_effects(*branch.value, locals)) {
-                        return false;
-                    }
-                    auto branch_locals = locals;
-                    for (const auto& inner : branch.body) {
-                        if (!stmt_is_single_use_inline_safe_fn(*inner, branch_locals)) {
-                            return false;
-                        }
-                    }
-                }
-                if (s.else_block) {
-                    auto else_locals = locals;
-                    for (const auto& inner : *s.else_block) {
-                        if (!stmt_is_single_use_inline_safe_fn(*inner, else_locals)) {
-                            return false;
-                        }
-                    }
-                }
-                return true;
+            [&](const ast::SwitchStmt&) {
+                return false;
             },
             [&](const ast::BlockStmt& s) {
                 auto block_locals = locals;
@@ -4247,6 +4254,7 @@ private:
         info.single_use_inline_safe = is_single_use_inline_safe_fn(fn);
         current_function_return_type_ = info.return_type.clone();
         has_current_function_return_type_ = true;
+        current_function_return_seen_ = false;
         owned_locals_.clear();
 
         FunctionLeafRegisterPlan leaf_plan;
@@ -4288,7 +4296,7 @@ private:
 
         std::size_t frame_patch = emit_.prologue_patchable(current_function_saved_regs_);
 
-        // if this is main and we have globals, call __opus_init first
+        // if this is main and we have globals, call __sable_init first
         if (inject_startup_init && fn.name == "main" && !globals_.empty()) {
             emit_.sub_imm(x64::Reg::RSP, 32); // shadow space
             emit_.buffer().emit8(0xE8); // CALL rel32
@@ -4296,7 +4304,7 @@ private:
             emit_.buffer().emit32(0);
             call_fixups_.push_back(CallFixup{
                 .call_site = init_fixup,
-                .target_fn = "__opus_init"
+                .target_fn = "__sable_init"
             });
             emit_.add_smart(x64::Reg::RSP, 32);
         }
@@ -4404,11 +4412,15 @@ private:
 
         // If no explicit return, add one
         if (info.return_type.is_void()) {
-            warn_live_owned_locals_on_exit();
+            if (!current_function_return_seen_) {
+                warn_live_owned_locals_on_exit();
+            }
             emit_current_epilogue();
         } else {
             // Default return 0
-            warn_live_owned_locals_on_exit();
+            if (!current_function_return_seen_) {
+                warn_live_owned_locals_on_exit();
+            }
             emit_.mov_imm32(x64::Reg::RAX, 0);
             emit_current_epilogue();
         }
@@ -4606,8 +4618,6 @@ private:
                     case Op::Add:
                     case Op::Sub:
                     case Op::Mul:
-                    case Op::Div:
-                    case Op::Mod:
                     case Op::BitAnd:
                     case Op::BitOr:
                     case Op::BitXor:
@@ -6172,6 +6182,7 @@ private:
     }
 
     [[nodiscard]] bool generate_return(const ast::ReturnStmt& ret) {
+        current_function_return_seen_ = true;
         warn_live_owned_locals_on_exit(ret.value.get());
         if (ret.value) {
             if (!generate_expr(*ret.value)) return false;
@@ -9261,9 +9272,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // we patch the result to (INT64_MIN, 0) to match wrapping semantics without faulting.
         emit_.cmp_smart_imm(divisor, -1);
         std::size_t do_idiv_a = emit_.jcc_rel32(x64::Emitter::CC_NE);
-        // cmp rax, INT64_MIN  (need full 64-bit cmp; cmp_smart_imm uses imm32 so use mov+cmp)
-        emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::min)()));
-        emit_.cmp(x64::Reg::RAX, x64::Reg::R11);
+        // cmp rax, INT64_MIN  (need full 64-bit cmp; divisor cannot be RDX since idiv/cqo uses RDX, so RDX is safe scratch here)
+        emit_.mov_imm64(x64::Reg::RDX, static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::min)()));
+        emit_.cmp(x64::Reg::RAX, x64::Reg::RDX);
         std::size_t do_idiv_b = emit_.jcc_rel32(x64::Emitter::CC_NE);
         // trap path: rax stays as INT_MIN (correct quotient), rdx=0 (correct remainder)
         emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
@@ -9514,7 +9525,21 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 emit_.imul(dst, rhs);
                 return true;
             case Op::Div:
-                if (dst != x64::Reg::RAX) return false;
+                if (dst != x64::Reg::RAX) {
+                    emit_.push(x64::Reg::RAX);
+                    emit_.push(x64::Reg::RDX);
+                    emit_.mov(x64::Reg::RAX, dst);
+                    if (is_unsigned) {
+                        emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
+                        emit_.div(rhs);
+                    } else {
+                        emit_safe_idiv(rhs);
+                    }
+                    emit_.mov(dst, x64::Reg::RAX);
+                    emit_.pop(x64::Reg::RDX);
+                    emit_.pop(x64::Reg::RAX);
+                    return true;
+                }
                 if (is_unsigned) {
                     emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
                     emit_.div(rhs);
@@ -9523,7 +9548,21 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 }
                 return true;
             case Op::Mod:
-                if (dst != x64::Reg::RAX) return false;
+                if (dst != x64::Reg::RAX) {
+                    emit_.push(x64::Reg::RAX);
+                    emit_.push(x64::Reg::RDX);
+                    emit_.mov(x64::Reg::RAX, dst);
+                    if (is_unsigned) {
+                        emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
+                        emit_.div(rhs);
+                    } else {
+                        emit_safe_idiv(rhs);
+                    }
+                    emit_.mov(dst, x64::Reg::RDX);
+                    emit_.pop(x64::Reg::RDX);
+                    emit_.pop(x64::Reg::RAX);
+                    return true;
+                }
                 if (is_unsigned) {
                     emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
                     emit_.div(rhs);
@@ -10044,6 +10083,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             if (!rhs_reg) {
                 return false;
             }
+            ScopedScratchReg hold_rhs(*this, *rhs_reg);
+            ScopedScratchReg hold_dst(*this, dst);
 
             if (bin->rhs->is<ast::FieldExpr>()) {
                 const auto& field = bin->rhs->as<ast::FieldExpr>();
@@ -10929,6 +10970,37 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             return true;
         }
 
+        // handle array element assignment (e.g., arr[2] = 99)
+        if (bin.lhs->is<ast::IndexExpr>()) {
+            const auto& idx = bin.lhs->as<ast::IndexExpr>();
+            if (idx.base->is<ast::IdentExpr>()) {
+                const std::string& var_name = idx.base->as<ast::IdentExpr>().name;
+                Symbol* sym = current_scope_->lookup(var_name);
+                if (!sym) {
+                    error_undefined_name("variable", var_name, collect_value_name_candidates());
+                    return false;
+                }
+                if (!sym->is_mut) {
+                    error(describe_rebinding_target("variable", var_name));
+                    return false;
+                }
+            }
+            // value is already in RAX; save it while we compute the element address
+            emit_.push(x64::Reg::RAX);
+            if (!generate_expr(*idx.base)) return false;
+            emit_.push(x64::Reg::RAX);
+            if (!generate_expr(*idx.index)) return false;
+            emit_.pop(x64::Reg::RCX);
+            emit_.lea_scaled(x64::Reg::RAX, x64::Reg::RCX, x64::Reg::RAX, 8);
+            if (!is_native_image_output()) {
+                emit_.add_smart(x64::Reg::RAX, 8); // host fallback arrays store length at arr[0]
+            }
+            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+            emit_.pop(x64::Reg::RAX);
+            emit_.mov_store(x64::Reg::RCX, 0, x64::Reg::RAX);
+            return true;
+        }
+
         // Left side must be an identifier
         if (!bin.lhs->is<ast::IdentExpr>()) {
             error("left side of assignment must be an identifier or field access");
@@ -11383,6 +11455,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             return generate_inlined_safe_call(call, it->second);
         }
 
+        if (call.args.size() != it->second.param_types.size()) {
+            error(std::format("function '{}' expects {} argument(s), got {}",
+                              resolved_target, it->second.param_types.size(), call.args.size()));
+            return false;
+        }
+
         std::size_t nargs = call.args.size();
         std::size_t reg_args = nargs < 4 ? nargs : 4;
 
@@ -11732,7 +11810,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             pop_scope();
         };
         for (std::size_t i = 0; i < info.decl->params.size(); ++i) {
-            std::string hidden_name = std::format("__opus_inline_arg_{}_{}", emit_.buffer().pos(), i);
+            std::string hidden_name = std::format("__sable_inline_arg_{}_{}", emit_.buffer().pos(), i);
             Symbol& sym = current_scope_->define(hidden_name, info.param_types[i].clone(), false);
             if (auto reg_it = inline_named_regs.find(info.decl->params[i].name); reg_it != inline_named_regs.end()) {
                 register_bindings_[&sym] = reg_it->second;
@@ -15544,16 +15622,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
     void* get_ffi_fn(const std::string& name) {
         static const std::unordered_map<std::string_view, void*> ffi_table = {
-            {"get_module",              reinterpret_cast<void*>(&opus_get_module)},
-            {"load_library",            reinterpret_cast<void*>(&opus_load_library)},
-            {"get_proc",                reinterpret_cast<void*>(&opus_get_proc)},
-            {"get_last_error",          reinterpret_cast<void*>(&opus_get_last_error)},
-            {"virtual_protect",         reinterpret_cast<void*>(&opus_virtual_protect)},
-            {"get_current_process",     reinterpret_cast<void*>(&opus_get_current_process)},
-            {"get_current_process_id",  reinterpret_cast<void*>(&opus_get_current_process_id)},
-            {"alloc_console",           reinterpret_cast<void*>(&opus_alloc_console)},
-            {"free_console",            reinterpret_cast<void*>(&opus_free_console)},
-            {"set_console_title",       reinterpret_cast<void*>(&opus_set_console_title)},
+            {"get_module",              reinterpret_cast<void*>(&sable_get_module)},
+            {"load_library",            reinterpret_cast<void*>(&sable_load_library)},
+            {"get_proc",                reinterpret_cast<void*>(&sable_get_proc)},
+            {"get_last_error",          reinterpret_cast<void*>(&sable_get_last_error)},
+            {"virtual_protect",         reinterpret_cast<void*>(&sable_virtual_protect)},
+            {"get_current_process",     reinterpret_cast<void*>(&sable_get_current_process)},
+            {"get_current_process_id",  reinterpret_cast<void*>(&sable_get_current_process_id)},
+            {"alloc_console",           reinterpret_cast<void*>(&sable_alloc_console)},
+            {"free_console",            reinterpret_cast<void*>(&sable_free_console)},
+            {"set_console_title",       reinterpret_cast<void*>(&sable_set_console_title)},
         };
         auto it = ffi_table.find(name);
         return it != ffi_table.end() ? it->second : nullptr;
@@ -16652,4 +16730,6 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     }
 };
 
-} // namespace opus
+} // namespace sable
+
+namespace opus = sable;

@@ -1,6 +1,6 @@
-# Opus
+# Sable
 
-Opus is a systems language focused on direct native Windows x64 output without the usual layers of compiler ceremony.
+Sable is a systems language focused on direct native Windows x64 output without the usual layers of compiler ceremony.
 
 - No LLVM
 - No VM
@@ -10,23 +10,23 @@ Opus is a systems language focused on direct native Windows x64 output without t
 
 ```c
 function int main() {
-    print("Hello from Opus!\n")
+    print("Hello from Sable!\n")
     return 0
 }
 ```
 
 ```text
-> opus hello.op
+> sable hello.sb
 Generated EXE: hello.exe
 
-> opus --run hello.op
-Hello from Opus!
+> sable --run hello.sb
+Hello from Sable!
 Program returned: 0
 ```
 
-## Why Opus exists
+## Why Sable exists
 
-Opus is built around a simple idea: the language should stay expressive while the implementation stays honest about what it is doing.
+Sable is built around a simple idea: the language should stay expressive while the implementation stays honest about what it is doing.
 
 - small enough to understand
 - direct enough to trust
@@ -44,7 +44,7 @@ Opus is built around a simple idea: the language should stay expressive while th
   `fn add(a: int, b: int) => a + b`
   `int add(int a, int b) { ... }`
   `define function add with left as i64, right as i64 returning i64`
-- supports structs, views, classes, methods, enums, imports, and `opus.project`
+- supports structs, views, classes, methods, enums, imports, and `sable.project`
 - supports typed FFI, `spawn`, `await`, `parallel for`, and atomic operations
 - ships a built-in crash debugger and healing runtime
 - ships an embedded stdlib with module-first surfaces like `mem`, `text`, `fmt`, `fs`, `json`, `path`, `process`, `rand`, `time`, `vec`, and `algo`
@@ -94,13 +94,13 @@ Compile-verified examples that match the current compiler.
 ```text
 src/
   main.ixx       CLI
-  opus.ixx       compiler API and runtime builtins
+  sable.ixx       compiler API and runtime builtins
   lexer.ixx      tokenizer
   parser.ixx     parser
   ast.ixx        AST and validation
   codegen.ixx    x64 code generation
   pe.ixx         PE image generation
-  project.ixx    opus.project loading
+  project.ixx    sable.project loading
   types.ixx      shared types
   errors.ixx     diagnostics helpers
 

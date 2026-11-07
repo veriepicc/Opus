@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Opus Benchmark Showdown Runner
-Compares Opus against MSVC (/O2), GCC (-O3), and TCC across scalar math,
+"""Sable Benchmark Showdown Runner
+Compares Sable against MSVC (/O2), GCC (-O3), and TCC across scalar math,
 branching, and trading engine workloads.
 
 Measures:
@@ -35,35 +35,35 @@ BENCHMARKS = [
         "id": "math",
         "name": "Math Loop (80M iter)",
         "desc": "Power-of-2 shifts, adds, and induction operations",
-        "opus_file": ROOT_DIR / "tests" / "benchmark_math.op",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_math.sb",
         "c_macro": 1,
     },
     {
         "id": "state",
         "name": "State Accumulation (50M iter)",
         "desc": "Multiple state updates with scalar induction",
-        "opus_file": ROOT_DIR / "tests" / "benchmark_state.op",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_state.sb",
         "c_macro": 2,
     },
     {
         "id": "branch",
         "name": "Branch Parity (40M iter)",
         "desc": "Alternating parity branch recurrence",
-        "opus_file": ROOT_DIR / "tests" / "benchmark_branch.op",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_branch.sb",
         "c_macro": 3,
     },
     {
         "id": "general",
         "name": "General Logic (6M iter)",
         "desc": "Control flow folding, conditionals, and math blend",
-        "opus_file": ROOT_DIR / "tests" / "benchmark_general.op",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_general.sb",
         "c_macro": 4,
     },
     {
         "id": "hft",
         "name": "HFT Order Book (12M iter)",
         "desc": "L2 order book matching, inventory skew, and risk checksums",
-        "opus_file": ROOT_DIR / "tests" / "benchmark_hft.op",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_hft.sb",
         "c_macro": 5,
     },
 ]
@@ -88,11 +88,11 @@ def ensure_tcc(work_dir):
 def find_compiler(name):
     return shutil.which(name)
 
-def find_opus_bin():
+def find_sable_bin():
     candidates = [
-        ROOT_DIR / "bin" / "Release" / "opus.exe",
-        ROOT_DIR / "bin" / "Release" / "Opus.exe",
-        ROOT_DIR / "opus.exe",
+        ROOT_DIR / "bin" / "Release" / "sable.exe",
+        ROOT_DIR / "bin" / "Release" / "Sable.exe",
+        ROOT_DIR / "sable.exe",
     ]
     for c in candidates:
         if c.is_file():
@@ -145,7 +145,7 @@ def check_execution(proc):
         raise RuntimeError(f'benchmark crashed ({proc.returncode})\n{proc.stdout}{proc.stderr}')
 
 def main():
-    parser = argparse.ArgumentParser(description="Opus Benchmark Showdown")
+    parser = argparse.ArgumentParser(description="Sable Benchmark Showdown")
     parser.add_argument("--iterations", "-n", type=int, default=4, help="Measured iterations per benchmark")
     parser.add_argument("--warmup", "-w", type=int, default=1, help="Warmup iterations")
     parser.add_argument("--skip-update-md", action="store_true", help="Do not overwrite BENCHMARKS.md")
@@ -157,12 +157,12 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     is_windows = sys.platform.startswith("win")
 
-    opus_bin = find_opus_bin()
-    if not opus_bin:
-        print("error: opus.exe not found", file=sys.stderr)
+    sable_bin = find_sable_bin()
+    if not sable_bin:
+        print("error: sable.exe not found", file=sys.stderr)
         sys.exit(1)
 
-    compilers = {"Opus": {"type": "opus", "bin": opus_bin}}
+    compilers = {"Sable": {"type": "sable", "bin": sable_bin}}
 
     gcc_name = "gcc" if is_windows else "x86_64-w64-mingw32-gcc"
     gcc_bin = find_compiler(gcc_name) or find_compiler("gcc")
@@ -195,10 +195,10 @@ def main():
             exe_out = build_dir / "benchmark.exe"
 
             t0 = time.perf_counter()
-            if c_info["type"] == "opus":
-                source = build_dir / "benchmark.op"
-                shutil.copy2(bench["opus_file"], source)
-                cmd = [str(opus_bin), "--fast", str(source)]
+            if c_info["type"] == "sable":
+                source = build_dir / "benchmark.sb"
+                shutil.copy2(bench["sable_file"], source)
+                cmd = [str(sable_bin), "--fast", str(source)]
                 if not is_windows:
                     cmd = ["wine"] + cmd
 
@@ -293,45 +293,45 @@ def generate_readme_summary(report):
     if report['errors']:
         return '\n'.join(lines + ['Benchmark comparison incomplete; see [measurement errors](BENCHMARKS.md#measurement-errors).', ''])
     benchmarks = report['benchmarks']
-    opus = [b['results']['Opus'] for b in benchmarks.values() if 'Opus' in b['results']]
-    if not opus:
-        return '\n'.join(lines + ['No successful Opus measurements for this run.', ''])
-    speedups = [b['results']['MSVC']['compile_ms'] / b['results']['Opus']['compile_ms']
-                for b in benchmarks.values() if 'MSVC' in b['results'] and 'Opus' in b['results']
-                and b['results']['Opus']['compile_ms'] > 0]
+    sable = [b['results']['Sable'] for b in benchmarks.values() if 'Sable' in b['results']]
+    if not sable:
+        return '\n'.join(lines + ['No successful Sable measurements for this run.', ''])
+    speedups = [b['results']['MSVC']['compile_ms'] / b['results']['Sable']['compile_ms']
+                for b in benchmarks.values() if 'MSVC' in b['results'] and 'Sable' in b['results']
+                and b['results']['Sable']['compile_ms'] > 0]
     highlights = []
     if speedups and max(speedups) > 1:
         highlights.append(f"Up to **{max(speedups):.1f}× faster compilation** than MSVC")
-    highlights.append(f"**{min(r['size_bytes'] for r in opus) / 1024:.1f} KiB** smallest Opus executable")
+    highlights.append(f"**{min(r['size_bytes'] for r in sable) / 1024:.1f} KiB** smallest Sable executable")
     lines += [' · '.join(highlights) + '.', '',
-              '| Workload | Opus compile | Opus runtime | vs MSVC | vs GCC | vs TCC |',
+              '| Workload | Sable compile | Sable runtime | vs MSVC | vs GCC | vs TCC |',
               '| :--- | ---: | ---: | ---: | ---: | ---: |']
     for name, bench in benchmarks.items():
         results = bench['results']
-        opus_res = results.get('Opus')
-        opus_rt = opus_res['runtime_min_ms'] if opus_res else None
-        compile_time = f"{opus_res['compile_ms']:.1f} ms" if opus_res else '—'
+        sable_res = results.get('Sable')
+        sable_rt = sable_res['runtime_min_ms'] if sable_res else None
+        compile_time = f"{sable_res['compile_ms']:.1f} ms" if sable_res else '—'
 
         cells = []
         for comp in ('MSVC', 'GCC', 'TCC'):
             other = results.get(comp)
-            if not other or not opus_rt:
+            if not other or not sable_rt:
                 cells.append('—')
                 continue
             other_rt = other['runtime_min_ms']
-            diff = abs(opus_rt - other_rt)
+            diff = abs(sable_rt - other_rt)
             # Within 5% difference or 0.1ms is effectively tied
-            if diff <= 0.1 or (diff / max(opus_rt, other_rt)) < 0.05:
+            if diff <= 0.1 or (diff / max(sable_rt, other_rt)) < 0.05:
                 cells.append(f"tied ({other_rt:.2f}ms)")
-            elif opus_rt < other_rt:
-                ratio = other_rt / opus_rt
+            elif sable_rt < other_rt:
+                ratio = other_rt / sable_rt
                 cells.append(f"**{ratio:.1f}× faster** ({other_rt:.2f}ms)")
             else:
-                ratio = opus_rt / other_rt
+                ratio = sable_rt / other_rt
                 cells.append(f"{ratio:.1f}× slower ({other_rt:.2f}ms)")
 
-        opus_cell = f"{opus_rt:.2f} ms" if opus_rt else '—'
-        lines.append(f"| {name} | {compile_time} | **{opus_cell}** | " + ' | '.join(cells) + ' |')
+        sable_cell = f"{sable_rt:.2f} ms" if sable_rt else '—'
+        lines.append(f"| {name} | {compile_time} | **{sable_cell}** | " + ' | '.join(cells) + ' |')
     lines += ['', f"{report['host']} · {report['iterations']} measured runs · {report['warmup']} warmups · minimum runtime.",
               '[Full results & methodology](BENCHMARKS.md)', '']
     return '\n'.join(lines)
@@ -365,11 +365,11 @@ def generate_markdown(data):
         f"- **Date:** {date_str}",
         f"- **Host:** `{sys_name}`",
         f"- **CPU:** `{cpu}`",
-        "- **Toolchains:** Opus (native x64), MSVC (`/O2 /Ob2 /Oi /Ot /GS-`), GCC (`-O3 -fwrapv`), TCC",
+        "- **Toolchains:** Sable (native x64), MSVC (`/O2 /Ob2 /Oi /Ot /GS-`), GCC (`-O3 -fwrapv`), TCC",
         "",
         "## Execution Runtime (lower is better)",
         "",
-        "| Workload | Opus | MSVC | GCC | TCC | Winner |",
+        "| Workload | Sable | MSVC | GCC | TCC | Winner |",
         "| :--- | ---: | ---: | ---: | ---: | :---: |",
     ]
 
@@ -390,21 +390,21 @@ def generate_markdown(data):
                 return f"**{rt_str}**"
             return rt_str
 
-        opus_rt = fmt_rt(res.get("Opus"))
+        sable_rt = fmt_rt(res.get("Sable"))
         msvc_rt = fmt_rt(res.get("MSVC"))
         gcc_rt = fmt_rt(res.get("GCC"))
         tcc_rt = fmt_rt(res.get("TCC"))
         winner_badge = f"**{winner_name}**"
 
         lines.append(
-            f"| **{meta['name']}** | {opus_rt} | {msvc_rt} | {gcc_rt} | {tcc_rt} | {winner_badge} |"
+            f"| **{meta['name']}** | {sable_rt} | {msvc_rt} | {gcc_rt} | {tcc_rt} | {winner_badge} |"
         )
 
     lines += [
         "",
         "## Compilation Speed & Binary Size",
         "",
-        "| Workload | Opus | MSVC (`/O2`) | GCC (`-O3`) | TCC |",
+        "| Workload | Sable | MSVC (`/O2`) | GCC (`-O3`) | TCC |",
         "| :--- | ---: | ---: | ---: | ---: |",
     ]
 
@@ -424,13 +424,13 @@ def generate_markdown(data):
                 return f"**{c_str}**"
             return c_str
 
-        opus_c = fmt_c(res.get("Opus"))
+        sable_c = fmt_c(res.get("Sable"))
         msvc_c = fmt_c(res.get("MSVC"))
         gcc_c = fmt_c(res.get("GCC"))
         tcc_c = fmt_c(res.get("TCC"))
 
         lines.append(
-            f"| **{meta['name']}** | {opus_c} | {msvc_c} | {gcc_c} | {tcc_c} |"
+            f"| **{meta['name']}** | {sable_c} | {msvc_c} | {gcc_c} | {tcc_c} |"
         )
 
     lines += [

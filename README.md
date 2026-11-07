@@ -1,6 +1,6 @@
-# Opus
+# Sable
 
-Opus is a systems programming language and a self-contained native compiler for Windows x64. It emits PE executables and DLLs directly from source using a handwritten machine-code backend — no LLVM, no external assembler, and no linker in the toolchain.
+Sable is a systems programming language and a self-contained native compiler for Windows x64. It emits PE executables and DLLs directly from source using a handwritten machine-code backend — no LLVM, no external assembler, and no linker in the toolchain.
 
 Most of the compiler is written by hand: the x64 code generator, instruction encoding, and the PE writer are raw machine-code bytes issued directly from source, not assembled by an external tool. There is no intermediate virtual machine and no runtime layer between generated code and the operating system.
 
@@ -10,17 +10,17 @@ Most of the compiler is written by hand: the x64 code generator, instruction enc
 - Three declaration syntaxes, mixable in one file: Rust-style (`fn`), scripting-style (`function`), and English.
 - Binaries rarely crash. Fault recovery is built in, so an access violation gets reported with its source location and execution continues instead of taking the process down.
 
-[Documentation](docs/index.md) · [Language reference](docs/reference.md) · [Examples](docs/examples.md) · [Benchmarks](https://github.com/veriepicc/Opus/blob/ci-results/BENCHMARKS.md) · [CI runs](https://github.com/veriepicc/Opus/actions/workflows/ci.yml)
+[Documentation](docs/index.md) · [Language reference](docs/reference.md) · [Examples](docs/examples.md) · [Benchmarks](https://github.com/veriepicc/Sable/blob/ci-results/BENCHMARKS.md) · [CI runs](https://github.com/veriepicc/Sable/actions/workflows/ci.yml)
 
 ---
 
 ## Performance
 
-All results below are measured automatically on every commit and published to the [`ci-results`](https://github.com/veriepicc/Opus/blob/ci-results/BENCHMARKS.md) branch. Numbers are not maintained by hand.
+All results below are measured automatically on every commit and published to the [`ci-results`](https://github.com/veriepicc/Sable/blob/ci-results/BENCHMARKS.md) branch. Numbers are not maintained by hand.
 
-[![Measured benchmark comparison](https://raw.githubusercontent.com/veriepicc/Opus/ci-results/benchmarks.svg)](https://github.com/veriepicc/Opus/blob/ci-results/BENCHMARKS.md)
+[![Measured benchmark comparison](https://raw.githubusercontent.com/veriepicc/Sable/ci-results/benchmarks.svg)](https://github.com/veriepicc/Sable/blob/ci-results/BENCHMARKS.md)
 
-The suite compares Opus, MSVC, GCC, and TCC across five workloads: scalar math, state accumulation, branch parity, mixed control flow, and an L2 order-book simulation. Each toolchain builds the same algorithm at comparable optimization levels, and each binary runs several times with warmup and minimum-runtime reporting.
+The suite compares Sable, MSVC, GCC, and TCC across five workloads: scalar math, state accumulation, branch parity, mixed control flow, and an L2 order-book simulation. Each toolchain builds the same algorithm at comparable optimization levels, and each binary runs several times with warmup and minimum-runtime reporting.
 
 Compile latency, binary size, and runtime are recorded per platform:
 
@@ -31,7 +31,7 @@ Compile latency, binary size, and runtime are recorded per platform:
 | Windows 11 on Arm | ARM64 Prism x64 JIT |
 | Ubuntu 24.04 | Wine x64 |
 
-**[Complete benchmark results and methodology](https://github.com/veriepicc/Opus/blob/ci-results/BENCHMARKS.md)**
+**[Complete benchmark results and methodology](https://github.com/veriepicc/Sable/blob/ci-results/BENCHMARKS.md)**
 
 ## Language
 
@@ -71,11 +71,11 @@ Beyond the basic syntax, there are structs, classes and methods, enums, imports,
 
 ## Build and Run
 
-Build the compiler once, then use `opus.exe` directly:
+Build the compiler once, then use `sable.exe` directly:
 
 ```powershell
 ./tools/ci-build.ps1
-opus.exe --run examples/hello.op
+sable.exe --run examples/hello.sb
 ```
 
 Prerequisites are MSVC with C++ modules support and the Windows SDK. Building a project or producing a DLL is covered in [getting started](docs/getting-started.md).
@@ -83,16 +83,16 @@ Prerequisites are MSVC with C++ modules support and the Windows SDK. Building a 
 Compile a source file to a native executable:
 
 ```powershell
-opus.exe examples/hello.op
+sable.exe examples/hello.sb
 ```
 
 By default the compiler emits a Windows x64 executable next to the source. `--dll` switches the output to a DLL with generated exports. `--run` compiles and executes a temporary binary.
 
 ## CI
 
-[![Compiler build status](https://raw.githubusercontent.com/veriepicc/Opus/ci-results/build.svg)](https://github.com/veriepicc/Opus/blob/ci-results/README.md)
+[![Compiler build status](https://raw.githubusercontent.com/veriepicc/Sable/ci-results/build.svg)](https://github.com/veriepicc/Sable/blob/ci-results/README.md)
 
-[![Passed, failed, and skipped tests by platform](https://raw.githubusercontent.com/veriepicc/Opus/ci-results/tests.svg)](https://github.com/veriepicc/Opus/blob/ci-results/README.md)
+[![Passed, failed, and skipped tests by platform](https://raw.githubusercontent.com/veriepicc/Sable/ci-results/tests.svg)](https://github.com/veriepicc/Sable/blob/ci-results/README.md)
 
 Every commit builds the compiler with MSVC on Windows Server 2022. The test suite then runs on four configurations: Windows Server 2025 and Windows Server 2022 natively, Windows 11 on Arm under Prism x64 emulation, and Ubuntu 24.04 under Wine x64. Benchmarks run on all four as well.
 
@@ -119,7 +119,7 @@ Run the suite locally against every detected compiler:
 python benchmarks/run.py --iterations 5 --warmup 2
 ```
 
-The runner detects Opus, MSVC, GCC, and TCC, compiles each workload, measures compile latency, binary size, and execution runtime, and writes `benchmark-results.json`, `benchmark-summary.md`, and `BENCHMARKS.md`.
+The runner detects Sable, MSVC, GCC, and TCC, compiles each workload, measures compile latency, binary size, and execution runtime, and writes `benchmark-results.json`, `benchmark-summary.md`, and `BENCHMARKS.md`.
 
 ## Documentation
 
@@ -146,8 +146,8 @@ The runner detects Opus, MSVC, GCC, and TCC, compiles each workload, measures co
 
 ## Status
 
-Opus targets Windows x64. The compiler, language surface, and standard library are under active development, and syntax or ABI details may change between revisions.
+Sable targets Windows x64. The compiler, language surface, and standard library are under active development, and syntax or ABI details may change between revisions.
 
 ## License
 
-[GPL-3.0-or-later with the Opus Runtime Exception](LICENSE). Programs compiled with Opus may be distributed under their own licenses.
+[GPL-3.0-or-later with the Sable Runtime Exception](LICENSE). Programs compiled with Sable may be distributed under their own licenses.

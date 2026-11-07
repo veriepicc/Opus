@@ -13,12 +13,12 @@ module;
 #include <intrin.h>
 #endif
 
-export module opus.x64;
+export module sable.x64;
 
-import opus.types;
+import sable.types;
 import std;
 
-export namespace opus::x64 {
+export namespace sable::x64 {
 
 enum class Reg : std::uint8_t {
     RAX = 0, RCX = 1, RDX = 2, RBX = 3,
@@ -2446,4 +2446,4 @@ private:
 
 #endif // _WIN32
 
-} // namespace opus::x64
+} // namespace sable::x64

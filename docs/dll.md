@@ -1,16 +1,16 @@
 # DLL Mode
 
-Opus can emit a native Windows DLL directly:
+Sable can emit a native Windows DLL directly:
 
 ```text
-opus --dll tool.op
+sable --dll tool.sb
 ```
 
-or through `opus.project`:
+or through `sable.project`:
 
 ```c
 project Tool {
-    entry: "main.op"
+    entry: "main.sb"
     output: "Tool.dll"
     mode: "dll"
 }
@@ -43,13 +43,13 @@ function int main() {
 - `LoadLibrary` tools
 - injected diagnostics/helpers
 - process-introspection tools
-- utilities that still want the same Opus language surface as EXE builds
+- utilities that still want the same Sable language surface as EXE builds
 
 ## Example
 
-`examples/scanner.op` is a good DLL-oriented sample:
+`examples/scanner.sb` is a good DLL-oriented sample:
 
-- compile with `opus --dll examples/scanner.op`
+- compile with `sable --dll examples/scanner.sb`
 - it allocates a console explicitly
 - it uses `get_module`, process helpers, and memory scanning
 

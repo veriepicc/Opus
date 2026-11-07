@@ -1,6 +1,6 @@
 # Language Overview
 
-Opus is designed to stay expressive at the source level while keeping the underlying compiler and runtime model understandable.
+Sable is designed to stay expressive at the source level while keeping the underlying compiler and runtime model understandable.
 
 ## Core ideas
 
@@ -158,7 +158,7 @@ import math
 
 ```c
 project Demo {
-    entry: "app/main.op"
+    entry: "app/main.sb"
     output: "Demo.exe"
     mode: "exe"
     include: ["modules"]

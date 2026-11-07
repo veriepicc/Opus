@@ -1,0 +1,22 @@
+// TEST 11: return struct on stack vs registers
+// sable codegen might return small struct in RAX but x64 ABI says return in RDX:RAX
+
+struct SmallRet {
+    a: int
+    b: int
+}
+
+function int main() {
+    alloc_console()
+
+    // Can't easily test struct return from FFI without C helper
+    // But we can test that sable correctly handles struct returns
+    let s = SmallRet { a: 0xAA, b: 0xBB }
+    print("struct ret test (internal)\n")
+    print("a=")
+    print_hex(s.a)
+    print(" b=")
+    print_hex(s.b)
+    print("\n")
+    return 0
+}

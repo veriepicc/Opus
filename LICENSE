@@ -1,4 +1,4 @@
-Opus - GPLv3 with Runtime Exception
+Sable - GPLv3 with Runtime Exception
 Copyright (C) 2026 veriepic
 
 This program is free software: you can redistribute it and/or modify
@@ -6,14 +6,14 @@ it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 
-OPUS RUNTIME EXCEPTION:
-Compiling a program with Opus, including linking or bundling the Opus
-standard library (stdlib/*.op) and runtime output into the resulting
+SABLE RUNTIME EXCEPTION:
+Compiling a program with Sable, including linking or bundling the Sable
+standard library (stdlib/*.sb) and runtime output into the resulting
 executable, does NOT cause the resulting compiled program to be covered
 by the GPL. Compiled programs remain the property of their authors and
 may be distributed under terms of their choosing, open or proprietary,
 without obligation to disclose source. This exception applies solely to
-the output programs. The Opus compiler itself (src/*, tools, build scripts)
+the output programs. The Sable compiler itself (src/*, tools, build scripts)
 remains subject to GPLv3; modification and distribution of the compiler
 requires distribution of the corresponding source.
 

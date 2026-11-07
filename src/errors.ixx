@@ -1,11 +1,11 @@
 // error formatting + diagnostics
 
-export module opus.errors;
+export module sable.errors;
 
-import opus.types;
+import sable.types;
 import std;
 
-export namespace opus {
+export namespace sable {
 
 // ansi colors
 namespace color {
@@ -197,4 +197,4 @@ public:
     }
 };
 
-} // namespace opus
+} // namespace sable

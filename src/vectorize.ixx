@@ -1,4 +1,4 @@
-// vectorize.ixx - aggressive auto-vectorization for Opus
+// vectorize.ixx - aggressive auto-vectorization for Sable
 // this is the heart of our SIMD engine
 
 module;
@@ -7,13 +7,13 @@ module;
 #include <intrin.h>
 #endif
 
-export module opus.vectorize;
-import opus.x64;
-import opus.ast;
-import opus.types;
+export module sable.vectorize;
+import sable.x64;
+import sable.ast;
+import sable.types;
 import std;
 
-export namespace opus::vectorize {
+export namespace sable::vectorize {
 
 // ========================================================================
 // CPU CAPABILITY DETECTION
@@ -814,4 +814,4 @@ inline void ensure_avx2_enabled() {
     }
 }
 
-} // namespace opus::vectorize
+} // namespace sable::vectorize

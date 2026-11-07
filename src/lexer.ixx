@@ -1,11 +1,11 @@
 ﻿// lexer - supports c-style and english syntaxes
 
-export module opus.lexer;
+export module sable.lexer;
 
-import opus.types;
+import sable.types;
 import std;
 
-export namespace opus {
+export namespace sable {
 
 enum class TokenKind : std::uint8_t {
     // Literals
@@ -91,7 +91,7 @@ enum class TokenKind : std::uint8_t {
     LParen, RParen,
     LBrace, RBrace,
     LBracket, RBracket,
-    Comma, Colon, Semicolon, Dot,
+    Comma, Colon, Semicolon, Dot, DotDot,
     Arrow,      // ->
     FatArrow,   // =>
     ColonColon, // ::
@@ -785,7 +785,12 @@ private:
             case ']': return single(TokenKind::RBracket);
             case ',': return single(TokenKind::Comma);
             case ';': return single(TokenKind::Semicolon);
-            case '.': return single(TokenKind::Dot);
+            case '.':
+                if (peek() == '.') {
+                    advance();
+                    return single(TokenKind::DotDot);
+                }
+                return single(TokenKind::Dot);
             case '@': return single(TokenKind::At);
             case '#': return single(TokenKind::Hash);
             case '~': return single(TokenKind::Tilde);
@@ -942,4 +947,4 @@ constexpr std::string_view token_kind_name(TokenKind k) {
     }
 }
 
-} // namespace opus
+} // namespace sable

@@ -5,13 +5,13 @@ This is the practical front door: the shortest path from the repo to a native bi
 ## Build the compiler
 
 ```powershell
-MSBuild.exe Opus.vcxproj /p:Configuration=Release /p:Platform=x64
+MSBuild.exe Sable.vcxproj /p:Configuration=Release /p:Platform=x64
 ```
 
 Output:
 
 ```text
-bin/Release/opus.exe
+bin/Release/sable.exe
 ```
 
 ## First program
@@ -26,7 +26,7 @@ function int main() {
 Compile:
 
 ```text
-> opus hello.op
+> sable hello.sb
 Generated EXE: hello.exe
 ```
 
@@ -40,7 +40,7 @@ Hello, World!
 One-command loop:
 
 ```text
-> opus --run hello.op
+> sable --run hello.sb
 Hello, World!
 Program returned: 0
 ```
@@ -60,14 +60,14 @@ Use `alloc_console()` only when:
 ### Default EXE
 
 ```text
-> opus hello.op
+> sable hello.sb
 ```
 
 ### Compile and run
 
 ```text
-> opus --run hello.op
-> opus -r hello.op
+> sable --run hello.sb
+> sable -r hello.sb
 ```
 
 `--run` builds a temporary native EXE, runs it, and reports the return value.
@@ -75,7 +75,7 @@ Use `alloc_console()` only when:
 ### DLL output
 
 ```text
-> opus --dll tool.op
+> sable --dll tool.sb
 ```
 
 Produces `tool.dll`. `main()` still runs, but it runs from the DLL startup path.
@@ -84,7 +84,7 @@ Produces `tool.dll`. `main()` still runs, but it runs from the DLL startup path.
 
 ```c
 project MyApp {
-    entry: "app/main.op"
+    entry: "app/main.sb"
     output: "MyApp.exe"
     mode: "exe"
     debug: true
@@ -95,8 +95,8 @@ project MyApp {
 Build:
 
 ```text
-> opus build
-> opus build path/to/opus.project
+> sable build
+> sable build path/to/sable.project
 ```
 
 Project fields:
@@ -138,26 +138,26 @@ function int add(int left, int right) => left + right
 int add(int left, int right) => left + right
 ```
 
-Opus intentionally accepts multiple declaration shapes, and the parser is much better than it used to be at explaining common mistakes.
+Sable intentionally accepts multiple declaration shapes, and the parser is much better than it used to be at explaining common mistakes.
 
 ## CLI reference
 
 ```text
-opus [options] <file.op>
-opus repl
-opus build [path]
+sable [options] <file.sb>
+sable repl
+sable build [path]
 ```
 
 | Command | Meaning |
 |--------|---------|
-| `opus <file.op>` | compile to EXE |
-| `opus --run <file.op>` | compile and run |
-| `opus -r <file.op>` | short form of `--run` |
-| `opus --dll <file.op>` | compile to DLL |
-| `opus build` | search for `opus.project` and build it |
-| `opus build <path>` | build a specific project file |
-| `opus repl` | start the REPL |
-| `opus --help` | show usage |
+| `sable <file.sb>` | compile to EXE |
+| `sable --run <file.sb>` | compile and run |
+| `sable -r <file.sb>` | short form of `--run` |
+| `sable --dll <file.sb>` | compile to DLL |
+| `sable build` | search for `sable.project` and build it |
+| `sable build <path>` | build a specific project file |
+| `sable repl` | start the REPL |
+| `sable --help` | show usage |
 
 ## Next pages
 

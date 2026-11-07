@@ -1,0 +1,10 @@
+project SableStdlib {
+    entry: "demo.sb"
+    output: "stdlib_demo.exe"
+    mode: exe
+    debug: false
+    healing: "off"
+    include: [
+        "./"
+    ]
+}

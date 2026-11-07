@@ -1,14 +1,14 @@
 ﻿// parser - handles c-style and english syntaxes
 
-export module opus.parser;
+export module sable.parser;
 
-import opus.types;
-import opus.lexer;
-import opus.ast;
-import opus.errors;
+import sable.types;
+import sable.lexer;
+import sable.ast;
+import sable.errors;
 import std;
 
-export namespace opus {
+export namespace sable {
 
 struct ParseError {
     std::string message;
@@ -96,7 +96,7 @@ public:
                 }
 
                 if (found_project) {
-                    error_at(decl_loc, "multiple project declarations found in opus.project");
+                    error_at(decl_loc, "multiple project declarations found in sable.project");
                     continue;
                 }
 
@@ -106,12 +106,12 @@ public:
                 continue;
             }
 
-            error("unexpected top-level declaration in opus.project");
+            error("unexpected top-level declaration in sable.project");
             synchronize();
         }
 
         if (!found_project && errors_.empty()) {
-            error_at(project_loc, "no project declaration found in opus.project");
+            error_at(project_loc, "no project declaration found in sable.project");
         }
 
         if (found_project) {
@@ -1411,7 +1411,7 @@ private:
             if (!ignored) {
                 synchronize();
             }
-            error_at(project_loc, "project declarations are only valid in opus.project");
+            error_at(project_loc, "project declarations are only valid in sable.project");
             return std::nullopt;
         }
         if (match(TokenKind::Let)) {
@@ -1982,10 +1982,31 @@ private:
         return stmt;
     }
 
+    std::optional<ast::ExprPtr> parse_for_iterable() {
+        auto iter = parse_expr();
+        if (!iter) return std::nullopt;
+        if (match(TokenKind::DotDot)) {
+            auto end = parse_expr();
+            if (!end) return std::nullopt;
+            auto callee = std::make_unique<ast::Expr>();
+            callee->kind = ast::IdentExpr{.name = "range"};
+            ast::ExprList args;
+            args.push_back(std::move(*iter));
+            args.push_back(std::move(*end));
+            auto call = std::make_unique<ast::Expr>();
+            call->kind = ast::CallExpr{
+                .callee = std::move(callee),
+                .args = std::move(args)
+            };
+            iter = std::move(call);
+        }
+        return iter;
+    }
+
     std::optional<ast::StmtPtr> parse_for_stmt_v2() {
         Token var = consume_name("expected variable");
         consume(TokenKind::In, "expected 'in'");
-        auto iter = parse_expr();
+        auto iter = parse_for_iterable();
         if (!iter) return std::nullopt;
         auto body = parse_stmt_suite_or_single(
             StatementMode::V2,
@@ -3033,7 +3054,7 @@ private:
         consume(TokenKind::LParen, "expected '('");
         Token var = consume_name("expected variable");
         consume(TokenKind::In, "expected 'in'");
-        auto iter = parse_expr();
+        auto iter = parse_for_iterable();
         if (!iter) return std::nullopt;
         consume(TokenKind::RParen, "expected ')'");
         auto body = parse_stmt_suite_or_single(
@@ -3765,4 +3786,4 @@ private:
     }
 };
 
-} // namespace opus
+} // namespace sable
