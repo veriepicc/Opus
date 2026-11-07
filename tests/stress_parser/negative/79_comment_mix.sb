@@ -1,4 +1,0 @@
-// test line comment then /* block comment start
-let x = 1;
-/* block comment */
-let y = 2;

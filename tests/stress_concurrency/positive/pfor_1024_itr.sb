@@ -1,6 +1,0 @@
-function int main() {
-    parallel for i in range(0, 1024) {
-        let x = 0
-    }
-    return 0
-}

@@ -1,8 +1,0 @@
-function int main() {
-    var s = make_string("hello")
-    var s2 = s
-    free(s)
-    let c = string_char_at(s2, 0)
-    free(s2)
-    return c
-}

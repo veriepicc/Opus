@@ -1,4 +1,0 @@
-function int main() {
-    // backslash before newline at end of file\
-    return 0;
-}

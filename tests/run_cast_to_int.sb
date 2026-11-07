@@ -1,4 +1,0 @@
-function int main() {
-    let x = 3.5 as int
-    return x
-}

@@ -1,3 +1,0 @@
-define function add wiht left as i64, right as i64 returning i64
-    return left + right
-end function

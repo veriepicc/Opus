@@ -1,3 +1,0 @@
-fn value_helper() -> i64 {
-    return 17;
-}

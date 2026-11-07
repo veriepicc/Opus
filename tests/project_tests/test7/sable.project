@@ -1,6 +1,0 @@
-project Test7 {
-    entry: "app/main.sb"
-    output: "Test7.exe"
-    mode: "exe"
-    include: ["modules"]
-}

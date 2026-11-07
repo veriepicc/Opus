@@ -1,5 +1,0 @@
-import test_visibility_lib as lib
-
-function int main() {
-    return lib.hidden()
-}

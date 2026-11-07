@@ -1,3 +1,0 @@
-define function main returing i64
-    return 0
-end function

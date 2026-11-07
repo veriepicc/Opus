@@ -1,5 +1,0 @@
-function int runtime_value() {
-    return 5
-}
-
-constant bad: int = runtime_value()

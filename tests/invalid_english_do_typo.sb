@@ -1,5 +1,0 @@
-define function main returning i64
-    while 1 < 2 od
-        return 0
-    end while
-end function

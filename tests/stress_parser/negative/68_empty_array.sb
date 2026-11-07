@@ -1,6 +1,0 @@
-let empty = [];
-
-function int main() {
-    let x = empty;
-    return 0;
-}

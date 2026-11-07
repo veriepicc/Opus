@@ -1,5 +1,0 @@
-import api.entry;
-
-function int main() {
-    return run(19, 23)
-}

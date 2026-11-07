@@ -1,3 +1,0 @@
-using Callback = fn(int, int) -> int
-using BadFunc = fn()
-using TerribleFunc = fn(int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int) -> int

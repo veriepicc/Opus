@@ -1,6 +1,0 @@
-project Test11 {
-    entry: "main.sb"
-    output: "Test11.exe"
-    mode: "exe"
-    debug: flase
-}

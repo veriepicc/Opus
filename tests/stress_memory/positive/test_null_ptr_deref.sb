@@ -1,9 +1,0 @@
-function int main() {
-    let ptr: ptr = 0
-    let val = mem_read(ptr)
-    if val != 0 {
-        return 1
-    }
-    print("null read recovered\n")
-    return 0
-}

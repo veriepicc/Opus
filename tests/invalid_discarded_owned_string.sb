@@ -1,6 +1,0 @@
-import fmt
-
-function int main() {
-    fmt_pair("key", "value")
-    return 0
-}

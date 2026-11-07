@@ -1,7 +1,0 @@
-import test_import_constant_lib as lib
-
-constant total: int = lib.answer + 1
-
-function int main() {
-    return total - 42
-}

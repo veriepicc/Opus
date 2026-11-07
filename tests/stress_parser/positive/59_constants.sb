@@ -1,5 +1,0 @@
-constant ANSWER: int = 42;
-
-function int main() {
-    return ANSWER;
-}

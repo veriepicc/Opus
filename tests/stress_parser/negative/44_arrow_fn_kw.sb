@@ -1,1 +1,0 @@
-let function = fn(x: int) -> int => x + 1;

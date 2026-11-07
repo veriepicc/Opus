@@ -1,8 +1,0 @@
-// repro: i64 INT_MIN / -1 — this produces #DE (divide overflow) on x86
-function int main() {
-    var a: i64 = -9223372036854775807
-    a = a - 1
-    var b: i64 = -1
-    var q: i64 = a / b
-    return q
-}

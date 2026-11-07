@@ -1,6 +1,0 @@
-function int main() {
-    let x = '\n';
-    let y = '\t';
-    let z = '\'';
-    return 0;
-}

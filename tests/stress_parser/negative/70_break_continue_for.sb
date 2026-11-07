@@ -1,8 +1,0 @@
-function int main() {
-    for i in items {
-        if i == 5 { break; }
-        if i == 3 { continue; }
-        print_int(i);
-    }
-    return 0;
-}

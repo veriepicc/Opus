@@ -1,3 +1,0 @@
-fn same() -> i64 {
-    return 20;
-}

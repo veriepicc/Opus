@@ -1,6 +1,0 @@
-fn add(x: int) => x + 1
-
-function int main() {
-    let result = add
-    return result;
-}

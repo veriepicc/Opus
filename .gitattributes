@@ -1,3 +1,0 @@
-# syntax highlighting on github - closest match for sable
-*.sb linguist-language=C
-*.op linguist-language=C

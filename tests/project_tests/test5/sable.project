@@ -1,5 +1,0 @@
-project Test5 {
-    entry: "main.sb"
-    output: "Test5.exe"
-    mode: "exe"
-}

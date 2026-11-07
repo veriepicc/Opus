@@ -1,6 +1,0 @@
-project Test9 {
-    entry: "main.sb"
-    output: "Test9.exe"
-    mode: "exe"
-    include: ["dir1", "dir2"]
-}

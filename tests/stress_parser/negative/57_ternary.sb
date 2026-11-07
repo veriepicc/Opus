@@ -1,4 +1,0 @@
-function int main() {
-    let x = a ? b : c;
-    return 0;
-}

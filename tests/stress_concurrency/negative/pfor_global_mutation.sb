@@ -1,9 +1,0 @@
-var counter: i64 = 0
-
-function int main() {
-    parallel for i in range(0, 100) {
-        counter = counter + 1
-    }
-    print_int(counter)
-    return 0
-}

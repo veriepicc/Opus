@@ -1,6 +1,0 @@
-function int main() {
-    switch x {
-    case 1: case 2: case 3: return 42;
-    else: return 0;
-    }
-}

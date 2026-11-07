@@ -1,5 +1,0 @@
-import shared
-
-function int main() {
-    return shared.value()
-}

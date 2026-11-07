@@ -1,8 +1,0 @@
-function int main() {
-    var counter = 0
-    parallel for i in range(0, 100) {
-        counter = counter + 1
-    }
-    print_int(counter)
-    return 0
-}

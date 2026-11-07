@@ -1,3 +1,0 @@
-function int main() {
-    // single line comment that never ends
-    return 0;

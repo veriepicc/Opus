@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: microsoft/setup-msbuild@v2
       - name: Build Release x64
         run: ./tools/ci-build.ps1

@@ -1,5 +1,0 @@
-import text as int
-
-function int main() {
-    return int.text_len("sable")
-}

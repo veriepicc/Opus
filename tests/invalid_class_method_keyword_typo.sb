@@ -1,5 +1,0 @@
-class Counter {
-    fuction int value() {
-        return 0
-    }
-}

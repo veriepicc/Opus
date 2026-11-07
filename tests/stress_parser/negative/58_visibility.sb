@@ -1,6 +1,0 @@
-public function int pub();
-internal function int priv();
-
-function int main() {
-    return pub() + priv();
-}

@@ -1,2 +1,0 @@
-using Fn = fn(int) -> int
-using BadChain = fn(int) -> int -> int

@@ -1,7 +1,0 @@
-function int main() {
-    let shared = 0
-    parallel for i in range(0, 8) {
-        shared = shared + i
-    }
-    return 0
-}

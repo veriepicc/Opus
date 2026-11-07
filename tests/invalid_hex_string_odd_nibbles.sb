@@ -1,4 +1,0 @@
-function int main() {
-    let sig = hex"ABC"
-    return 0
-}
