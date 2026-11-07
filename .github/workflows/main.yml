@@ -1,9 +1,7 @@
-name: CI
+name: Main CI
 
 on:
   push:
-    branches: [main, dev]
-  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -150,7 +148,7 @@ jobs:
   readme:
     name: Publish reports to ci-results
     needs: [build, windows-tests, linux-wine, benchmarks]
-    if: always() && !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: always() && !cancelled() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
