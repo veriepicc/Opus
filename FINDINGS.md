@@ -56,3 +56,52 @@ function int main() {
 0
 ```
 ---
+
+## Finding `451a3a6dbffc` — RUNTIME_HANG
+- **Timestamp**: `2026-11-07 23:55:51Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_451a3a6dbffc.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+struct Point_73949 {
+    x: int;
+    y: int;
+}
+
+view Header_29126 {
+    magic: int @ 0;
+    flags: int @ 8;
+}
+
+function int helper_24685(int a_14107, int b_80173) {
+    let x_1987 = a_14107;
+    for i_71612 in 1..10 {
+        i_71612 = ((-42 ^ 255) ^ b_80173);
+    }
+    if true {
+        let x_66340 = (b_80173 & (i_71612 - 5));
+    }
+    return x_1987;
+}
+
+function int main() {
+    let res = helper_24685(10, 20);
+    print_int(res);
+    for i_32920 in 0..5 {
+        let x_66552 = i_32920;
+    }
+    let x_6968 = (5 * 100);
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+
+```
+---
