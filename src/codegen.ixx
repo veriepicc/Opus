@@ -4131,30 +4131,8 @@ private:
                 }
                 return true;
             },
-            [&](const ast::SwitchStmt& s) {
-                if (!expr_has_only_local_side_effects(*s.subject, locals)) {
-                    return false;
-                }
-                for (const auto& branch : s.cases) {
-                    if (!expr_has_only_local_side_effects(*branch.value, locals)) {
-                        return false;
-                    }
-                    auto branch_locals = locals;
-                    for (const auto& inner : branch.body) {
-                        if (!stmt_is_single_use_inline_safe_fn(*inner, branch_locals)) {
-                            return false;
-                        }
-                    }
-                }
-                if (s.else_block) {
-                    auto else_locals = locals;
-                    for (const auto& inner : *s.else_block) {
-                        if (!stmt_is_single_use_inline_safe_fn(*inner, else_locals)) {
-                            return false;
-                        }
-                    }
-                }
-                return true;
+            [&](const ast::SwitchStmt&) {
+                return false;
             },
             [&](const ast::BlockStmt& s) {
                 auto block_locals = locals;
