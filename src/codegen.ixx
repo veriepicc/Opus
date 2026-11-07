@@ -10168,7 +10168,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             [&](const ast::IndexExpr& e)   { return generate_index(e); },
             [&](const ast::FieldExpr& e)   { return generate_field(e); },
             [&](const ast::CastExpr& e)    {
-                if (auto sn = get_struct_name(e.target_type); sn && !is_pointer_like_type(e.target_type)) {
+                if (auto sn = get_struct_name(e.target_type); sn && !std::holds_alternative<PointerType>(e.target_type.kind)) {
                     error(std::format("cannot cast value to struct type '{}'", *sn));
                     return false;
                 }
