@@ -9,11 +9,11 @@
 
 | Benchmark | Best Runtime | Fastest Compile | Smallest Binary |
 | :--- | :--- | :--- | :--- |
-| Math Loop (80M iter) | **Opus** (3.41ms) | **TCC** (12.0ms) | **TCC** (2560B) |
-| State Accumulation (50M iter) | **Opus** (3.48ms) | **TCC** (8.1ms) | **TCC** (2560B) |
-| Branch Parity (40M iter) | **Opus** (3.48ms) | **Opus** (7.7ms) | **TCC** (2560B) |
-| General Logic (6M iter) | **GCC** (15.64ms) | **Opus** (8.0ms) | **TCC** (2560B) |
-| HFT Order Book (12M iter) | **GCC** (112.40ms) | **Opus** (8.2ms) | **TCC** (4096B) |
+| Math Loop (80M iter) | **Opus** (4.45ms) | **TCC** (14.7ms) | **TCC** (2560B) |
+| State Accumulation (50M iter) | **Opus** (4.32ms) | **TCC** (9.9ms) | **TCC** (2560B) |
+| Branch Parity (40M iter) | **Opus** (4.64ms) | **Opus** (9.6ms) | **TCC** (2560B) |
+| General Logic (6M iter) | **GCC** (18.03ms) | **Opus** (9.5ms) | **TCC** (2560B) |
+| HFT Order Book (12M iter) | **GCC** (132.22ms) | **Opus** (9.7ms) | **TCC** (4096B) |
 
 ## Detailed Measurements
 
@@ -22,50 +22,50 @@
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 16.3 | 4,608 B | 3.41 | 3.47 | **Fastest** |
-| **GCC** | 3352.2 | 14,848 B | 4.56 | 4.84 | 1.34x baseline |
-| **MSVC** | 4066.8 | 107,520 B | 26.67 | 28.23 | 7.82x baseline |
-| **TCC** | 12.0 | 2,560 B | 115.05 | 119.15 | 33.72x baseline |
+| **Opus** | 22.1 | 4,608 B | 4.45 | 4.55 | **Fastest** |
+| **GCC** | 3490.5 | 14,848 B | 5.60 | 5.72 | 1.26x baseline |
+| **MSVC** | 4000.9 | 107,520 B | 30.82 | 31.11 | 6.92x baseline |
+| **TCC** | 14.7 | 2,560 B | 131.90 | 132.59 | 29.62x baseline |
 
 ### State Accumulation (50M iter)
 *Multiple state updates with scalar induction*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 8.4 | 4,608 B | 3.48 | 3.56 | **Fastest** |
-| **GCC** | 84.3 | 14,848 B | 4.43 | 4.58 | 1.27x baseline |
-| **MSVC** | 92.5 | 107,520 B | 18.26 | 18.53 | 5.25x baseline |
-| **TCC** | 8.1 | 2,560 B | 73.73 | 74.93 | 21.18x baseline |
+| **Opus** | 10.1 | 4,608 B | 4.32 | 4.47 | **Fastest** |
+| **GCC** | 102.8 | 14,848 B | 5.58 | 5.67 | 1.29x baseline |
+| **MSVC** | 113.1 | 107,520 B | 21.07 | 21.34 | 4.88x baseline |
+| **TCC** | 9.9 | 2,560 B | 83.81 | 85.27 | 19.40x baseline |
 
 ### Branch Parity (40M iter)
 *Alternating parity branch recurrence*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 7.7 | 4,608 B | 3.48 | 3.55 | **Fastest** |
-| **GCC** | 399.0 | 14,848 B | 17.63 | 17.92 | 5.06x baseline |
-| **MSVC** | 87.9 | 107,520 B | 27.03 | 27.37 | 7.76x baseline |
-| **TCC** | 8.4 | 2,560 B | 39.87 | 40.29 | 11.45x baseline |
+| **Opus** | 9.6 | 4,608 B | 4.64 | 4.85 | **Fastest** |
+| **GCC** | 393.3 | 14,848 B | 20.32 | 22.67 | 4.37x baseline |
+| **MSVC** | 105.0 | 107,520 B | 30.77 | 30.99 | 6.62x baseline |
+| **TCC** | 10.5 | 2,560 B | 51.29 | 53.71 | 11.04x baseline |
 
 ### General Logic (6M iter)
 *Control flow folding, conditionals, and math blend*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 8.0 | 4,608 B | 16.98 | 17.29 | 1.09x baseline |
-| **GCC** | 157.9 | 14,848 B | 15.64 | 16.05 | **Fastest** |
-| **MSVC** | 105.9 | 108,032 B | 16.34 | 16.65 | 1.04x baseline |
-| **TCC** | 8.4 | 2,560 B | 38.71 | 39.16 | 2.48x baseline |
+| **Opus** | 9.5 | 4,608 B | 21.39 | 21.66 | 1.19x baseline |
+| **GCC** | 170.9 | 14,848 B | 18.03 | 18.40 | **Fastest** |
+| **MSVC** | 117.1 | 108,032 B | 18.91 | 19.08 | 1.05x baseline |
+| **TCC** | 10.1 | 2,560 B | 48.01 | 50.76 | 2.66x baseline |
 
 ### HFT Order Book (12M iter)
 *L2 order book matching, inventory skew, and risk checksums*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 8.2 | 7,168 B | 219.56 | 223.34 | 1.95x baseline |
-| **GCC** | 183.9 | 15,360 B | 112.40 | 112.71 | **Fastest** |
-| **MSVC** | 112.2 | 108,544 B | 120.39 | 120.52 | 1.07x baseline |
-| **TCC** | 8.7 | 4,096 B | 258.25 | 260.30 | 2.30x baseline |
+| **Opus** | 9.7 | 7,168 B | 427.19 | 430.17 | 3.23x baseline |
+| **GCC** | 210.0 | 15,360 B | 132.22 | 134.33 | **Fastest** |
+| **MSVC** | 134.7 | 108,544 B | 141.27 | 143.60 | 1.07x baseline |
+| **TCC** | 12.2 | 4,096 B | 402.91 | 404.93 | 3.05x baseline |
 
 ## Reproduction
 
