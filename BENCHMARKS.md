@@ -5,15 +5,25 @@
 - **CPU:** `AMD EPYC 7763 64-Core Processor`
 - **Toolchains:** Opus (native x64), MSVC (`/O2 /Ob2 /Oi /Ot /GS-`), GCC (`-O3 -fwrapv`), TCC
 
-## Master Showdown
+## Execution Runtime (lower is better)
 
-| Workload | Metric | Opus | MSVC | GCC | TCC | Winner |
-| :--- | :--- | ---: | ---: | ---: | ---: | :---: |
-| **Math Loop (80M iter)** | Compile<br>Size<br>Runtime | 25.6ms<br>4.5 KiB<br>**4.61ms** | 3725.5ms<br>105.0 KiB<br>32.06ms | 5175.8ms<br>14.5 KiB<br>5.87ms | 15.8ms<br>2.5 KiB<br>131.97ms | **Opus** |
-| **State Accumulation (50M iter)** | Compile<br>Size<br>Runtime | 9.5ms<br>4.5 KiB<br>**4.78ms** | 111.0ms<br>105.0 KiB<br>22.59ms | 108.1ms<br>14.5 KiB<br>6.14ms | 11.0ms<br>2.5 KiB<br>85.17ms | **Opus** |
-| **Branch Parity (40M iter)** | Compile<br>Size<br>Runtime | 9.5ms<br>4.5 KiB<br>**4.76ms** | 106.6ms<br>105.0 KiB<br>31.75ms | 382.9ms<br>14.5 KiB<br>21.47ms | 11.1ms<br>2.5 KiB<br>51.78ms | **Opus** |
-| **General Logic (6M iter)** | Compile<br>Size<br>Runtime | 10.2ms<br>4.5 KiB<br>22.38ms | 180.8ms<br>105.5 KiB<br>19.64ms | 184.6ms<br>14.5 KiB<br>**18.82ms** | 11.1ms<br>2.5 KiB<br>49.07ms | **GCC** |
-| **HFT Order Book (12M iter)** | Compile<br>Size<br>Runtime | 11.2ms<br>7.0 KiB<br>427.01ms | 135.2ms<br>106.0 KiB<br>141.63ms | 200.8ms<br>15.0 KiB<br>**132.78ms** | 11.8ms<br>4.0 KiB<br>400.69ms | **GCC** |
+| Workload | Opus | MSVC | GCC | TCC | Winner |
+| :--- | ---: | ---: | ---: | ---: | :---: |
+| **Math Loop (80M iter)** | **4.58 ms** | 31.24 ms | 5.74 ms | 132.14 ms | **Opus** |
+| **State Accumulation (50M iter)** | **4.48 ms** | 22.20 ms | 5.80 ms | 85.14 ms | **Opus** |
+| **Branch Parity (40M iter)** | **4.34 ms** | 33.00 ms | 20.90 ms | 52.17 ms | **Opus** |
+| **General Logic (6M iter)** | 22.35 ms | 20.38 ms | **18.09 ms** | 48.83 ms | **GCC** |
+| **HFT Order Book (12M iter)** | 428.71 ms | 142.12 ms | **133.23 ms** | 405.91 ms | **GCC** |
+
+## Compilation Speed & Binary Size
+
+| Workload | Opus | MSVC (`/O2`) | GCC (`-O3`) | TCC |
+| :--- | ---: | ---: | ---: | ---: |
+| **Math Loop (80M iter)** | 20.3 ms (4.5 KiB) | 3912.5 ms (105.0 KiB) | 3354.2 ms (14.5 KiB) | **14.9 ms (2.5 KiB)** |
+| **State Accumulation (50M iter)** | **10.1 ms (4.5 KiB)** | 113.1 ms (105.0 KiB) | 106.9 ms (14.5 KiB) | 11.1 ms (2.5 KiB) |
+| **Branch Parity (40M iter)** | **8.9 ms (4.5 KiB)** | 108.7 ms (105.0 KiB) | 388.5 ms (14.5 KiB) | 11.9 ms (2.5 KiB) |
+| **General Logic (6M iter)** | **10.9 ms (4.5 KiB)** | 127.3 ms (105.5 KiB) | 174.8 ms (14.5 KiB) | 11.9 ms (2.5 KiB) |
+| **HFT Order Book (12M iter)** | **11.5 ms (7.0 KiB)** | 134.9 ms (106.0 KiB) | 215.1 ms (15.0 KiB) | 13.6 ms (4.0 KiB) |
 
 ## Reproduction
 
@@ -21,16 +31,16 @@
 python benchmarks/run.py --iterations 5 --warmup 2
 ```
 
-## Multi-Architecture Silicon Matrix (Opus Native Runtime)
+## Multi-Architecture Silicon Matrix (Opus: Compile / Runtime)
 
 | Architecture & Host | Processor Model | Math (80M) | State (50M) | Branch (40M) | General (6M) | HFT (12M) |
-| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
-| **Windows AMD64** | `AMD EPYC 7763 64-Core Processor` | 4.61 ms | 4.78 ms | 4.76 ms | 22.38 ms | 427.01 ms |
-| **Windows AMD64** | `INTEL(R) XEON(R) PLATINUM 8573C` | 3.39 ms | 3.34 ms | 3.33 ms | 19.14 ms | 232.89 ms |
-| **Windows ARM64 (Prism x64)** | `Cobalt 100` | 14.67 ms | 14.78 ms | 13.91 ms | 30.94 ms | 578.97 ms |
-| **Linux x86_64** | `Intel(R) Xeon(R) 6973P-C` | 24.76 ms | 22.13 ms | 20.16 ms | 31.22 ms | 222.49 ms |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Windows AMD64** | `AMD EPYC 7763 64-Core Processor` | 20ms / **4.58ms** | 10ms / **4.48ms** | 9ms / **4.34ms** | 11ms / **22.35ms** | 11ms / **428.71ms** |
+| **Windows AMD64** | `INTEL(R) XEON(R) PLATINUM 8573C` | 16ms / **3.51ms** | 8ms / **3.54ms** | 7ms / **3.44ms** | 8ms / **18.81ms** | 9ms / **236.56ms** |
+| **Windows ARM64 (Prism x64)** | `Cobalt 100` | 100ms / **15.42ms** | 29ms / **14.17ms** | 31ms / **15.36ms** | 39ms / **32.18ms** | 34ms / **578.69ms** |
+| **Linux x86_64** | `AMD EPYC 9V45 96-Core Processor` | 23ms / **16.26ms** | 25ms / **17.31ms** | 24ms / **17.11ms** | 26ms / **28.10ms** | 25ms / **164.99ms** |
 
-Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepicc/Opus/actions/runs/42399973206) · Source: `7e41415d8a96`.
+Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepicc/Opus/actions/runs/42400872440) · Source: `e70c2110e6bd`.
 
 ## Reproduction
 
