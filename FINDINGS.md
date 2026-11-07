@@ -160,3 +160,48 @@ function int main() {
 1
 ```
 ---
+
+## Finding `d97d55f058d0` — RUNTIME_HANG
+- **Timestamp**: `2026-11-07 23:58:08Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_d97d55f058d0.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+function int helper_31470(int a_49605, int b_45432) {
+    if (((a_49605 + b_45432) ^ (-10 % 2)) <= ((a_49605 | 2) * a_49605)) {
+        print_int(-5);
+    }
+    switch b_45432 {
+        case 0: return 0;
+        case 1: return 1;
+        else: return 0;
+    }
+    print_int((a_49605 & -42));
+    print_int(a_49605);
+    let x_93631 = b_45432;
+    return ((x_93631 + b_45432) / 5);
+}
+
+function int main() {
+    let res = helper_31470(10, 20);
+    print_int(res);
+    print_int((-10 - -5));
+    for i_65760 in 1..5 {
+        i_65760 = -1;
+    }
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+-5
+0
+-5
+```
+---
