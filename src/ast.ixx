@@ -696,7 +696,7 @@ template<typename T>
 
 [[nodiscard]] inline ExprPtr make_binary(BinaryExpr::Op op, ExprPtr lhs, ExprPtr rhs, SourceSpan span = {}) {
     BinaryExpr bin;
-    bin.sb = op;
+    bin.op = op;
     bin.lhs = std::move(lhs);
     bin.rhs = std::move(rhs);
     return make_expr(std::move(bin), span);
