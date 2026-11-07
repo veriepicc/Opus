@@ -446,18 +446,18 @@ def make_codegen_stress_sample(rng: random.Random) -> str:
 
 def make_memory_stress_sample(rng: random.Random) -> str:
     """Stress tests view overlays on raw heap buffers."""
-    return f"""import mem
-
-view StateBlock {{
-    target: ptr @ 0;
-    count: int @ 8;
+    val = rng.choice(SAFE_INTEGER_LITERALS)
+    return f"""view StateBlock {{
+    count: int @ 0;
+    val: int @ 8;
 }}
 
 function int main() {{
-    let raw = mem.make_zero(16);
+    let raw = malloc(16);
     if raw == 0 {{ return 0; }}
     let st = raw as StateBlock;
     st.count = 100;
+    st.val = {val};
     free(raw);
     return 0;
 }}
