@@ -3141,7 +3141,7 @@ private:
                     return std::nullopt;
                 }
 
-                if (un.sb == ast::UnaryExpr::Op::Not) {
+                if (un.op == ast::UnaryExpr::Op::Not) {
                     if (auto* value = std::get_if<bool>(&operand->value)) {
                         return make_bool_literal(!*value);
                     }
@@ -3157,7 +3157,7 @@ private:
                     return std::nullopt;
                 }
 
-                switch (un.sb) {
+                switch (un.op) {
                     case ast::UnaryExpr::Op::Neg:
                         return make_i64_literal(-imm);
                     case ast::UnaryExpr::Op::BitNot:
@@ -3176,7 +3176,7 @@ private:
                     return std::nullopt;
                 }
 
-                if (bin.sb == ast::BinaryExpr::Op::And || bin.sb == ast::BinaryExpr::Op::Or) {
+                if (bin.op == ast::BinaryExpr::Op::And || bin.op == ast::BinaryExpr::Op::Or) {
                     bool left = false;
                     bool right = false;
                     if (auto* l = std::get_if<bool>(&lhs->value)) {
@@ -3199,7 +3199,7 @@ private:
                         }
                         right = imm != 0;
                     }
-                    return make_bool_literal(bin.sb == ast::BinaryExpr::Op::And ? (left && right) : (left || right));
+                    return make_bool_literal(bin.op == ast::BinaryExpr::Op::And ? (left && right) : (left || right));
                 }
 
                 std::int64_t left = 0;
@@ -3210,7 +3210,7 @@ private:
                 }
 
                 using Op = ast::BinaryExpr::Op;
-                switch (bin.sb) {
+                switch (bin.op) {
                     case Op::Add: return make_i64_literal(left + right);
                     case Op::Sub: return make_i64_literal(left - right);
                     case Op::Mul: return make_i64_literal(left * right);
@@ -4068,7 +4068,7 @@ private:
             [&](const ast::UnaryExpr& e) { return expr_has_only_local_side_effects(*e.operand, locals); },
             [&](const ast::BinaryExpr& e) {
                 using Op = ast::BinaryExpr::Op;
-                switch (e.sb) {
+                switch (e.op) {
                     case Op::Assign:
                     case Op::AddAssign:
                     case Op::SubAssign:
@@ -4184,7 +4184,7 @@ private:
             [&](const ast::UnaryExpr& e) { return expr_is_single_use_inline_safe(*e.operand); },
             [&](const ast::BinaryExpr& e) {
                 using Op = ast::BinaryExpr::Op;
-                switch (e.sb) {
+                switch (e.op) {
                     case Op::Assign:
                     case Op::AddAssign:
                     case Op::SubAssign:
@@ -4514,7 +4514,7 @@ private:
             [&](const ast::IdentExpr&) { return true; },
             [&](const ast::BinaryExpr& e) {
                 using Op = ast::BinaryExpr::Op;
-                switch (e.sb) {
+                switch (e.op) {
                     case Op::Add:
                     case Op::Sub:
                     case Op::Mul:
@@ -4538,7 +4538,7 @@ private:
             },
             [&](const ast::UnaryExpr& e) {
                 using Op = ast::UnaryExpr::Op;
-                switch (e.sb) {
+                switch (e.op) {
                     case Op::Neg:
                     case Op::Not:
                     case Op::BitNot:
@@ -4603,7 +4603,7 @@ private:
             [&](const ast::FieldExpr& e) { return can_generate_pure_expr(*e.base); },
             [&](const ast::UnaryExpr& e) {
                 using Op = ast::UnaryExpr::Op;
-                switch (e.sb) {
+                switch (e.op) {
                     case Op::Neg:
                     case Op::Not:
                     case Op::BitNot:
@@ -4614,7 +4614,7 @@ private:
             },
             [&](const ast::BinaryExpr& e) {
                 using Op = ast::BinaryExpr::Op;
-                switch (e.sb) {
+                switch (e.op) {
                     case Op::Add:
                     case Op::Sub:
                     case Op::Mul:
@@ -5200,14 +5200,14 @@ private:
                 return std::nullopt;
             },
             [&](const ast::UnaryExpr& e) -> std::optional<Type> {
-                if (e.sb == ast::UnaryExpr::Op::Not) {
+                if (e.op == ast::UnaryExpr::Op::Not) {
                     return Type::make_primitive(PrimitiveType::Bool);
                 }
                 return infer_expr_type(*e.operand);
             },
             [&](const ast::BinaryExpr& e) -> std::optional<Type> {
                 using Op = ast::BinaryExpr::Op;
-                switch (e.sb) {
+                switch (e.op) {
                     case Op::Eq: case Op::Ne:
                     case Op::Lt: case Op::Le:
                     case Op::Gt: case Op::Ge:
@@ -6542,7 +6542,7 @@ private:
     [[nodiscard]] std::optional<std::string> describe_owned_local_overwrite(const ast::BinaryExpr& bin) {
         using Op = ast::BinaryExpr::Op;
 
-        if (bin.sb != Op::Assign || !current_scope_ || !bin.lhs->is<ast::IdentExpr>()) {
+        if (bin.op != Op::Assign || !current_scope_ || !bin.lhs->is<ast::IdentExpr>()) {
             return std::nullopt;
         }
 
@@ -6625,7 +6625,7 @@ private:
         }
 
         info.sym = sym;
-        info.sb = rhs_bin->op;
+        info.op = rhs_bin->op;
         info.rhs = rhs_bin->rhs.get();
         info.has_rhs_imm = try_get_i64_immediate(*rhs_bin->rhs, info.rhs_imm);
         return true;
@@ -6660,7 +6660,7 @@ private:
         }
 
         info.sym = sym;
-        info.sb = rhs_bin->op;
+        info.op = rhs_bin->op;
         info.rhs = rhs_bin->rhs.get();
         info.has_rhs_imm = try_get_i64_immediate(*rhs_bin->rhs, info.rhs_imm);
         return true;
@@ -6720,7 +6720,7 @@ private:
 
         info.base_sym = base_sym;
         info.field_offset = field_offset;
-        info.sb = rhs_bin->op;
+        info.op = rhs_bin->op;
         info.rhs = rhs_bin->rhs.get();
         info.has_rhs_imm = try_get_i64_immediate(*rhs_bin->rhs, info.rhs_imm);
         return true;
@@ -6867,9 +6867,9 @@ private:
         }
 
         if (auto bound = lookup_bound_reg(update.sym)) {
-            if ((update.sb == ast::BinaryExpr::Op::Add || update.sb == ast::BinaryExpr::Op::Sub) &&
+            if ((update.op == ast::BinaryExpr::Op::Add || update.op == ast::BinaryExpr::Op::Sub) &&
                 update.has_rhs_imm) {
-                std::int64_t delta = update.sb == ast::BinaryExpr::Op::Add ? update.rhs_imm : -update.rhs_imm;
+                std::int64_t delta = update.op == ast::BinaryExpr::Op::Add ? update.rhs_imm : -update.rhs_imm;
                 emit_.add_smart(*bound, delta);
                 if (auto it = counter_inductions_.find(update.sym); it != counter_inductions_.end()) {
                     emit_.add_smart(it->second.term_reg, it->second.step * delta);
@@ -6879,14 +6879,14 @@ private:
             if (!update.rhs || !can_generate_pure_expr(*update.rhs)) {
                 return false;
             }
-            if (update.sb == ast::BinaryExpr::Op::Add) {
+            if (update.op == ast::BinaryExpr::Op::Add) {
                 if (auto it = accumulator_inductions_.find(update.sym); it != accumulator_inductions_.end()) {
                     emit_.add(*bound, it->second.term_reg);
                     return true;
                 }
             }
-            if (update.has_rhs_imm && supports_binary_rhs_imm(update.sb, update.rhs_imm)) {
-                return emit_binary_into_with_rhs_imm(*bound, update.sb, update.rhs_imm);
+            if (update.has_rhs_imm && supports_binary_rhs_imm(update.op, update.rhs_imm)) {
+                return emit_binary_into_with_rhs_imm(*bound, update.op, update.rhs_imm);
             }
             auto rhs_reg = pick_scratch_reg({*bound});
             if (!rhs_reg) {
@@ -6895,14 +6895,14 @@ private:
             if (!generate_pure_expr_into(*update.rhs, *rhs_reg)) {
                 return false;
             }
-            return emit_binary_into_with_rhs_reg(*bound, update.sb, *rhs_reg);
+            return emit_binary_into_with_rhs_reg(*bound, update.op, *rhs_reg);
         }
 
         if (update.has_rhs_imm &&
-            supports_binary_rhs_imm(update.sb, update.rhs_imm) &&
-            update.sb != ast::BinaryExpr::Op::Assign) {
+            supports_binary_rhs_imm(update.op, update.rhs_imm) &&
+            update.op != ast::BinaryExpr::Op::Assign) {
             emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, update.sym->stack_offset);
-            if (!emit_binary_into_with_rhs_imm(x64::Reg::RAX, update.sb, update.rhs_imm)) {
+            if (!emit_binary_into_with_rhs_imm(x64::Reg::RAX, update.op, update.rhs_imm)) {
                 return false;
             }
             emit_.mov_store(x64::Reg::RBP, update.sym->stack_offset, x64::Reg::RAX);
@@ -6913,7 +6913,7 @@ private:
             update.rhs_imm >= (std::numeric_limits<std::int32_t>::min)() &&
             update.rhs_imm <= (std::numeric_limits<std::int32_t>::max)()) {
             auto imm32 = static_cast<std::int32_t>(update.rhs_imm);
-            if (update.sb == ast::BinaryExpr::Op::Add) {
+            if (update.op == ast::BinaryExpr::Op::Add) {
                 if (imm32 == 1) emit_.inc_mem(x64::Reg::RBP, update.sym->stack_offset);
                 else if (imm32 == -1) emit_.dec_mem(x64::Reg::RBP, update.sym->stack_offset);
                 else emit_.add_mem_imm(x64::Reg::RBP, update.sym->stack_offset, imm32);
@@ -6937,7 +6937,7 @@ private:
             return false;
         }
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, update.sym->stack_offset);
-        if (!emit_binary_into_with_rhs_reg(x64::Reg::RAX, update.sb, *rhs_reg)) {
+        if (!emit_binary_into_with_rhs_reg(x64::Reg::RAX, update.op, *rhs_reg)) {
             return false;
         }
         emit_.mov_store(x64::Reg::RBP, update.sym->stack_offset, x64::Reg::RAX);
@@ -6953,7 +6953,7 @@ private:
         if (update.has_rhs_imm &&
             update.rhs_imm >= (std::numeric_limits<std::int32_t>::min)() &&
             update.rhs_imm <= (std::numeric_limits<std::int32_t>::max)()) {
-            auto delta = update.sb == ast::BinaryExpr::Op::Add ? update.rhs_imm : -update.rhs_imm;
+            auto delta = update.op == ast::BinaryExpr::Op::Add ? update.rhs_imm : -update.rhs_imm;
             auto delta32 = static_cast<std::int32_t>(delta);
             if (auto bound = lookup_bound_reg(update.base_sym)) {
                 if (delta32 == 1) emit_.inc_mem(*bound, update.field_offset);
@@ -6993,7 +6993,7 @@ private:
                         auto value_reg = pick_scratch_reg({*bound, *rhs_bound, x64::Reg::RDX});
                         if (value_reg) {
                             emit_.mov_load(*value_reg, *bound, update.field_offset);
-                            if (!emit_binary_into_with_rhs_reg(*value_reg, update.sb, *rhs_bound)) {
+                            if (!emit_binary_into_with_rhs_reg(*value_reg, update.op, *rhs_bound)) {
                                 return false;
                             }
                             emit_.mov_store(*bound, update.field_offset, *value_reg);
@@ -7014,7 +7014,7 @@ private:
                 return false;
             }
             emit_.mov_load(*value_reg, *bound, update.field_offset);
-            if (!emit_binary_into_with_rhs_reg(*value_reg, update.sb, *rhs_reg)) {
+            if (!emit_binary_into_with_rhs_reg(*value_reg, update.op, *rhs_reg)) {
                 return false;
             }
             emit_.mov_store(*bound, update.field_offset, *value_reg);
@@ -7033,7 +7033,7 @@ private:
                 return false;
             }
             emit_.mov_load(*value_reg, x64::Reg::RBP, update.base_sym->stack_offset + update.field_offset);
-            if (!emit_binary_into_with_rhs_reg(*value_reg, update.sb, *rhs_reg)) {
+            if (!emit_binary_into_with_rhs_reg(*value_reg, update.op, *rhs_reg)) {
                 return false;
             }
             emit_.mov_store(x64::Reg::RBP, update.base_sym->stack_offset + update.field_offset, *value_reg);
@@ -7053,7 +7053,7 @@ private:
             return false;
         }
         emit_.mov_load(*value_reg, x64::Reg::RAX, update.field_offset);
-        if (!emit_binary_into_with_rhs_reg(*value_reg, update.sb, *rhs_reg)) {
+        if (!emit_binary_into_with_rhs_reg(*value_reg, update.op, *rhs_reg)) {
             return false;
         }
         emit_.mov_store(x64::Reg::RAX, update.field_offset, *value_reg);
@@ -7105,7 +7105,7 @@ private:
             }
 
             if (update.sym == accum_sym) {
-                if (update.sb != ast::BinaryExpr::Op::Add || update.has_rhs_imm || !update.rhs_sym ||
+                if (update.op != ast::BinaryExpr::Op::Add || update.has_rhs_imm || !update.rhs_sym ||
                     update.rhs_sym == plan.counter_sym || update.rhs_sym == accum_sym ||
                     add_positions.contains(update.rhs_sym)) {
                     return false;
@@ -7118,7 +7118,7 @@ private:
                 return false;
             }
 
-            std::int64_t delta = update.sb == ast::BinaryExpr::Op::Add ? update.rhs_imm : -update.rhs_imm;
+            std::int64_t delta = update.op == ast::BinaryExpr::Op::Add ? update.rhs_imm : -update.rhs_imm;
             step_infos[update.sym] = StepInfo{index, delta};
             min_step_pos = std::min(min_step_pos, index);
         }
@@ -7201,7 +7201,7 @@ private:
             counter_update.sym != counter_sym || !counter_update.has_rhs_imm) {
             return false;
         }
-        std::int64_t counter_delta = counter_update.sb == Op::Add ? counter_update.rhs_imm : -counter_update.rhs_imm;
+        std::int64_t counter_delta = counter_update.op == Op::Add ? counter_update.rhs_imm : -counter_update.rhs_imm;
         if (counter_delta != 1) {
             return false;
         }
@@ -7239,7 +7239,7 @@ private:
                 !analyze_self_update_expr(*block[1]->as<ast::ExprStmt>().expr, stream_update)) {
                 return false;
             }
-            if (add_update.sym != accum_sym || add_update.sb != Op::Add || !add_update.rhs || add_update.has_rhs_imm) {
+            if (add_update.sym != accum_sym || add_update.op != Op::Add || !add_update.rhs || add_update.has_rhs_imm) {
                 return false;
             }
             auto* rhs_ident = std::get_if<ast::IdentExpr>(&add_update.rhs->kind);
@@ -7253,7 +7253,7 @@ private:
             if (stream_sym == accum_sym || stream_sym == counter_sym) {
                 return false;
             }
-            stream_step = stream_update.sb == Op::Add ? stream_update.rhs_imm : -stream_update.rhs_imm;
+            stream_step = stream_update.op == Op::Add ? stream_update.rhs_imm : -stream_update.rhs_imm;
             return true;
         };
 
@@ -7396,7 +7396,7 @@ private:
                     if (!update.has_rhs_imm) {
                         return false;
                     }
-                    std::int64_t delta = update.sb == Op::Add ? update.rhs_imm : -update.rhs_imm;
+                    std::int64_t delta = update.op == Op::Add ? update.rhs_imm : -update.rhs_imm;
                     if (delta != 1) {
                         return false;
                     }
@@ -7483,18 +7483,18 @@ private:
 
             WhileMultiStatePlan::Update plan_update{
                 .sym = update.sym,
-                .op = update.sb,
+                .op = update.op,
             };
 
             if (update.sym == counter_sym) {
                 if (!update.has_rhs_imm) {
                     return false;
                 }
-                std::int64_t delta = update.sb == Op::Add ? update.rhs_imm : -update.rhs_imm;
+                std::int64_t delta = update.op == Op::Add ? update.rhs_imm : -update.rhs_imm;
                 if (delta != 1) {
                     return false;
                 }
-                plan_update.sb = Op::Add;
+                plan_update.op = Op::Add;
                 plan_update.has_rhs_imm = true;
                 plan_update.rhs_imm = 1;
                 saw_counter_update = true;
@@ -7634,7 +7634,7 @@ private:
         }
 
         if (update.has_rhs_imm) {
-            std::int64_t delta = update.sb == ast::BinaryExpr::Op::Add ? update.rhs_imm : -update.rhs_imm;
+            std::int64_t delta = update.op == ast::BinaryExpr::Op::Add ? update.rhs_imm : -update.rhs_imm;
             emit_.add_smart(*dst, delta);
             return true;
         }
@@ -7644,7 +7644,7 @@ private:
             return false;
         }
 
-        return emit_binary_into_with_rhs_reg(*dst, update.sb, *rhs);
+        return emit_binary_into_with_rhs_reg(*dst, update.op, *rhs);
     }
 
     [[nodiscard]] bool generate_while_multistate_registerized(const WhileMultiStatePlan& plan) {
@@ -7932,7 +7932,7 @@ private:
             if (analyze_self_update_expr(expr, counter_update) &&
                 counter_update.sym == counter_sym &&
                 counter_update.has_rhs_imm &&
-                counter_update.sb == Op::Add &&
+                counter_update.op == Op::Add &&
                 counter_update.rhs_imm == 1) {
                 return true;
             }
@@ -8066,7 +8066,7 @@ private:
                     emit_.vmovdqa32_zmm(*zdst, *zlhs);
                 }
 
-                switch (step.sb) {
+                switch (step.op) {
                     case WhileSimdKernelPlan::Op::Add:
                         emit_.vpaddd_zmm(*zdst, *zdst, *zrhs);
                         break;
@@ -8199,7 +8199,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 if (!update.has_rhs_imm) {
                     return false;
                 }
-                std::int64_t delta = update.sb == Op::Add ? update.rhs_imm : -update.rhs_imm;
+                std::int64_t delta = update.op == Op::Add ? update.rhs_imm : -update.rhs_imm;
                 if (delta != 1) {
                     return false;
                 }
@@ -8216,7 +8216,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             }
             acc_sym = update.sym;
 
-            if (update.sb == Op::Add) {
+            if (update.op == Op::Add) {
                 std::int64_t step = 0;
                 std::int64_t disp64 = 0;
                 if (try_match_counter_linear_expr(*update.rhs, counter_ident->name, inline_lets, step, disp64) &&
@@ -10625,7 +10625,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     auto rv = get_double(*rhs_lit);
                     if (lv && rv) {
                         std::optional<double> dr;
-                        switch (bin.sb) {
+                        switch (bin.op) {
                             case Op::Add: dr = *lv + *rv; break;
                             case Op::Sub: dr = *lv - *rv; break;
                             case Op::Mul: dr = *lv * *rv; break;
@@ -10645,7 +10645,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                         std::int64_t result = 0;
                         bool folded = false;
                         const bool is_unsigned = binary_type_is_unsigned();
-                        switch (bin.sb) {
+                        switch (bin.op) {
                             case Op::Add: result = *lhs_val + *rhs_val; folded = true; break;
                             case Op::Sub: result = *lhs_val - *rhs_val; folded = true; break;
                             case Op::Mul: result = *lhs_val * *rhs_val; folded = true; break;
@@ -10706,17 +10706,17 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         }
 
         // Handle assignment and compound assignment specially
-        if (bin.sb == Op::Assign) {
+        if (bin.op == Op::Assign) {
             return generate_assignment(bin);
         }
-        if (bin.sb == Op::AddAssign || bin.sb == Op::SubAssign || 
-            bin.sb == Op::MulAssign || bin.sb == Op::DivAssign ||
-            bin.sb == Op::ModAssign) {
+        if (bin.op == Op::AddAssign || bin.op == Op::SubAssign || 
+            bin.op == Op::MulAssign || bin.op == Op::DivAssign ||
+            bin.op == Op::ModAssign) {
             return generate_compound_assign(bin);
         }
 
         // short-circuit && - dont eval rhs if lhs is false
-        if (bin.sb == Op::And) {
+        if (bin.op == Op::And) {
             if (!generate_expr(*bin.lhs)) return false;
             emit_.test(x64::Reg::RAX, x64::Reg::RAX);
             std::size_t skip_rhs = emit_.jcc_rel32(x64::Emitter::CC_E); // lhs false -> skip
@@ -10732,7 +10732,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         }
 
         // short-circuit || - dont eval rhs if lhs is true
-        if (bin.sb == Op::Or) {
+        if (bin.op == Op::Or) {
             if (!generate_expr(*bin.lhs)) return false;
             emit_.test(x64::Reg::RAX, x64::Reg::RAX);
             std::size_t skip_rhs = emit_.jcc_rel32(x64::Emitter::CC_NE); // lhs true -> skip
@@ -10747,9 +10747,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         }
 
         std::int64_t rhs_imm = 0;
-        if (try_get_i64_immediate(*bin.rhs, rhs_imm) && supports_binary_rhs_imm(bin.sb, rhs_imm)) {
+        if (try_get_i64_immediate(*bin.rhs, rhs_imm) && supports_binary_rhs_imm(bin.op, rhs_imm)) {
             if (!generate_expr(*bin.lhs)) return false;
-            return emit_binary_with_rhs_imm(bin.sb, rhs_imm);
+            return emit_binary_with_rhs_imm(bin.op, rhs_imm);
         }
 
         if (bin.rhs->is<ast::IdentExpr>()) {
@@ -10775,7 +10775,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             if (auto rhs_bound = resolve_bound(*bin.rhs)) {
                 if (*rhs_bound != x64::Reg::RAX) {
                     if (!generate_expr(*bin.lhs)) return false;
-                    return emit_binary_with_rhs_reg(bin.sb, *rhs_bound);
+                    return emit_binary_with_rhs_reg(bin.op, *rhs_bound);
                 }
             }
 
@@ -10783,7 +10783,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             auto rhs_reg = pick_scratch_reg({x64::Reg::RAX});
             if (!rhs_reg) return false;
             if (!generate_ident_into(bin.rhs->as<ast::IdentExpr>(), *rhs_reg)) return false;
-            return emit_binary_with_rhs_reg(bin.sb, *rhs_reg);
+            return emit_binary_with_rhs_reg(bin.op, *rhs_reg);
         }
 
         if (bin.rhs->is<ast::FieldExpr>()) {
@@ -10791,7 +10791,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             std::int32_t stack_field_off = 0;
             if (try_stack_struct_field_offset(field, stack_field_off)) {
                 if (!generate_expr(*bin.lhs)) return false;
-                if (emit_binary_with_rhs_mem(bin.sb, x64::Reg::RBP, stack_field_off)) {
+                if (emit_binary_with_rhs_mem(bin.op, x64::Reg::RBP, stack_field_off)) {
                     return true;
                 }
             }
@@ -10808,7 +10808,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                                                 return false;
                                             }
                                             if (!generate_expr(*bin.lhs)) return false;
-                                            if (emit_binary_with_rhs_mem(bin.sb, *bound, field_offset)) {
+                                            if (emit_binary_with_rhs_mem(bin.op, *bound, field_offset)) {
                                                 return true;
                                             }
                                         }
@@ -10835,7 +10835,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.mov(*rhs_reg, x64::Reg::RAX);
         emit_.pop(x64::Reg::RAX);
 
-        return emit_binary_with_rhs_reg(bin.sb, *rhs_reg);
+        return emit_binary_with_rhs_reg(bin.op, *rhs_reg);
     }
 
     [[nodiscard]] bool generate_assignment(const ast::BinaryExpr& bin) {
@@ -11150,7 +11150,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 emit_.pop(x64::Reg::R10);
                 emit_.pop(*rhs_reg);
 
-                switch (bin.sb) {
+                switch (bin.op) {
                     case Op::AddAssign: emit_.add(x64::Reg::RAX, *rhs_reg); break;
                     case Op::SubAssign: emit_.sub(x64::Reg::RAX, *rhs_reg); break;
                     case Op::MulAssign: emit_.imul(x64::Reg::RAX, *rhs_reg); break;
@@ -11193,7 +11193,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             emit_.pop(*rhs_reg);
             
             // apply op
-            switch (bin.sb) {
+            switch (bin.op) {
                 case Op::AddAssign: emit_.add(x64::Reg::RAX, *rhs_reg); break;
                 case Op::SubAssign: emit_.sub(x64::Reg::RAX, *rhs_reg); break;
                 case Op::MulAssign: emit_.imul(x64::Reg::RAX, *rhs_reg); break;
@@ -11238,9 +11238,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         std::int64_t rhs_imm = 0;
         if (sym->type.size_bytes() >= 8 &&
-            (bin.sb == Op::AddAssign || bin.sb == Op::SubAssign) &&
+            (bin.op == Op::AddAssign || bin.op == Op::SubAssign) &&
             try_get_i64_immediate(*bin.rhs, rhs_imm)) {
-            std::int64_t delta = bin.sb == Op::AddAssign ? rhs_imm : -rhs_imm;
+            std::int64_t delta = bin.op == Op::AddAssign ? rhs_imm : -rhs_imm;
             if (auto bound = lookup_bound_reg(sym)) {
                 emit_.add_smart(*bound, delta);
                 emit_.mov(x64::Reg::RAX, *bound);
@@ -11278,7 +11278,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         }
         
         // Apply operation
-            switch (bin.sb) {
+            switch (bin.op) {
                 case Op::AddAssign:
                     emit_.add(x64::Reg::RAX, x64::Reg::RCX);
                     break;
@@ -11323,12 +11323,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         using Op = ast::UnaryExpr::Op;
 
         // Addr-of needs the raw operand, not its loaded value.
-        if (un.sb != Op::AddrOf && un.sb != Op::AddrOfMut) {
+        if (un.op != Op::AddrOf && un.op != Op::AddrOfMut) {
             // Generate operand -> RAX
             if (!generate_expr(*un.operand)) return false;
         }
 
-        switch (un.sb) {
+        switch (un.op) {
             case Op::Neg:
                 emit_.neg(x64::Reg::RAX);
                 break;
@@ -11377,7 +11377,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     return false;
                     }
                     emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
-                    if (un.sb == Op::PreInc) {
+                    if (un.op == Op::PreInc) {
                         emit_.add_smart(x64::Reg::RAX, 1);
                     } else {
                         emit_.add_smart(x64::Reg::RAX, -1);
@@ -11406,7 +11406,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     // Save to temp register
                     emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
                     // Increment/decrement
-                    if (un.sb == Op::PostInc) {
+                    if (un.op == Op::PostInc) {
                         emit_.add_smart(x64::Reg::RCX, 1);
                     } else {
                         emit_.add_smart(x64::Reg::RCX, -1);
@@ -16411,7 +16411,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     return self(*e.base, target, shadowed, self);
                 },
                 [&](const ast::UnaryExpr& e) -> bool {
-                    if (e.sb == ast::UnaryExpr::Op::Deref) return false;
+                    if (e.op == ast::UnaryExpr::Op::Deref) return false;
                     return self(*e.operand, target, shadowed, self);
                 },
                 [&](const auto&) -> bool {
@@ -16430,12 +16430,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             return std::visit(overloaded{
                 [&](const ast::BinaryExpr& e) -> bool {
                     bool is_assign =
-                        e.sb == BinOp::Assign ||
-                        e.sb == BinOp::AddAssign ||
-                        e.sb == BinOp::SubAssign ||
-                        e.sb == BinOp::MulAssign ||
-                        e.sb == BinOp::DivAssign ||
-                        e.sb == BinOp::ModAssign;
+                        e.op == BinOp::Assign ||
+                        e.op == BinOp::AddAssign ||
+                        e.op == BinOp::SubAssign ||
+                        e.op == BinOp::MulAssign ||
+                        e.op == BinOp::DivAssign ||
+                        e.op == BinOp::ModAssign;
                     if (is_assign && root_targets_ident(*e.lhs, target, shadowed, root_targets_ident)) {
                         return true;
                     }
@@ -16444,8 +16444,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 },
                 [&](const ast::UnaryExpr& e) -> bool {
                     bool is_mutating =
-                        e.sb == UnOp::PreInc || e.sb == UnOp::PreDec ||
-                        e.sb == UnOp::PostInc || e.sb == UnOp::PostDec;
+                        e.op == UnOp::PreInc || e.op == UnOp::PreDec ||
+                        e.op == UnOp::PostInc || e.op == UnOp::PostDec;
                     if (is_mutating && root_targets_ident(*e.operand, target, shadowed, root_targets_ident)) {
                         return true;
                     }

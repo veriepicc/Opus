@@ -144,7 +144,7 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
     auto dir = std::filesystem::path(normalized_compiler).parent_path();
     for (int i = 0; i < 8 && !dir.empty(); ++i) {
         auto candidate = dir / "stdlib";
-        if (std::filesystem::exists(candidate / "mem.sb") || std::filesystem::exists(candidate / "mem.sb")) {
+        if (std::filesystem::exists(candidate / "mem.sb") || std::filesystem::exists(candidate / "mem.op")) {
             push_unique_path(paths, candidate);
         }
         auto parent = dir.parent_path();
