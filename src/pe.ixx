@@ -178,7 +178,7 @@ public:
 
     // debug mode: full crash handler + repl slot + bp table
     // release mode: tiny crash handler stub, no repl, no bp table
-    static constexpr std::size_t CRASH_HANDLER_SIZE_DEBUG = 0x1200;
+    static constexpr std::size_t CRASH_HANDLER_SIZE_DEBUG = 0x1300;
     static constexpr std::size_t CRASH_HANDLER_SIZE_RELEASE = 0x100;  // bumped from 0x80 to avoid overflow with healing stubs
     static constexpr std::size_t REPL_HANDLER_SIZE_DEBUG = 0x800;
 
@@ -1427,6 +1427,19 @@ private:
                               std::size_t crash_handler_off, std::size_t crash_handler_size,
                               ast::HealingMode healing_mode = ast::HealingMode::Off) {
         std::size_t handler_start = code.size();
+        auto emit_continue_search = [&] {
+            emit8(code, 0x41); emit8(code, 0x5F);                     // pop r15
+            emit8(code, 0x41); emit8(code, 0x5E);                     // pop r14
+            emit8(code, 0x41); emit8(code, 0x5D);                     // pop r13
+            emit8(code, 0x41); emit8(code, 0x5C);                     // pop r12
+            emit8(code, 0x5F);                                        // pop rdi
+            emit8(code, 0x5E);                                        // pop rsi
+            emit8(code, 0x5B);                                        // pop rbx
+            emit8(code, 0x48); emit8(code, 0x81); emit8(code, 0xC4); emit32(code, 0xC0);  // add rsp, 0xC0
+            emit8(code, 0x5D);                                        // pop rbp
+            emit8(code, 0x31); emit8(code, 0xC0);                     // xor eax, eax
+            emit8(code, 0xC3);                                        // ret
+        };
 
         // prologue - save all callee-saved regs we use (including r15 for EXCEPTION_RECORD*)
         emit8(code, 0x55);                                     // push rbp
@@ -1469,21 +1482,33 @@ private:
         emit8(code, 0x73);                                                      // jae .not_reentrant (above handler end)
         std::size_t jae_not_reentrant = code.size(); emit8(code, 0x00);
         // crash is inside our handler - return EXCEPTION_CONTINUE_SEARCH (0)
-        emit8(code, 0x41); emit8(code, 0x5F);                     // pop r15
-        emit8(code, 0x41); emit8(code, 0x5E);                     // pop r14
-        emit8(code, 0x41); emit8(code, 0x5D);                     // pop r13
-        emit8(code, 0x41); emit8(code, 0x5C);                     // pop r12
-        emit8(code, 0x5F);                                      // pop rdi
-        emit8(code, 0x5E);                                      // pop rsi
-        emit8(code, 0x5B);                                      // pop rbx
-        emit8(code, 0x48); emit8(code, 0x81); emit8(code, 0xC4); emit32(code, 0xC0);  // add rsp, 0xC0
-        emit8(code, 0x5D);                                      // pop rbp
-        emit8(code, 0x31); emit8(code, 0xC0);                     // xor eax, eax (return 0)
-        emit8(code, 0xC3);                                      // ret
+        emit_continue_search();
         // .not_reentrant:
         std::size_t not_reentrant = code.size();
         patch8_to(code, jb_not_reentrant, not_reentrant, "handler reentrant low bound");
         patch8_to(code, jae_not_reentrant, not_reentrant, "handler reentrant high bound");
+
+        // vectored exception handlers are process-wide, so ignore faults outside opus user code
+        emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x45); emit8(code, 0xF0);  // mov rax, [rbp-0x10] (crash RIP)
+        emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xD9);                    // mov rcx, rbx (base)
+        emit8(code, 0x48); emit8(code, 0x81); emit8(code, 0xC1);
+        emit32(code, static_cast<std::uint32_t>(text_rva + user_code_offset));       // add rcx, user code start
+        emit8(code, 0x48); emit8(code, 0x39); emit8(code, 0xC8);                    // cmp rax, rcx
+        emit8(code, 0x72);                                                          // jb .outside_user_code
+        std::size_t jb_outside_user_code = code.size(); emit8(code, 0x00);
+        emit8(code, 0x48); emit8(code, 0x81); emit8(code, 0xC1);
+        emit32(code, static_cast<std::uint32_t>(user_code_size));                    // add rcx, user code size
+        emit8(code, 0x48); emit8(code, 0x39); emit8(code, 0xC8);                    // cmp rax, rcx
+        emit8(code, 0x73);                                                          // jae .outside_user_code
+        std::size_t jae_outside_user_code = code.size(); emit8(code, 0x00);
+        emit8(code, 0xEB); emit8(code, 0x00);                                       // jmp .inside_user_code
+        std::size_t jmp_inside_user_code = code.size() - 1;
+        std::size_t outside_user_code = code.size();
+        patch8_to(code, jb_outside_user_code, outside_user_code, "handler outside user code low bound");
+        patch8_to(code, jae_outside_user_code, outside_user_code, "handler outside user code high bound");
+        emit_continue_search();
+        std::size_t inside_user_code = code.size();
+        patch8_to(code, jmp_inside_user_code, inside_user_code, "handler inside user code");
 
         std::size_t jne_silent_freeze = 0;
         if (healing_mode == ast::HealingMode::Freeze) {
@@ -1783,17 +1808,7 @@ private:
         {
             // Unknown/non-hardware exceptions often belong to the host process
             // (for example Microsoft C++ EH 0xE06D7363). Let normal handlers see them.
-            emit8(code, 0x41); emit8(code, 0x5F);                     // pop r15
-            emit8(code, 0x41); emit8(code, 0x5E);                     // pop r14
-            emit8(code, 0x41); emit8(code, 0x5D);                     // pop r13
-            emit8(code, 0x41); emit8(code, 0x5C);                     // pop r12
-            emit8(code, 0x5F);                                        // pop rdi
-            emit8(code, 0x5E);                                        // pop rsi
-            emit8(code, 0x5B);                                        // pop rbx
-            emit8(code, 0x48); emit8(code, 0x81); emit8(code, 0xC4); emit32(code, 0xC0);  // add rsp, 0xC0
-            emit8(code, 0x5D);                                        // pop rbp
-            emit8(code, 0x31); emit8(code, 0xC0);                     // xor eax, eax (EXCEPTION_CONTINUE_SEARCH)
-            emit8(code, 0xC3);                                        // ret
+            emit_continue_search();
         }
 
         // ---- .after_exception_type: all paths converge here ----

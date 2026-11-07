@@ -12124,22 +12124,23 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         std::size_t nargs = call.args.size();
         std::size_t reg_args = nargs < 4 ? nargs : 4;
 
+        if (!generate_expr(*call.callee)) return false;
+        emit_.push(x64::Reg::RAX);
+
         for (std::size_t i = 0; i < nargs; ++i) {
             if (!generate_call_arg_for_push(*call.args[i], *fn_type.params[i], i)) {
                 return false;
             }
         }
 
-        if (!generate_callee_after_pushed_args(*call.callee, nargs)) return false;
-        emit_.push(x64::Reg::RAX);
-        emit_.pop(x64::Reg::R11);
-
+        std::size_t spill_slots = nargs + 1;
         std::size_t alloc = 0;
         std::int64_t cleanup = 0;
-        if (!checked_call_frame("function pointer call", nargs, alloc, cleanup)) {
+        if (!checked_call_frame("function pointer call", spill_slots, alloc, cleanup)) {
             return false;
         }
         emit_.sub_imm(x64::Reg::RSP, static_cast<std::int32_t>(alloc));
+        emit_.mov_load(x64::Reg::R11, x64::Reg::RSP, static_cast<std::int32_t>(alloc + nargs * 8));
 
         for (std::size_t i = 0; i < reg_args; ++i) {
             std::int32_t src_off = 0;
