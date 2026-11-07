@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+
+# VS and tooling cache
+.vs/
+*.vcxproj.user
+*.suo
+
+# Benchmark and test scratch
+benchmarks/.work/
+tests/**/*.exe
+tests/*.exe
+*.csv
+.DS_Store
+__pycache__/
+*.pyc

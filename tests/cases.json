@@ -1,0 +1,1768 @@
+[
+  {
+    "kind": "compile",
+    "Name": "test_5plus_args",
+    "File": "tests/test_5plus_args.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_break_continue",
+    "File": "tests/test_break_continue.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_chained_fields",
+    "File": "tests/test_chained_fields.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_compound_fields",
+    "File": "tests/test_compound_fields.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_div_mod",
+    "File": "tests/test_div_mod.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_dll_arrays",
+    "File": "tests/test_dll_arrays.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_dll_strings",
+    "File": "tests/test_dll_strings.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_direct_call_mixed_float_abi",
+    "File": "tests/test_direct_call_mixed_float_abi.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_else_if",
+    "File": "tests/test_else_if.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_enum_values",
+    "File": "tests/test_enum_values.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_english_writer_ergonomics",
+    "File": "tests/test_english_writer_ergonomics.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_field_decl_styles",
+    "File": "tests/test_field_decl_styles.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_float_suffix_f32",
+    "File": "tests/test_float_suffix_f32.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_friendly_type_aliases",
+    "File": "tests/test_friendly_type_aliases.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_globals_simple",
+    "File": "tests/test_globals_simple.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_globals",
+    "File": "tests/test_globals.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_import_alias_fn_value",
+    "File": "tests/test_import_alias_fn_value.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_import_basic",
+    "File": "tests/test_import_basic.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_import_keyword_alias",
+    "File": "tests/test_import_keyword_alias.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_auto_stdlib_ptr_aliases",
+    "File": "tests/test_auto_stdlib_ptr_aliases.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_array_bounds_semantics",
+    "File": "tests/test_array_bounds_semantics.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_await_precedence",
+    "File": "tests/test_await_precedence.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_await_spawn_inline",
+    "File": "tests/test_await_spawn_inline.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_async_spawn_alias",
+    "File": "tests/test_async_spawn_alias.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_index_expr_array",
+    "File": "tests/test_index_expr_array.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_json_file_parse",
+    "File": "tests/test_json_file_parse.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_json_full",
+    "File": "tests/test_json_full.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_method_args",
+    "File": "tests/test_method_args.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_multi_return",
+    "File": "tests/test_multi_return.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_nested_exprs",
+    "File": "tests/test_nested_exprs.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_owned_overwrite_after_free",
+    "File": "tests/test_owned_overwrite_after_free.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_writer_ergonomics",
+    "File": "tests/test_writer_ergonomics.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_print_int_decimal",
+    "File": "tests/test_print_int_decimal.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_immutable_struct_field_write",
+    "File": "tests/test_immutable_struct_field_write.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_keyword_names",
+    "File": "tests/test_keyword_names.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_immutable_let_reg_pressure",
+    "File": "tests/test_immutable_let_reg_pressure.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_mixed_syntax_decls",
+    "File": "tests/test_mixed_syntax_decls.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_parallel_capture_shadow",
+    "File": "tests/test_parallel_capture_shadow.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_reg_preserve",
+    "File": "tests/test_reg_preserve.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_short_circuit",
+    "File": "tests/test_short_circuit.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_simd_avx2",
+    "File": "tests/test_simd_avx2.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_simd_avx512",
+    "File": "tests/test_simd_avx512.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_simd_avx512_loop_kernel",
+    "File": "tests/test_simd_avx512_loop_kernel.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_stdlib_expanded",
+    "File": "tests/test_stdlib_expanded.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_str_arg_helper",
+    "File": "tests/test_str_arg_helper.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_str_return_branch",
+    "File": "tests/test_str_return_branch.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_struct_ptr_params",
+    "File": "tests/test_struct_ptr_params.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_spawn_qualified_call",
+    "File": "tests/test_spawn_qualified_call.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_using_fn_alias",
+    "File": "tests/test_using_fn_alias.op"
+  },
+  {
+    "kind": "compile",
+    "Name": "test_unary_complex",
+    "File": "tests/test_unary_complex.op"
+  },
+  {
+    "kind": "reject",
+    "Name": "test_import_lib",
+    "File": "tests/test_import_lib.op",
+    "ExpectedErrorContains": "no 'main' function found"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_unterminated_block_comment",
+    "File": "tests/invalid_unterminated_block_comment.op"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_unknown_string_escape",
+    "File": "tests/invalid_unknown_string_escape.op"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_hex_string_odd_nibbles",
+    "File": "tests/invalid_hex_string_odd_nibbles.op"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_unterminated_string_escape",
+    "File": "tests/invalid_unterminated_string_escape.op"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_unterminated_char_escape",
+    "File": "tests/invalid_unterminated_char_escape.op"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_block",
+    "File": "tests/invalid_english_block.op"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_struct_literal_eof",
+    "File": "tests/invalid_struct_literal_eof.op"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_spawn_void",
+    "File": "tests/invalid_spawn_void.op",
+    "ExpectedErrorContains": "must return an integer-compatible value"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_spawn_arg_count",
+    "File": "tests/invalid_spawn_arg_count.op",
+    "ExpectedErrorContains": "requires 2 arguments, got 1"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_spawn_non_call",
+    "File": "tests/invalid_spawn_non_call.op",
+    "ExpectedErrorContains": "spawn requires a function call like 'spawn worker()'"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_owned_overwrite",
+    "File": "tests/invalid_owned_overwrite.op",
+    "ExpectedErrorContains": "overwrites a live owned value"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_typo_value",
+    "File": "tests/invalid_typo_value.op",
+    "ExpectedErrorContains": "undefined function: countr"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_immutable_rebind",
+    "File": "tests/invalid_immutable_rebind.op",
+    "ExpectedErrorContains": "cannot rebind immutable variable: value"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_unknown_qualified_symbol",
+    "File": "tests/invalid_unknown_qualified_symbol.op",
+    "ExpectedErrorContains": "import namespace 'text' has no exported member 'text_lne' (did you mean 'text_len'?)"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_unknown_struct_suggestion",
+    "File": "tests/invalid_unknown_struct_suggestion.op",
+    "ExpectedErrorContains": "unknown struct/class: Countr (did you mean 'Counter'?)"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_parallel_capture_mutation",
+    "File": "tests/invalid_parallel_capture_mutation.op",
+    "ExpectedErrorContains": "parallel for cannot mutate captured variable 'shared'"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_parallel_global_mutation",
+    "File": "tests/invalid_parallel_global_mutation.op",
+    "ExpectedErrorContains": "parallel for cannot mutate global 'global_counter' directly"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_discarded_owned_string",
+    "File": "tests/invalid_discarded_owned_string.op",
+    "ExpectedErrorContains": "discarded result from 'fmt_pair' returns 'str'"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_discarded_malloc",
+    "File": "tests/invalid_discarded_malloc.op",
+    "ExpectedErrorContains": "discarded result from 'malloc' allocates owned memory"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_if_expression",
+    "File": "tests/invalid_if_expression.op",
+    "ExpectedErrorContains": "if expressions are not supported yet"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_block_expression",
+    "File": "tests/invalid_block_expression.op",
+    "ExpectedErrorContains": "block expressions are not supported yet"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_top_level_decl_typo",
+    "File": "tests/invalid_top_level_decl_typo.op",
+    "ExpectedErrorContains": "did you mean 'function'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_decl_typo",
+    "File": "tests/invalid_english_decl_typo.op",
+    "ExpectedErrorContains": "did you mean 'define'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_return_stmt_typo",
+    "File": "tests/invalid_return_stmt_typo.op",
+    "ExpectedErrorContains": "did you mean 'return'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_create_stmt_typo",
+    "File": "tests/invalid_english_create_stmt_typo.op",
+    "ExpectedErrorContains": "did you mean 'create'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_class_method_keyword_typo",
+    "File": "tests/invalid_class_method_keyword_typo.op",
+    "ExpectedErrorContains": "did you mean 'function'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_then_typo",
+    "File": "tests/invalid_english_then_typo.op",
+    "ExpectedErrorContains": "did you mean 'then'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_do_typo",
+    "File": "tests/invalid_english_do_typo.op",
+    "ExpectedErrorContains": "did you mean 'do'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_as_typo",
+    "File": "tests/invalid_english_as_typo.op",
+    "ExpectedErrorContains": "did you mean 'as'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_to_typo",
+    "File": "tests/invalid_english_to_typo.op",
+    "ExpectedErrorContains": "did you mean 'to'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_with_typo",
+    "File": "tests/invalid_english_with_typo.op",
+    "ExpectedErrorContains": "did you mean 'with'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_returning_typo",
+    "File": "tests/invalid_english_returning_typo.op",
+    "ExpectedErrorContains": "did you mean 'returning'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_variable_keyword_typo",
+    "File": "tests/invalid_english_variable_keyword_typo.op",
+    "ExpectedErrorContains": "did you mean 'variable'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_end_if_typo",
+    "File": "tests/invalid_english_end_if_typo.op",
+    "ExpectedErrorContains": "did you mean 'if'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_english_end_while_typo",
+    "File": "tests/invalid_english_end_while_typo.op",
+    "ExpectedErrorContains": "did you mean 'while'?"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_call_missing_comma",
+    "File": "tests/invalid_call_missing_comma.op",
+    "ExpectedErrorContains": "expected ',' between arguments"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_array_missing_comma",
+    "File": "tests/invalid_array_missing_comma.op",
+    "ExpectedErrorContains": "expected ',' between array elements"
+  },
+  {
+    "kind": "reject",
+    "Name": "invalid_param_missing_comma",
+    "File": "tests/invalid_param_missing_comma.op",
+    "ExpectedErrorContains": "expected ',' between parameters"
+  },
+  {
+    "kind": "run",
+    "Name": "run_cast_to_int",
+    "File": "tests/run_cast_to_int.op",
+    "ExpectedExit": 0,
+    "ExpectedOutput": "Program returned: 3"
+  },
+  {
+    "kind": "run",
+    "Name": "run_narrow_i32",
+    "File": "tests/run_narrow_i32.op",
+    "ExpectedExit": 0,
+    "ExpectedOutput": "2\n2\nProgram returned: 0"
+  },
+  {
+    "kind": "run",
+    "Name": "run_let_mut_typed",
+    "File": "tests/run_let_mut_typed.op",
+    "ExpectedExit": 0,
+    "ExpectedOutput": "Program returned: 3"
+  },
+  {
+    "kind": "run",
+    "Name": "run_index_expr",
+    "File": "tests/run_index_expr.op",
+    "ExpectedExit": 0,
+    "ExpectedOutput": "10\n20\n30\nProgram returned: 0"
+  },
+  {
+    "kind": "run",
+    "Name": "run_array_literal",
+    "File": "tests/run_array_literal.op",
+    "ExpectedExit": 0,
+    "ExpectedOutput": "2\nProgram returned: 0"
+  },
+  {
+    "kind": "run",
+    "Name": "run_await_null",
+    "File": "tests/run_await_null.op",
+    "ExpectedExit": 0,
+    "ExpectedOutput": "0\nProgram returned: 0"
+  },
+  {
+    "kind": "run",
+    "Name": "run_atomic_cas",
+    "File": "tests/run_atomic_cas.op",
+    "ExpectedExit": 0,
+    "ExpectedOutput": "1\n7\n0\n7\nProgram returned: 0"
+  },
+  {
+    "kind": "run",
+    "Name": "run_native_image_shared_builtins",
+    "File": "tests/run_native_image_shared_builtins.op",
+    "ExpectedExit": 0,
+    "ExpectedOutput": "Program returned: 0",
+    "CleanupFiles": [
+      "tests/tmp_native_image_shared_builtins.bin"
+    ]
+  },
+  {
+    "kind": "project",
+    "Name": "project_test3",
+    "ProjectFile": "tests/project_tests/test3/opus.project",
+    "ExeFile": "tests/project_tests/test3/Test3.exe",
+    "ExpectedExit": 55,
+    "RuntimeTimeoutSeconds": 5
+  },
+  {
+    "kind": "project",
+    "Name": "project_test7_nested_import_alias",
+    "ProjectFile": "tests/project_tests/test7/opus.project",
+    "ExeFile": "tests/project_tests/test7/Test7.exe",
+    "ExpectedExit": 42,
+    "RuntimeTimeoutSeconds": 5
+  },
+  {
+    "kind": "project",
+    "Name": "healing_auto_heal",
+    "ProjectFile": "tests/healing_tests/auto_heal/opus.project",
+    "ExeFile": "tests/healing_tests/auto_heal/AutoHeal.exe",
+    "ExpectedExit": 7,
+    "RuntimeTimeoutSeconds": 5
+  },
+  {
+    "kind": "reject-project",
+    "Name": "project_test4_duplicate_function_conflict",
+    "ProjectFile": "tests/project_tests/test4/opus.project",
+    "ExpectedErrorContains": "conflicts with function"
+  },
+  {
+    "kind": "reject-project",
+    "Name": "project_test5_import_cycle",
+    "ProjectFile": "tests/project_tests/test5/opus.project",
+    "ExpectedErrorContains": "import cycle detected"
+  },
+  {
+    "kind": "reject-project",
+    "Name": "project_test6_duplicate_project_decl",
+    "ProjectFile": "tests/project_tests/test6/opus.project",
+    "ExpectedErrorContains": "multiple project declarations found"
+  },
+  {
+    "kind": "reject-project",
+    "Name": "project_test8_nested_missing_module",
+    "ProjectFile": "tests/project_tests/test8/opus.project",
+    "ExpectedErrorContains": "cannot find module: helper/missing.op (from api/entry.op)"
+  },
+  {
+    "kind": "reject-project",
+    "Name": "project_test9_ambiguous_import",
+    "ProjectFile": "tests/project_tests/test9/opus.project",
+    "ExpectedErrorContains": "ambiguous module import: shared.op (from main.op)"
+  },
+  {
+    "kind": "reject-project",
+    "Name": "project_test10_invalid_mode",
+    "ProjectFile": "tests/project_tests/test10/opus.project",
+    "ExpectedErrorContains": "invalid project mode: 'exee', expected 'dll' or 'exe'"
+  },
+  {
+    "kind": "reject-project",
+    "Name": "project_test11_invalid_debug",
+    "ProjectFile": "tests/project_tests/test11/opus.project",
+    "ExpectedErrorContains": "invalid debug value: 'flase', expected 'true' or 'false'"
+  },
+  {
+    "kind": "reject-project",
+    "Name": "project_test12_unknown_property",
+    "ProjectFile": "tests/project_tests/test12/opus.project",
+    "ExpectedErrorContains": "unknown project property: 'ouptut' (did you mean 'output'?)"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test01_intmin_div.op",
+    "File": "tests/stress_codegen/test01_intmin_div.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test02_intmin_mod.op",
+    "File": "tests/stress_codegen/test02_intmin_mod.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test03_shift_64.op",
+    "File": "tests/stress_codegen/test03_shift_64.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test04_shift_63.op",
+    "File": "tests/stress_codegen/test04_shift_63.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test05_signed_overflow.op",
+    "File": "tests/stress_codegen/test05_signed_overflow.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test06_reg_pressure.op",
+    "File": "tests/stress_codegen/test06_reg_pressure.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test07_bitwise.op",
+    "File": "tests/stress_codegen/test07_bitwise.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test08_call_depth.op",
+    "File": "tests/stress_codegen/test08_call_depth.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test09_complex_expr.op",
+    "File": "tests/stress_codegen/test09_complex_expr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test10_loop_overflow.op",
+    "File": "tests/stress_codegen/test10_loop_overflow.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test11_dead_code.op",
+    "File": "tests/stress_codegen/test11_dead_code.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test12_mul_div_power2.op",
+    "File": "tests/stress_codegen/test12_mul_div_power2.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test13_neg_div.op",
+    "File": "tests/stress_codegen/test13_neg_div.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test14_all_bitwise.op",
+    "File": "tests/stress_codegen/test14_all_bitwise.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test15_compare_extremes.op",
+    "File": "tests/stress_codegen/test15_compare_extremes.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test16_chained_cmp.op",
+    "File": "tests/stress_codegen/test16_chained_cmp.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test17_ternary_sideeffect.op",
+    "File": "tests/stress_codegen/test17_ternary_sideeffect.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test18_loop_control.op",
+    "File": "tests/stress_codegen/test18_loop_control.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test19_recursive.op",
+    "File": "tests/stress_codegen/test19_recursive.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test20_big_struct.op",
+    "File": "tests/stress_codegen/test20_big_struct.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test21_big_frame.op",
+    "File": "tests/stress_codegen/test21_big_frame.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test22_div_runtime.op",
+    "File": "tests/stress_codegen/test22_div_runtime.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test23_mul_large.op",
+    "File": "tests/stress_codegen/test23_mul_large.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test24_deep_recursion.op",
+    "File": "tests/stress_codegen/test24_deep_recursion.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test25_chained_parens.op",
+    "File": "tests/stress_codegen/test25_chained_parens.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test26_bitwise_not.op",
+    "File": "tests/stress_codegen/test26_bitwise_not.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test27_sign_compare.op",
+    "File": "tests/stress_codegen/test27_sign_compare.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test28_loop_simple.op",
+    "File": "tests/stress_codegen/test28_loop_simple.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test29_multi_return.op",
+    "File": "tests/stress_codegen/test29_multi_return.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test30_global_var.op",
+    "File": "tests/stress_codegen/test30_global_var.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test31_verify_intmin.op",
+    "File": "tests/stress_codegen/test31_verify_intmin.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test32_big_stack.op",
+    "File": "tests/stress_codegen/test32_big_stack.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test33_mod_edge.op",
+    "File": "tests/stress_codegen/test33_mod_edge.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test34_nested_call_arg_alignment.op",
+    "File": "tests/stress_codegen/test34_nested_call_arg_alignment.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_codegen/test_final.op",
+    "File": "tests/stress_codegen/test_final.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test10_struct_ptr_to_c.op",
+    "File": "tests/stress_ffi/test10_struct_ptr_to_c.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test11_struct_return.op",
+    "File": "tests/stress_ffi/test11_struct_return.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test12_variadic_mismatch.op",
+    "File": "tests/stress_ffi/test12_variadic_mismatch.op",
+    "skip": "interactive GUI: calls MessageBoxA"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test13_simd_alignment.op",
+    "File": "tests/stress_ffi/test13_simd_alignment.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test14_ptr_truncation.op",
+    "File": "tests/stress_ffi/test14_ptr_truncation.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test15_stack_struct_dll.op",
+    "File": "tests/stress_ffi/test15_stack_struct_dll.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test16_int_as_ptr.op",
+    "File": "tests/stress_ffi/test16_int_as_ptr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test17_bool_coerce.op",
+    "File": "tests/stress_ffi/test17_bool_coerce.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test17b_bool_debug.op",
+    "File": "tests/stress_ffi/test17b_bool_debug.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test17c_ffi_param_test.op",
+    "File": "tests/stress_ffi/test17c_ffi_param_test.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test17d_bool_comp.op",
+    "File": "tests/stress_ffi/test17d_bool_comp.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test17e_msgbox_test.op",
+    "File": "tests/stress_ffi/test17e_msgbox_test.op",
+    "skip": "interactive GUI: calls MessageBoxA"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test17f_echo_test.op",
+    "File": "tests/stress_ffi/test17f_echo_test.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test18_negative_ptr.op",
+    "File": "tests/stress_ffi/test18_negative_ptr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test19_str_to_c.op",
+    "File": "tests/stress_ffi/test19_str_to_c.op",
+    "skip": "interactive GUI: calls MessageBoxA"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test1_float_as_int.op",
+    "File": "tests/stress_ffi/test1_float_as_int.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test20_double_indirect.op",
+    "File": "tests/stress_ffi/test20_double_indirect.op",
+    "ExpectedExit": 0,
+    "ExpectedRuntimeOutputContains": ["double indirect ok\n"]
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test21_inline_callee_alignment.op",
+    "File": "tests/stress_ffi/test21_inline_callee_alignment.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test2_struct_ptr.op",
+    "File": "tests/stress_ffi/test2_struct_ptr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test3_uninit_memory.op",
+    "File": "tests/stress_ffi/test3_uninit_memory.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test4_dangling_ptr.op",
+    "File": "tests/stress_ffi/test4_dangling_ptr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test5_struct_layout.op",
+    "File": "tests/stress_ffi/test5_struct_layout.op",
+    "skip": "interactive GUI: calls MessageBoxA"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test6_64bit_split.op",
+    "File": "tests/stress_ffi/test6_64bit_split.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test7_stack_args.op",
+    "File": "tests/stress_ffi/test7_stack_args.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test8_float_coerce.op",
+    "File": "tests/stress_ffi/test8_float_coerce.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_ffi/test9_ffi_heap.op",
+    "File": "tests/stress_ffi/test9_ffi_heap.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_malloc_int_min.op",
+    "File": "tests/stress_memory/positive/test_malloc_int_min.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_mid_free_continue_traversal.op",
+    "File": "tests/stress_memory/positive/test_mid_free_continue_traversal.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_nested_struct_view.op",
+    "File": "tests/stress_memory/positive/test_nested_struct_view.op",
+    "ExpectedExit": 0,
+    "ExpectedRuntimeOutputContains": ["nested struct ok\n"]
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_null_ptr_deref.op",
+    "File": "tests/stress_memory/positive/test_null_ptr_deref.op",
+    "Healing": "auto",
+    "ExpectedExit": 0,
+    "ExpectedRuntimeOutputContains": ["ACCESS_VIOLATION", "null read recovered\n"]
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_ptr_arithmetic.op",
+    "File": "tests/stress_memory/positive/test_ptr_arithmetic.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_ptr_stored_in_view.op",
+    "File": "tests/stress_memory/positive/test_ptr_stored_in_view.op",
+    "Healing": "auto",
+    "ExpectedExit": 0,
+    "ExpectedRuntimeOutputContains": ["ACCESS_VIOLATION", "view pointer read recovered\n"]
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_ptr_wraparound.op",
+    "File": "tests/stress_memory/positive/test_ptr_wraparound.op",
+    "Healing": "auto",
+    "ExpectedExit": 0,
+    "ExpectedRuntimeOutputContains": ["ACCESS_VIOLATION", "out of bounds write recovered\n"]
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_recursive_struct.op",
+    "File": "tests/stress_memory/positive/test_recursive_struct.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_struct_array_overalloc.op",
+    "File": "tests/stress_memory/positive/test_struct_array_overalloc.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_view_64bit_offset.op",
+    "File": "tests/stress_memory/positive/test_view_64bit_offset.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_memory/positive/test_view_conflict.op",
+    "File": "tests/stress_memory/positive/test_view_conflict.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/atomic_race_load_store.op",
+    "File": "tests/stress_concurrency/positive/atomic_race_load_store.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/await_out_of_order.op",
+    "File": "tests/stress_concurrency/positive/await_out_of_order.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/await_then_free.op",
+    "File": "tests/stress_concurrency/positive/await_then_free.op",
+    "ExpectedExit": 0,
+    "ExpectedRuntimeOutputContains": ["consumed handle free ok"]
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/await_zero_handle.op",
+    "File": "tests/stress_concurrency/positive/await_zero_handle.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/concurrent_global_ptr_write.op",
+    "File": "tests/stress_concurrency/positive/concurrent_global_ptr_write.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/concurrent_mem_write.op",
+    "File": "tests/stress_concurrency/positive/concurrent_mem_write.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/deep_recursive_spawn.op",
+    "File": "tests/stress_concurrency/positive/deep_recursive_spawn.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/double_await.op",
+    "File": "tests/stress_concurrency/positive/double_await.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/double_await_real.op",
+    "File": "tests/stress_concurrency/positive/double_await_real.op",
+    "ExpectedExit": 0,
+    "ExpectedRuntimeOutputContains": ["consumed handle await ok"]
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/free_result_ptr.op",
+    "File": "tests/stress_concurrency/positive/free_result_ptr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/global_final_value.op",
+    "File": "tests/stress_concurrency/positive/global_final_value.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/init_order_race.op",
+    "File": "tests/stress_concurrency/positive/init_order_race.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/nested_parallel_for.op",
+    "File": "tests/stress_concurrency/positive/nested_parallel_for.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/parallel_malloc_many.op",
+    "File": "tests/stress_concurrency/positive/parallel_malloc_many.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/pfor_1024_itr.op",
+    "File": "tests/stress_concurrency/positive/pfor_1024_itr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/pfor_linked_list.op",
+    "File": "tests/stress_concurrency/positive/pfor_linked_list.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/pfor_parallel_malloc.op",
+    "File": "tests/stress_concurrency/positive/pfor_parallel_malloc.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/race_global_raw.op",
+    "File": "tests/stress_concurrency/positive/race_global_raw.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/read_modify_write_race.op",
+    "File": "tests/stress_concurrency/positive/read_modify_write_race.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/reuse_await_handle.op",
+    "File": "tests/stress_concurrency/positive/reuse_await_handle.op",
+    "ExpectedExit": 0,
+    "ExpectedRuntimeOutputContains": ["handle reuse ok"]
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/shared_before_spawn.op",
+    "File": "tests/stress_concurrency/positive/shared_before_spawn.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/simple_two_spawns.op",
+    "File": "tests/stress_concurrency/positive/simple_two_spawns.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_5_args.op",
+    "File": "tests/stress_concurrency/positive/spawn_5_args.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_after_free.op",
+    "File": "tests/stress_concurrency/positive/spawn_after_free.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_global_access.op",
+    "File": "tests/stress_concurrency/positive/spawn_global_access.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_global_race_time.op",
+    "File": "tests/stress_concurrency/positive/spawn_global_race_time.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_large_struct_copies.op",
+    "File": "tests/stress_concurrency/positive/spawn_large_struct_copies.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_many_handles.op",
+    "File": "tests/stress_concurrency/positive/spawn_many_handles.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_return_ptr.op",
+    "File": "tests/stress_concurrency/positive/spawn_return_ptr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_struct_no_mutation.op",
+    "File": "tests/stress_concurrency/positive/spawn_struct_no_mutation.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_struct_with_ptr.op",
+    "File": "tests/stress_concurrency/positive/spawn_struct_with_ptr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_then_wait_before_result.op",
+    "File": "tests/stress_concurrency/positive/spawn_then_wait_before_result.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_concurrency/positive/spawn_with_offset_ptr.op",
+    "File": "tests/stress_concurrency/positive/spawn_with_offset_ptr.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/07_many_args.op",
+    "File": "tests/stress_parser/positive/07_many_args.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/08_huge_string.op",
+    "File": "tests/stress_parser/positive/08_huge_string.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/19_precedence.op",
+    "File": "tests/stress_parser/positive/19_precedence.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/32_class.op",
+    "File": "tests/stress_parser/positive/32_class.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/33_chained_neg.op",
+    "File": "tests/stress_parser/positive/33_chained_neg.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/35_loop_continue.op",
+    "File": "tests/stress_parser/positive/35_loop_continue.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/41_ambiguous_if.op",
+    "File": "tests/stress_parser/positive/41_ambiguous_if.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/43_concat_strings.op",
+    "File": "tests/stress_parser/positive/43_concat_strings.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/45_english_style.op",
+    "File": "tests/stress_parser/positive/45_english_style.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/47_view.op",
+    "File": "tests/stress_parser/positive/47_view.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/49_long_struct_name.op",
+    "File": "tests/stress_parser/positive/49_long_struct_name.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/51_line_continuation.op",
+    "File": "tests/stress_parser/positive/51_line_continuation.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/59_constants.op",
+    "File": "tests/stress_parser/positive/59_constants.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/60_resolved.op",
+    "File": "tests/stress_parser/positive/60_resolved.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/62_pointer_type.op",
+    "File": "tests/stress_parser/positive/62_pointer_type.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/66_char_literal.op",
+    "File": "tests/stress_parser/positive/66_char_literal.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/74_quad_not.op",
+    "File": "tests/stress_parser/positive/74_quad_not.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/81_dangling_if.op",
+    "File": "tests/stress_parser/positive/81_dangling_if.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/90_parallel_for.op",
+    "File": "tests/stress_parser/positive/90_parallel_for.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/91_massive_string.op",
+    "File": "tests/stress_parser/positive/91_massive_string.op"
+  },
+  {
+    "kind": "stress",
+    "Name": "tests/stress_parser/positive/92_10mb_string.op",
+    "File": "tests/stress_parser/positive/92_10mb_string.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_alias_after_free.op",
+    "File": "tests/stress_memory/negative/test_alias_after_free.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_array_access_bounds.op",
+    "File": "tests/stress_memory/negative/test_array_access_bounds.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_dangling_ptr_in_struct.op",
+    "File": "tests/stress_memory/negative/test_dangling_ptr_in_struct.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_deep_nesting_underalloc.op",
+    "File": "tests/stress_memory/negative/test_deep_nesting_underalloc.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_large_view_underalloc.op",
+    "File": "tests/stress_memory/negative/test_large_view_underalloc.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_negative_malloc_size.op",
+    "File": "tests/stress_memory/negative/test_negative_malloc_size.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_negative_view_offset.op",
+    "File": "tests/stress_memory/negative/test_negative_view_offset.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_string_oob_index.op",
+    "File": "tests/stress_memory/negative/test_string_oob_index.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_struct_underalloc.op",
+    "File": "tests/stress_memory/negative/test_struct_underalloc.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_uaf_linked_list.op",
+    "File": "tests/stress_memory/negative/test_uaf_linked_list.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_uaf_string_char_at.op",
+    "File": "tests/stress_memory/negative/test_uaf_string_char_at.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_uaf_string_length.op",
+    "File": "tests/stress_memory/negative/test_uaf_string_length.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_uaf_string_transform.op",
+    "File": "tests/stress_memory/negative/test_uaf_string_transform.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_use_after_free_ptr.op",
+    "File": "tests/stress_memory/negative/test_use_after_free_ptr.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_use_after_move.op",
+    "File": "tests/stress_memory/negative/test_use_after_move.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_view_heap_overflow.op",
+    "File": "tests/stress_memory/negative/test_view_heap_overflow.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_view_massive_offset.op",
+    "File": "tests/stress_memory/negative/test_view_massive_offset.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_view_overlap_confusion.op",
+    "File": "tests/stress_memory/negative/test_view_overlap_confusion.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_memory/negative/test_view_overread.op",
+    "File": "tests/stress_memory/negative/test_view_overread.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_concurrency/negative/pfor_captured_struct_mutation.op",
+    "File": "tests/stress_concurrency/negative/pfor_captured_struct_mutation.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_concurrency/negative/pfor_global_mutation.op",
+    "File": "tests/stress_concurrency/negative/pfor_global_mutation.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_concurrency/negative/pfor_local_mutation.op",
+    "File": "tests/stress_concurrency/negative/pfor_local_mutation.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_concurrency/negative/pfor_struct_mutation.op",
+    "File": "tests/stress_concurrency/negative/pfor_struct_mutation.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/01_unclosed_brace.op",
+    "File": "tests/stress_parser/negative/01_unclosed_brace.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/02_missing_body.op",
+    "File": "tests/stress_parser/negative/02_missing_body.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/03_double_return.op",
+    "File": "tests/stress_parser/negative/03_double_return.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/04_unclosed_struct.op",
+    "File": "tests/stress_parser/negative/04_unclosed_struct.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/05_unclosed_enum.op",
+    "File": "tests/stress_parser/negative/05_unclosed_enum.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/06_deep_nesting.op",
+    "File": "tests/stress_parser/negative/06_deep_nesting.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/09_hex_overflow.op",
+    "File": "tests/stress_parser/negative/09_hex_overflow.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/10_bin_overflow.op",
+    "File": "tests/stress_parser/negative/10_bin_overflow.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/11_dec_overflow.op",
+    "File": "tests/stress_parser/negative/11_dec_overflow.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/12_invalid_hex_escape.op",
+    "File": "tests/stress_parser/negative/12_invalid_hex_escape.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/13_surrogate.op",
+    "File": "tests/stress_parser/negative/13_surrogate.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/14_keyword_id.op",
+    "File": "tests/stress_parser/negative/14_keyword_id.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/15_all_keywords.op",
+    "File": "tests/stress_parser/negative/15_all_keywords.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/16_long_identifier.op",
+    "File": "tests/stress_parser/negative/16_long_identifier.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/17_nested_comment.op",
+    "File": "tests/stress_parser/negative/17_nested_comment.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/18_unclosed_comment.op",
+    "File": "tests/stress_parser/negative/18_unclosed_comment.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/20_all_ops.op",
+    "File": "tests/stress_parser/negative/20_all_ops.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/21_duplicate_import.op",
+    "File": "tests/stress_parser/negative/21_duplicate_import.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/22_path_traversal.op",
+    "File": "tests/stress_parser/negative/22_path_traversal.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/23_deep_array.op",
+    "File": "tests/stress_parser/negative/23_deep_array.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/24_deep_parens.op",
+    "File": "tests/stress_parser/negative/24_deep_parens.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/25_escape_sequences.op",
+    "File": "tests/stress_parser/negative/25_escape_sequences.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/26_unfinished_escape.op",
+    "File": "tests/stress_parser/negative/26_unfinished_escape.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/27_missing_call.op",
+    "File": "tests/stress_parser/negative/27_missing_call.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/28_if_nesting.op",
+    "File": "tests/stress_parser/negative/28_if_nesting.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/29_trailing_comma_struct.op",
+    "File": "tests/stress_parser/negative/29_trailing_comma_struct.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/30_switch.op",
+    "File": "tests/stress_parser/negative/30_switch.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/31_type_alias.op",
+    "File": "tests/stress_parser/negative/31_type_alias.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/34_double_break.op",
+    "File": "tests/stress_parser/negative/34_double_break.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/36_large_array.op",
+    "File": "tests/stress_parser/negative/36_large_array.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/37_extra_semicolon.op",
+    "File": "tests/stress_parser/negative/37_extra_semicolon.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/38_missing_rhs.op",
+    "File": "tests/stress_parser/negative/38_missing_rhs.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/39_missing_lhs.op",
+    "File": "tests/stress_parser/negative/39_missing_lhs.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/40_missing_type.op",
+    "File": "tests/stress_parser/negative/40_missing_type.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/42_50_args.op",
+    "File": "tests/stress_parser/negative/42_50_args.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/44_arrow_fn_kw.op",
+    "File": "tests/stress_parser/negative/44_arrow_fn_kw.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/46_english_broken.op",
+    "File": "tests/stress_parser/negative/46_english_broken.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/48_weird_imports.op",
+    "File": "tests/stress_parser/negative/48_weird_imports.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/50_unicode_id.op",
+    "File": "tests/stress_parser/negative/50_unicode_id.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/52_empty_bin.op",
+    "File": "tests/stress_parser/negative/52_empty_bin.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/53_empty_hex.op",
+    "File": "tests/stress_parser/negative/53_empty_hex.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/54_if_semi.op",
+    "File": "tests/stress_parser/negative/54_if_semi.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/55_while_semi.op",
+    "File": "tests/stress_parser/negative/55_while_semi.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/56_range_for.op",
+    "File": "tests/stress_parser/negative/56_range_for.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/57_ternary.op",
+    "File": "tests/stress_parser/negative/57_ternary.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/58_visibility.op",
+    "File": "tests/stress_parser/negative/58_visibility.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/61_array_type.op",
+    "File": "tests/stress_parser/negative/61_array_type.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/63_whitespace_struct.op",
+    "File": "tests/stress_parser/negative/63_whitespace_struct.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/64_unclosed_line_comment.op",
+    "File": "tests/stress_parser/negative/64_unclosed_line_comment.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/65_hex_very_long.op",
+    "File": "tests/stress_parser/negative/65_hex_very_long.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/67_multi_char.op",
+    "File": "tests/stress_parser/negative/67_multi_char.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/68_empty_array.op",
+    "File": "tests/stress_parser/negative/68_empty_array.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/69_fallthru_switch.op",
+    "File": "tests/stress_parser/negative/69_fallthru_switch.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/70_break_continue_for.op",
+    "File": "tests/stress_parser/negative/70_break_continue_for.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/71_triple_amp.op",
+    "File": "tests/stress_parser/negative/71_triple_amp.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/72_triple_bar.op",
+    "File": "tests/stress_parser/negative/72_triple_bar.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/73_double_equals.op",
+    "File": "tests/stress_parser/negative/73_double_equals.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/75_many_parens.op",
+    "File": "tests/stress_parser/negative/75_many_parens.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/76_space_ops.op",
+    "File": "tests/stress_parser/negative/76_space_ops.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/77_self_ref_struct.op",
+    "File": "tests/stress_parser/negative/77_self_ref_struct.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/78_enum_values.op",
+    "File": "tests/stress_parser/negative/78_enum_values.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/79_comment_mix.op",
+    "File": "tests/stress_parser/negative/79_comment_mix.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/80_comment_confusion.op",
+    "File": "tests/stress_parser/negative/80_comment_confusion.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/82_missing_expr.op",
+    "File": "tests/stress_parser/negative/82_missing_expr.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/83_missing_type_let.op",
+    "File": "tests/stress_parser/negative/83_missing_type_let.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/84_eof_mid_expr.op",
+    "File": "tests/stress_parser/negative/84_eof_mid_expr.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/85_unclosed_array.op",
+    "File": "tests/stress_parser/negative/85_unclosed_array.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/86_unclosed_string.op",
+    "File": "tests/stress_parser/negative/86_unclosed_string.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/87_arrow_in_type.op",
+    "File": "tests/stress_parser/negative/87_arrow_in_type.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/88_null_bytes.op",
+    "File": "tests/stress_parser/negative/88_null_bytes.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/89_underscores.op",
+    "File": "tests/stress_parser/negative/89_underscores.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/93_extreme_nesting.op",
+    "File": "tests/stress_parser/negative/93_extreme_nesting.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/94_insane_nesting.op",
+    "File": "tests/stress_parser/negative/94_insane_nesting.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/95_medium_nesting.op",
+    "File": "tests/stress_parser/negative/95_medium_nesting.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/96_700_nesting.op",
+    "File": "tests/stress_parser/negative/96_700_nesting.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/97_900_nesting.op",
+    "File": "tests/stress_parser/negative/97_900_nesting.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/98_exact1000.op",
+    "File": "tests/stress_parser/negative/98_exact1000.op"
+  },
+  {
+    "kind": "robustness",
+    "Name": "tests/stress_parser/negative/99_5000_proper.op",
+    "File": "tests/stress_parser/negative/99_5000_proper.op"
+  }
+]

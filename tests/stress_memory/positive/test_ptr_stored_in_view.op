@@ -11,5 +11,9 @@ function int main() {
     let leaked = v.data
     let val = mem_read(leaked)
     free(block)
+    if val != 0 {
+        return 1
+    }
+    print("view pointer read recovered\n")
     return 0
 }

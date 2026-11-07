@@ -13046,6 +13046,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         }
         
         if (!generate_expr(*call.args[0])) return false;
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t non_null_ptr = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        std::size_t null_free_exit = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(non_null_ptr);
         emit_.push(x64::Reg::RAX);  // save ptr (GetProcessHeap clobbers volatiles)
         
         // push above changed alignment, so reserve 40 not 32 before the call
@@ -13060,6 +13064,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.sub_imm(x64::Reg::RSP, 32);
         emit_iat_call_raw(pe::iat::HeapFree);
         emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.patch_jump(null_free_exit);
         
         return true;
     }
@@ -15555,6 +15560,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     }
 
     [[nodiscard]] bool generate_builtin_ffi_zero_arg(const std::string& fn_name) {
+        if (is_native_image_output() && fn_name == "get_current_process_id") {
+            emit_iat_call(pe::iat::GetCurrentProcessId);
+            return true;
+        }
         void* fn_ptr = get_ffi_fn(fn_name);
         if (!fn_ptr) {
             error(std::format("unknown FFI function: {}", fn_name));
@@ -15897,35 +15906,80 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // evaluate handle expression -> rax (pointer to spawn result: [handle, ctx_ptr])
         if (!generate_expr(*await_expr.handle)) return false;
 
+        // consume the named handle before its backing storage is released
+        if (await_expr.handle->is<ast::IdentExpr>() && current_scope_) {
+            const auto& name = await_expr.handle->as<ast::IdentExpr>().name;
+            if (Symbol* sym = current_scope_->lookup(name)) {
+                emit_.push(x64::Reg::RAX);
+                emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+                emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                if (auto bound = lookup_bound_reg(sym)) {
+                    if (*bound == x64::Reg::RAX) {
+                        register_bindings_.erase(sym);
+                    } else {
+                        emit_.mov(*bound, x64::Reg::RAX);
+                    }
+                }
+                emit_.pop(x64::Reg::RAX);
+            }
+        }
+
         emit_.test(x64::Reg::RAX, x64::Reg::RAX);
         std::size_t non_null_handle = emit_.jcc_rel32(x64::Emitter::CC_NE);
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
         std::size_t null_handle_exit = emit_.jmp_rel32_placeholder();
         emit_.patch_jump(non_null_handle);
 
-        // rax points to heap-backed spawn result struct [handle, ctx_ptr]
-        emit_.push(x64::Reg::RAX); // save spawn result struct ptr
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RAX, 0);  // handle
-        emit_.mov_load(x64::Reg::RDX, x64::Reg::RAX, 8);  // ctx_ptr
-
+        // keep these above the helpers shadow space; win32 clobbers rcx/rdx
+        emit_.mov(x64::Reg::R10, x64::Reg::RAX);            // spawn result struct
+        emit_.mov_load(x64::Reg::R8, x64::Reg::RAX, 0);     // handle
+        emit_.mov_load(x64::Reg::R9, x64::Reg::RAX, 8);     // ctx_ptr
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_store(x64::Reg::RSP, 0, x64::Reg::R10);
+        emit_.mov_store(x64::Reg::RSP, 8, x64::Reg::R8);
+        emit_.mov_store(x64::Reg::RSP, 16, x64::Reg::R9);
+        emit_.mov(x64::Reg::RCX, x64::Reg::R8);             // handle for wait
         if (!emit_thread_wait_call()) return false;
+        emit_.mov_load(x64::Reg::R10, x64::Reg::RSP, 0);
+        emit_.mov_load(x64::Reg::R8, x64::Reg::RSP, 8);
+        emit_.mov_load(x64::Reg::R9, x64::Reg::RSP, 16);
+        emit_.add_smart(x64::Reg::RSP, 32);
 
         emit_.test(x64::Reg::RAX, x64::Reg::RAX);
         std::size_t wait_failed = emit_.jcc_rel32(x64::Emitter::CC_NE);
 
-        // wait succeeded - load result, free ctx, close handle, free result struct, return result
-        emit_.pop(x64::Reg::R8);  // restore spawn result struct ptr into R8
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RDX, CTX_RESULT); // result value into rax
-        if (!emit_runtime_free_reg(x64::Reg::RDX)) return false;  // free ctx
-        if (!emit_close_handle_call()) return false;               // close handle
-        if (!emit_runtime_free_reg(x64::Reg::R8)) return false;    // free result struct
+        // success: preserve result, then free context, close handle, free struct
+        emit_.mov_load(x64::Reg::R11, x64::Reg::R9, CTX_RESULT);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_store(x64::Reg::RSP, 0, x64::Reg::R11);
+        emit_.mov_store(x64::Reg::RSP, 8, x64::Reg::R8);
+        emit_.mov_store(x64::Reg::RSP, 16, x64::Reg::R10);
+        emit_.mov(x64::Reg::RCX, x64::Reg::R9);
+        emit_.sub_imm(x64::Reg::RSP, 8);
+        if (!emit_runtime_free_reg(x64::Reg::RCX)) return false;
+        emit_.add_smart(x64::Reg::RSP, 8);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 8);
+        if (!emit_close_handle_call()) return false;
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 16);
+        emit_.sub_imm(x64::Reg::RSP, 8);
+        if (!emit_runtime_free_reg(x64::Reg::RCX)) return false;
+        emit_.add_smart(x64::Reg::RSP, 8);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 0);
+        emit_.add_smart(x64::Reg::RSP, 32);
         std::size_t await_done = emit_.jmp_rel32_placeholder();
 
         emit_.patch_jump(wait_failed);
-        // wait failed - free ctx, close handle, free result struct, return 0
-        emit_.pop(x64::Reg::R8);  // discard saved result ptr
-        if (!emit_runtime_free_reg(x64::Reg::RDX)) return false;  // free ctx
-        if (!emit_close_handle_call()) return false;               // close handle
+        // a failed wait does not prove the worker stopped; keep its context alive
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.mov_store(x64::Reg::RSP, 0, x64::Reg::R8);
+        emit_.mov_store(x64::Reg::RSP, 8, x64::Reg::R10);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 0);
+        if (!emit_close_handle_call()) return false;
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 8);
+        emit_.sub_imm(x64::Reg::RSP, 8);
+        if (!emit_runtime_free_reg(x64::Reg::RCX)) return false;
+        emit_.add_smart(x64::Reg::RSP, 8);
+        emit_.add_smart(x64::Reg::RSP, 32);
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX); // return 0
 
         emit_.patch_jump(await_done);

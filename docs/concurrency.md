@@ -52,6 +52,8 @@ Rules:
 
 - `spawn` expects a call shape like `spawn work(1, 2)`
 - `await` blocks for the handle and yields the result
+- awaiting a named local handle consumes it and sets it to `0`; awaiting `0` yields `0`, and freeing `0` is a no-op
+- copying a raw handle does not create a second owner; do not reuse aliases after the original handle is consumed
 - this works through the native-image path, including `--run`
 
 ## `parallel for`
