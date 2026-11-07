@@ -1,0 +1,41 @@
+// Auto-generated High-Validity Sable Module
+
+view Header_33517 {
+    magic: int @ 0;
+    flags: int @ 8;
+}
+
+function int helper_16814(int a_46634, int b_3812) {
+    a_46634 = 255;
+    b_3812 = 1000;
+    switch a_46634 {
+        case 0: return 0;
+        case 1: return 1;
+        case 2: return 2;
+        case 3: return 3;
+        else: return 0;
+    }
+    a_46634 = a_46634;
+    if ((b_3812 / a_46634) < (a_46634 | (5 ^ 2))) {
+        print_int(b_3812);
+    } else {
+        for i_73239 in 0..5 {
+            if false {
+                print_int(i_73239);
+            }
+        }
+    }
+    b_3812 = ((b_3812 % b_3812) % b_3812);
+    return -5;
+}
+
+function int main() {
+    let res = helper_16814(10, 20);
+    print_int(res);
+    let x_51347 = 5;
+    let x_55730 = ((x_51347 + x_51347) - x_51347);
+    for i_59700 in 0..5 {
+        i_59700 = (0 - -1);
+    }
+    return 0;
+}
