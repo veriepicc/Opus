@@ -205,3 +205,52 @@ function int main() {
 -5
 ```
 ---
+
+## Finding `fa2eca37e634` — RUNTIME_HANG
+- **Timestamp**: `2026-11-07 23:58:41Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_fa2eca37e634.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+view Header_51798 {
+    magic: int @ 0;
+    flags: int @ 8;
+}
+
+function int helper_40621(int a_55522, int b_58670) {
+    let x_27772 = (b_58670 / -42);
+    switch b_58670 {
+        case 0: return 0;
+        case 1: return 1;
+        case 2: return 2;
+        case 3: return 3;
+        else: return 0;
+    }
+    let x_16931 = 5;
+    print_int((5 & x_16931));
+    return (0 & (x_27772 & x_27772));
+}
+
+function int main() {
+    let res = helper_40621(10, 20);
+    print_int(res);
+    let x_32224 = ((255 | 1000) * (-1 & 1000));
+    print_int((x_32224 & x_32224));
+    for i_61401 in 0..5 {
+        i_61401 = 0;
+    }
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+0
+1023000
+```
+---
