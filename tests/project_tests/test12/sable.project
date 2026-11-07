@@ -1,0 +1,5 @@
+project Test12 {
+    entry: "main.sb"
+    ouptut: "Test12.exe"
+    mode: "exe"
+}

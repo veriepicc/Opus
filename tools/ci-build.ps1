@@ -13,5 +13,5 @@ $toolsets = @(Get-ChildItem "$build/Microsoft.VCToolsVersion.v*.default.txt" | W
 if ($toolsets.Count -ne 1) { throw "Cannot uniquely identify installed toolset for MSVC $version" }
 $toolset = [regex]::Match($toolsets[0].Name, '\.(v\d+)\.').Groups[1].Value
 Write-Host "MSBuild: $msbuild; MSVC: $version; toolset: $toolset"
-& $msbuild Opus.sln /p:Configuration=Release /p:Platform=x64 "/p:PlatformToolset=$toolset" /m
+& $msbuild Sable.sln /p:Configuration=Release /p:Platform=x64 "/p:PlatformToolset=$toolset" /m
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

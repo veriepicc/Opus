@@ -1,12 +1,12 @@
-// Opus Programming Language
+// Sable Programming Language
 // Abstract Syntax Tree Module
 
-export module opus.ast;
+export module sable.ast;
 
-import opus.types;
+import sable.types;
 import std;
 
-export namespace opus::ast {
+export namespace sable::ast {
 
 struct Expr;
 struct Stmt;
@@ -557,7 +557,7 @@ struct TypeAliasDecl {
 // healing mode for crash recovery
 enum class HealingMode { Auto, Freeze, Off };
 
-// Project configuration (opus.project)
+// Project configuration (sable.project)
 struct ProjectDecl {
     std::string name;
     std::string entry;
@@ -696,7 +696,7 @@ template<typename T>
 
 [[nodiscard]] inline ExprPtr make_binary(BinaryExpr::Op op, ExprPtr lhs, ExprPtr rhs, SourceSpan span = {}) {
     BinaryExpr bin;
-    bin.op = op;
+    bin.sb = op;
     bin.lhs = std::move(lhs);
     bin.rhs = std::move(rhs);
     return make_expr(std::move(bin), span);
@@ -1399,4 +1399,4 @@ template<typename NodeT>
     return errors;
 }
 
-} // namespace opus::ast
+} // namespace sable::ast

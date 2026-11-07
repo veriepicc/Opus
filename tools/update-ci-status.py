@@ -174,7 +174,8 @@ def main():
                 host = j.get('host', bdir.name)
                 bdata = j.get('benchmarks', {})
                 def fmt_stat(bid):
-                    res = bdata.get(bid, {}).get('results', {}).get('Opus', {})
+                    results_map = bdata.get(bid, {}).get('results', {})
+                    res = results_map.get('Sable', results_map.get('Opus', {}))
                     c = res.get('compile_ms')
                     r = res.get('runtime_min_ms')
                     if c is None or r is None:
@@ -194,7 +195,7 @@ def main():
                 pass
 
     multi_arch_section = [
-        "## Multi-Architecture Silicon Matrix (Opus: Compile / Runtime)",
+        "## Multi-Architecture Silicon Matrix (Sable: Compile / Runtime)",
         "",
         "| Architecture & Host | Processor Model | Math (80M) | State (50M) | Branch (40M) | General (6M) | HFT (12M) |",
         "| :--- | :--- | :---: | :---: | :---: | :---: | :---: |",
@@ -205,7 +206,7 @@ def main():
         "## Reproduction",
         "",
         "```powershell",
-        "./bin/Release/opus.exe build benchmark_hft.project",
+        "./bin/Release/sable.exe build benchmarks/benchmark_hft.project",
         "python benchmarks/run.py --iterations 5 --warmup 2",
         "```",
         "",
@@ -231,7 +232,7 @@ def main():
     }
     for filename, (body, title) in images.items():
         (args.output / filename).write_text(svg(body, title), encoding='utf-8')
-    (args.output / 'README.md').write_text('# Opus CI Results\n\n' + summary_text + '\n\n' + content + '\n', encoding='utf-8')
+    (args.output / 'README.md').write_text('# Sable CI Results\n\n' + summary_text + '\n\n' + content + '\n', encoding='utf-8')
 
 
 if __name__ == '__main__':

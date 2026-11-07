@@ -1,0 +1,6 @@
+project Test8 {
+    entry: "app/main.sb"
+    output: "Test8.exe"
+    mode: "exe"
+    include: ["modules"]
+}

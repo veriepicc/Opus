@@ -1,11 +1,11 @@
-﻿// Opus Programming Language
+﻿// Sable Programming Language
 // Core Types Module
 
-export module opus.types;
+export module sable.types;
 
 import std;
 
-export namespace opus {
+export namespace sable {
 
 // ============================================================================
 // PRIMITIVE TYPES
@@ -390,4 +390,6 @@ constexpr std::optional<PrimitiveType> friendly_type_to_primitive(std::string_vi
     return std::nullopt;
 }
 
-} // namespace opus
+} // namespace sable
+
+

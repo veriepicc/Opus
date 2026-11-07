@@ -69,13 +69,13 @@ MODULES = [
     ("stdlib", "src/stdlib.ixx"),
     ("codegen", "src/codegen.ixx"),
     ("project", "src/project.ixx"),
-    ("opus", "src/opus.ixx"),
+    ("sable", "src/sable.ixx"),
     ("main", "src/main.ixx"),
 ]
 
 obj_files = [CACHE_DIR / "std.obj"]
 
-print("Compiling Opus modules locally with MSVC...")
+print("Compiling Sable modules locally with MSVC...")
 t0 = time.time()
 
 def to_win(p: Path) -> str:
@@ -98,9 +98,12 @@ for mod_name, mod_file in MODULES:
         print(p.stdout + p.stderr, file=sys.stderr)
         sys.exit(p.returncode)
 
+import shutil
+
 # 3. Link executable
 LINK_EXE = MSVC_BIN / "link.exe"
-out_exe = OUT_DIR / "opus.exe"
+out_exe = OUT_DIR / "sable.exe"
+compat_exe = OUT_DIR / "opus.exe"
 print(f"Linking {out_exe}...")
 
 link_cmd = [
@@ -115,5 +118,6 @@ if p.returncode != 0:
     print(p.stdout + p.stderr, file=sys.stderr)
     sys.exit(p.returncode)
 
+shutil.copy2(out_exe, compat_exe)
 dt = time.time() - t0
-print(f"Built Opus successfully in {dt:.1f}s -> {out_exe}")
+print(f"Built Sable successfully in {dt:.1f}s -> {out_exe} (mirrored to {compat_exe})")

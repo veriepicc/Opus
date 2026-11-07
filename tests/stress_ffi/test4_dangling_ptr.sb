@@ -1,0 +1,20 @@
+// TEST 4: return pointer to stack variable
+// dangling pointer disaster crossing DLL boundary
+
+function ptr make_dangling() {
+    var local = 0x12345678
+    return &local  // stack variable returned - HEAP CORRUPTION
+}
+
+function int main() {
+    alloc_console()
+
+    let ptr = make_dangling()
+    print("ptr: ")
+    print_hex(ptr)
+    print("\n")
+
+    // reading/writing this is undefined behavior
+    // but sable might not catch it
+    return 0
+}

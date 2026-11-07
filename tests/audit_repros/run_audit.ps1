@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$opus = Resolve-Path "..\..\bin\Release\opus.exe"
+$sable = Resolve-Path "..\..\bin\Release\sable.exe"
 $dir = Resolve-Path "."
 $tests = @(
     @{ name = "unsigned_compare"; expect_ok = 0 }
@@ -15,7 +15,7 @@ foreach ($t in $tests) {
     $src = Join-Path $dir ($t.name + ".op")
     $exe = Join-Path $dir ($t.name + ".exe")
     if (Test-Path $exe) { Remove-Item $exe -Force }
-    & $opus --quiet --fast $src 2>&1 | Out-Null
+    & $sable --quiet --fast $src 2>&1 | Out-Null
     if (-not (Test-Path $exe)) {
         Write-Host ("{0,-22} COMPILE FAIL" -f $t.name) -ForegroundColor Red
         continue

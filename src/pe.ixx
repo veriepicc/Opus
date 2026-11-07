@@ -12,13 +12,13 @@ module;
 #include <cassert>
 #include <limits>
 
-export module opus.pe;
+export module sable.pe;
 
-import opus.ast;
-import opus.types;
+import sable.ast;
+import sable.types;
 import std;
 
-export namespace opus::pe {
+export namespace sable::pe {
 
 // single source of truth for all imported functions
 constexpr const char* iat_functions[] = {
@@ -1491,7 +1491,7 @@ private:
         patch8_to(code, jb_not_reentrant, not_reentrant, "handler reentrant low bound");
         patch8_to(code, jae_not_reentrant, not_reentrant, "handler reentrant high bound");
 
-        // vectored exception handlers are process-wide, so ignore faults outside opus user code
+        // vectored exception handlers are process-wide, so ignore faults outside sable user code
         emit8(code, 0x48); emit8(code, 0x8B); emit8(code, 0x45); emit8(code, 0xF0);  // mov rax, [rbp-0x10] (crash RIP)
         emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xD9);                    // mov rcx, rbx (base)
         emit8(code, 0x48); emit8(code, 0x81); emit8(code, 0xC1);
@@ -1529,7 +1529,7 @@ private:
         // header is emitted only for exception types we actually handle.
         // unknown host exceptions should continue searching without printing
         // a misleading crash banner.
-        const char hdr[] = "\n=== OPUS CRASH DETECTED ===\n\0";
+        const char hdr[] = "\n=== SABLE CRASH DETECTED ===\n\0";
 
         // ---- exception type detection ----
         // load ExceptionCode from EXCEPTION_RECORD (r15)
@@ -1837,7 +1837,7 @@ private:
             emit_print_inline(code, text_rva, print_offset, fault_rva_nl, sizeof(fault_rva_nl));
         }
 
-        const char image_base[] = "  Opus image base: \0";
+        const char image_base[] = "  Sable image base: \0";
         emit_print_inline(code, text_rva, print_offset, image_base, sizeof(image_base));
         emit8(code, 0x48); emit8(code, 0x89); emit8(code, 0xD9);                            // mov rcx, rbx
         {
@@ -2712,4 +2712,4 @@ private:
     }
 };
 
-} // namespace opus::pe
+} // namespace sable::pe

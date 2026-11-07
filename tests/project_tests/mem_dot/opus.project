@@ -1,6 +1,0 @@
-project MemDot {
-    entry: "main.op"
-    output: "MemDot.exe"
-    mode: "exe"
-    include: ["..\\..\\..\\stdlib"]
-}

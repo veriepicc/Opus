@@ -10,28 +10,28 @@ Important note:
 ## Quick compile commands
 
 ```text
-opus examples/hello.op
-opus --run examples/fibonacci.op
-opus examples/classes.op
-opus --dll examples/scanner.op
+sable examples/hello.sb
+sable --run examples/fibonacci.sb
+sable examples/classes.sb
+sable --dll examples/scanner.sb
 ```
 
 ## Example map
 
 | File | Focus |
 |------|-------|
-| `examples/hello.op` | smallest valid program |
-| `examples/fibonacci.op` | recursion and loops |
-| `examples/strings.op` | string helpers and character inspection |
-| `examples/arrays.op` | arrays, indexing, sorting |
-| `examples/structs.op` | struct literals and nested field access |
-| `examples/classes.op` | classes, methods, `self` |
-| `examples/enums.op` | enum states and control flow |
-| `examples/memory.op` | `mem` module reads/writes |
-| `examples/concurrency.op` | `spawn`, `await`, `parallel for`, atomics |
-| `examples/benchmark.op` | sequential vs parallel timing |
-| `examples/ffi.op` | typed FFI with `get_module` / `get_proc` |
-| `examples/scanner.op` | DLL-oriented memory scanning |
+| `examples/hello.sb` | smallest valid program |
+| `examples/fibonacci.sb` | recursion and loops |
+| `examples/strings.sb` | string helpers and character inspection |
+| `examples/arrays.sb` | arrays, indexing, sorting |
+| `examples/structs.sb` | struct literals and nested field access |
+| `examples/classes.sb` | classes, methods, `self` |
+| `examples/enums.sb` | enum states and control flow |
+| `examples/memory.sb` | `mem` module reads/writes |
+| `examples/concurrency.sb` | `spawn`, `await`, `parallel for`, atomics |
+| `examples/benchmark.sb` | sequential vs parallel timing |
+| `examples/ffi.sb` | typed FFI with `get_module` / `get_proc` |
+| `examples/scanner.sb` | DLL-oriented memory scanning |
 
 ## Hello
 
@@ -44,7 +44,7 @@ function int main() {
 
 ## Functions
 
-From `examples/fibonacci.op`:
+From `examples/fibonacci.sb`:
 
 ```c
 function int fib(int n) {
@@ -57,7 +57,7 @@ function int fib(int n) {
 
 ## Struct and class literals
 
-From `examples/structs.op` and `examples/classes.op`:
+From `examples/structs.sb` and `examples/classes.sb`:
 
 ```c
 let p = Vec2 { x: 10, y: 20 }
@@ -92,7 +92,7 @@ function int main() {
 
 ## Concurrency
 
-From `examples/concurrency.op`:
+From `examples/concurrency.sb`:
 
 ```c
 import mem
@@ -121,7 +121,7 @@ function int main() {
 
 ## FFI
 
-From `examples/ffi.op`:
+From `examples/ffi.sb`:
 
 ```c
 using GetPidFn = fn() -> int
@@ -138,9 +138,9 @@ function int main() {
 
 ## DLL example
 
-`examples/scanner.op` is intentionally DLL-oriented:
+`examples/scanner.sb` is intentionally DLL-oriented:
 
-- compile with `opus --dll examples/scanner.op`
+- compile with `sable --dll examples/scanner.sb`
 - it calls `alloc_console()` because a DLL host may not already have a console
 
 ## Related pages

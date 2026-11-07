@@ -1,6 +1,6 @@
 # Debugger and Self-Healing
 
-Opus can embed source text, line mappings, and crash-handling support into native images so faults are easier to inspect after launch.
+Sable can embed source text, line mappings, and crash-handling support into native images so faults are easier to inspect after launch.
 
 ## What it does
 
@@ -18,7 +18,7 @@ With project debug mode enabled, native images can:
 
 ```c
 project MyApp {
-    entry: "main.op"
+    entry: "main.sb"
     output: "MyApp.dll"
     mode: "dll"
     debug: true
@@ -37,7 +37,7 @@ Healing modes:
 ## Crash report shape
 
 ```text
-=== OPUS CRASH DETECTED ===
+=== SABLE CRASH DETECTED ===
   Exception: ACCESS_VIOLATION
   Location: line 47
 
@@ -57,7 +57,7 @@ With `debug: true`, native images can embed:
 - `.src` with source text
 - `.srcmap` with instruction-to-line mappings
 
-That is how the runtime can point back to real Opus code after code generation is complete and the binary is already running.
+That is how the runtime can point back to real Sable code after code generation is complete and the binary is already running.
 
 ## Auto-heal behavior
 
@@ -118,4 +118,4 @@ For scanners, probes, injected DLL tools, and “stay alive long enough to expla
 
 ## Bottom line
 
-The debugger and healing runtime make Opus more than a language that emits native bytes. In debug-enabled native images, the generated binary retains enough knowledge of its origin to participate in its own diagnosis under failure, and in limited cases, its own survival.
+The debugger and healing runtime make Sable more than a language that emits native bytes. In debug-enabled native images, the generated binary retains enough knowledge of its origin to participate in its own diagnosis under failure, and in limited cases, its own survival.

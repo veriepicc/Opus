@@ -1,5 +1,0 @@
-import text;
-
-function int main() {
-    return text.text_lne("opus")
-}

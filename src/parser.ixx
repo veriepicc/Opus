@@ -1,14 +1,14 @@
 ﻿// parser - handles c-style and english syntaxes
 
-export module opus.parser;
+export module sable.parser;
 
-import opus.types;
-import opus.lexer;
-import opus.ast;
-import opus.errors;
+import sable.types;
+import sable.lexer;
+import sable.ast;
+import sable.errors;
 import std;
 
-export namespace opus {
+export namespace sable {
 
 struct ParseError {
     std::string message;
@@ -96,7 +96,7 @@ public:
                 }
 
                 if (found_project) {
-                    error_at(decl_loc, "multiple project declarations found in opus.project");
+                    error_at(decl_loc, "multiple project declarations found in sable.project");
                     continue;
                 }
 
@@ -106,12 +106,12 @@ public:
                 continue;
             }
 
-            error("unexpected top-level declaration in opus.project");
+            error("unexpected top-level declaration in sable.project");
             synchronize();
         }
 
         if (!found_project && errors_.empty()) {
-            error_at(project_loc, "no project declaration found in opus.project");
+            error_at(project_loc, "no project declaration found in sable.project");
         }
 
         if (found_project) {
@@ -1411,7 +1411,7 @@ private:
             if (!ignored) {
                 synchronize();
             }
-            error_at(project_loc, "project declarations are only valid in opus.project");
+            error_at(project_loc, "project declarations are only valid in sable.project");
             return std::nullopt;
         }
         if (match(TokenKind::Let)) {
@@ -3786,4 +3786,4 @@ private:
     }
 };
 
-} // namespace opus
+} // namespace sable

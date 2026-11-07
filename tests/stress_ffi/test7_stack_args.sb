@@ -1,0 +1,20 @@
+// TEST 7: multiple args exceeding 4 on x64 (stack args)
+// windows x64 puts args 5+ on stack - sable might mess this up
+
+using Fn8Args = fn(int, int, int, int, int, int, int, int) -> int
+
+function int main() {
+    alloc_console()
+
+    let kernel = get_module("kernel32.dll")
+    let my_fn = get_proc(kernel, "SetThreadAffinityMask")
+    let typed_fn = my_fn as Fn8Args
+
+    // 8 args means 4 on regs, 4 on stack
+    let result = typed_fn(0, 1, 2, 3, 4, 5, 6, 7)
+
+    print("8arg result: ")
+    print_int(result)
+    print("\n")
+    return 0
+}

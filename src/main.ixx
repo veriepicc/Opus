@@ -1,4 +1,4 @@
-// opus compiler entry point
+// sable compiler entry point
 
 module;
 
@@ -7,23 +7,23 @@ module;
 
 export module main;
 
-import opus;
-import opus.pe;
-import opus.project;
+import sable;
+import sable.pe;
+import sable.project;
 import std;
 
 void print_usage() {
-    std::print("{}", R"(Opus Compiler v1.1
+    std::print("{}", R"(Sable Compiler v1.1
 
 write code
 compile to native x64
 ship the exe or inject the dll
 
 Usage:
-  opus [options] <file.op>
-  opus repl
-  opus build [path]
-  opus inspect <file.op> [--line N] [--json]
+  sable [options] <file.sb>
+  sable repl
+  sable build [path]
+  sable inspect <file.sb> [--line N] [--json]
 
 Output:
   default       standalone .exe
@@ -34,8 +34,8 @@ Output:
   --fast        skip project discovery for single-file compiles
 
 Project:
-  build         find opus.project and build it
-  build <path>  build a specific opus.project
+  build         find sable.project and build it
+  build <path>  build a specific sable.project
   inspect       compile a file fast and report function bytes/metadata
 
 Help:
@@ -49,18 +49,17 @@ The language surface can mix styles in one file:
       return left + right
   end function
 
-Opus is not a vm and not an llvm front-end cosplay.
+Sable is not a vm and not an llvm front-end cosplay.
 )");
 }
 
 void print_banner() {
     std::println(R"(
-   ____                  
-  / __ \____  __  _______
- / / / / __ \/ / / / ___/
-/ /_/ / /_/ / /_/ (__  ) 
-\____/ .___/\__,_/____/  
-    /_/                  
+   _____       __    __     
+  / ___/____ _/ /_  / /__   
+  \__ \/ __ `/ __ \/ / _ \  
+ ___/ / /_/ / /_/ / /  __/  
+/____/\__,_/_.___/_/\___/             
 
  A Programming Language written from scratch
 ===========================================
@@ -145,7 +144,7 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
     auto dir = std::filesystem::path(normalized_compiler).parent_path();
     for (int i = 0; i < 8 && !dir.empty(); ++i) {
         auto candidate = dir / "stdlib";
-        if (std::filesystem::exists(candidate / "mem.op")) {
+        if (std::filesystem::exists(candidate / "mem.sb") || std::filesystem::exists(candidate / "mem.sb")) {
             push_unique_path(paths, candidate);
         }
         auto parent = dir.parent_path();
@@ -159,7 +158,7 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
 }
 
 [[nodiscard]] static std::optional<std::size_t> require_main_offset(
-    const opus::Compiler::Result& result
+    const sable::Compiler::Result& result
 ) {
     if (result.main_offset) {
         return result.main_offset;
@@ -170,13 +169,13 @@ static void push_unique_path(std::vector<std::string>& paths, const std::filesys
     return std::nullopt;
 }
 
-[[nodiscard]] static opus::OutputKind project_mode_to_output_kind(std::string_view mode) {
-    if (mode == "dll") return opus::OutputKind::Dll;
-    if (mode == "exe") return opus::OutputKind::Exe;
-    return opus::OutputKind::Raw;
+[[nodiscard]] static sable::OutputKind project_mode_to_output_kind(std::string_view mode) {
+    if (mode == "dll") return sable::OutputKind::Dll;
+    if (mode == "exe") return sable::OutputKind::Exe;
+    return sable::OutputKind::Raw;
 }
 
-static void print_timing_block(std::string_view title, const std::vector<opus::TimingEntry>& timings) {
+static void print_timing_block(std::string_view title, const std::vector<sable::TimingEntry>& timings) {
     if (timings.empty()) {
         return;
     }
@@ -260,13 +259,13 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
     return out;
 }
 
-[[nodiscard]] static const opus::FunctionArtifact* choose_inspect_function(
-    const opus::Compiler::Result& result,
+[[nodiscard]] static const sable::FunctionArtifact* choose_inspect_function(
+    const sable::Compiler::Result& result,
     const std::filesystem::path& file_path,
     std::optional<std::uint32_t> selected_line
 ) {
     const auto normalized_target = normalize_path(file_path).generic_string();
-    const opus::FunctionArtifact* best = nullptr;
+    const sable::FunctionArtifact* best = nullptr;
 
     for (const auto& fn : result.functions) {
         if (fn.is_extern || fn.code_size == 0) {
@@ -321,14 +320,14 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
     }
     std::string source = std::move(*source_result);
 
-    opus::Compiler compiler;
+    sable::Compiler compiler;
     auto import_search_paths = default_import_search_paths(compiler_exe);
     auto source_path = normalize_path(filename);
     auto source_root = source_path.has_parent_path() ? source_path.parent_path().generic_string() : std::string{};
 
     if (source_path.has_parent_path()) {
-        if (auto project_file = opus::find_project_file(source_path.parent_path())) {
-            if (auto config_result = opus::load_project(*project_file)) {
+        if (auto project_file = sable::find_project_file(source_path.parent_path())) {
+            if (auto config_result = sable::load_project(*project_file)) {
                 const auto& config = *config_result;
                 source_root = std::filesystem::weakly_canonical(config.project_dir).string();
                 for (const auto& include_path : config.includes) {
@@ -345,8 +344,8 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
         .filename = filename,
         .project_root = source_root,
         .import_search_paths = import_search_paths,
-        .output_kind = opus::OutputKind::Exe,
-        .healing_mode = opus::ast::HealingMode::Off,
+        .output_kind = sable::OutputKind::Exe,
+        .healing_mode = sable::ast::HealingMode::Off,
         .debug_info = false,
         .collect_line_map = true,
         .collect_function_artifacts = true,
@@ -433,7 +432,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
             safe_size = remaining;
         }
         auto bytes = std::span<const std::uint8_t>(result.code).subspan(safe_offset, safe_size);
-        std::vector<opus::pe::LineMapEntry> selected_line_map;
+        std::vector<sable::pe::LineMapEntry> selected_line_map;
         for (const auto& entry : result.line_map) {
             if (entry.code_offset < safe_offset) {
                 continue;
@@ -467,15 +466,15 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
     return 0;
 }
 
-[[nodiscard]] int run_file(const std::string& filename, bool run_immediately, opus::OutputKind output_kind, bool quiet, bool timings, bool fast_mode, const std::filesystem::path& compiler_exe) {
+[[nodiscard]] int run_file(const std::string& filename, bool run_immediately, sable::OutputKind output_kind, bool quiet, bool timings, bool fast_mode, const std::filesystem::path& compiler_exe) {
     auto now = [] { return std::chrono::steady_clock::now(); };
     auto elapsed_ms = [](auto start, auto end) {
         return std::chrono::duration<double, std::milli>(end - start).count();
     };
     auto total_start = now();
-    std::vector<opus::TimingEntry> stage_timings;
+    std::vector<sable::TimingEntry> stage_timings;
     auto add_stage_timing = [&](std::string_view name, double ms) {
-        stage_timings.push_back(opus::TimingEntry{
+        stage_timings.push_back(sable::TimingEntry{
             .name = std::string(name),
             .ms = ms
         });
@@ -492,21 +491,21 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
         add_stage_timing("driver.read_source", elapsed_ms(read_start, now()));
     }
 
-    opus::Compiler compiler;
+    sable::Compiler compiler;
     auto import_search_paths = default_import_search_paths(compiler_exe);
     auto source_path = normalize_path(filename);
     auto source_root = source_path.has_parent_path() ? source_path.parent_path().generic_string() : std::string{};
     bool project_debug = false;
-    auto project_healing = opus::ast::HealingMode::Off;
+    auto project_healing = sable::ast::HealingMode::Off;
 
     auto discovery_start = now();
     if (!fast_mode && source_path.has_parent_path()) {
-        if (auto project_file = opus::find_project_file(source_path.parent_path())) {
-            if (auto config_result = opus::load_project(*project_file)) {
+        if (auto project_file = sable::find_project_file(source_path.parent_path())) {
+            if (auto config_result = sable::load_project(*project_file)) {
                 const auto& config = *config_result;
                 source_root = std::filesystem::weakly_canonical(config.project_dir).string();
                 project_debug = config.debug;
-                project_healing = config.healing.value_or(opus::ast::HealingMode::Off);
+                project_healing = config.healing.value_or(sable::ast::HealingMode::Off);
                 for (const auto& include_path : config.includes) {
                     if (std::find(import_search_paths.begin(), import_search_paths.end(), include_path) == import_search_paths.end()) {
                         import_search_paths.push_back(include_path);
@@ -564,11 +563,11 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
                 std::println("\033[1;93mwarning:\033[0m {}", warning);
             }
             std::string outname = filename;
-            if (outname.ends_with(".op")) {
+            if (outname.ends_with(".sb") || outname.ends_with(".op")) {
                 outname = outname.substr(0, outname.size() - 3);
             }
             
-            if (opus::output_is_dll(output_kind)) {
+            if (sable::output_is_dll(output_kind)) {
                 outname += ".dll";
                 auto main_offset = require_main_offset(result);
                 if (!main_offset) {
@@ -576,7 +575,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
                     return 1;
                 }
                 
-                opus::pe::PeImageGenerator dll_gen;
+                sable::pe::PeImageGenerator dll_gen;
                 auto pe_start = now();
                 auto dll_bytes = dll_gen.generate({
                     .code = result.code,
@@ -584,9 +583,9 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
                     .alloc_console = true,
                     .iat_fixups = result.iat_fixups,
                     .debug_source = project_debug ? source : std::string{},
-                    .line_map = project_debug ? result.line_map : std::vector<opus::pe::LineMapEntry>{},
+                    .line_map = project_debug ? result.line_map : std::vector<sable::pe::LineMapEntry>{},
                     .healing_mode = project_healing,
-                    .output_kind = opus::OutputKind::Dll,
+                    .output_kind = sable::OutputKind::Dll,
                     .writable_text = result.needs_writable_text,
                 });
                 if (timings) {
@@ -595,7 +594,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
                 
                 if (!quiet) {
                     auto validate_start = now();
-                    auto pe_errors = opus::pe::PeImageGenerator::validate_pe(dll_bytes);
+                    auto pe_errors = sable::pe::PeImageGenerator::validate_pe(dll_bytes);
                     for (const auto& err : pe_errors) {
                         std::println("\033[1;93mPE warning:\033[0m {}", err);
                     }
@@ -628,7 +627,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
                     return 1;
                 }
                 
-                opus::pe::PeImageGenerator exe_gen;
+                sable::pe::PeImageGenerator exe_gen;
                 auto pe_start = now();
                 auto exe_bytes = exe_gen.generate({
                     .code = result.code,
@@ -636,9 +635,9 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
                     .alloc_console = false,
                     .iat_fixups = result.iat_fixups,
                     .debug_source = project_debug ? source : std::string{},
-                    .line_map = project_debug ? result.line_map : std::vector<opus::pe::LineMapEntry>{},
+                    .line_map = project_debug ? result.line_map : std::vector<sable::pe::LineMapEntry>{},
                     .healing_mode = project_healing,
-                    .output_kind = opus::OutputKind::Exe,
+                    .output_kind = sable::OutputKind::Exe,
                     .writable_text = result.needs_writable_text,
                 });
                 if (timings) {
@@ -647,7 +646,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
                 
                 if (!quiet) {
                     auto validate_start = now();
-                    auto pe_errors = opus::pe::PeImageGenerator::validate_pe(exe_bytes);
+                    auto pe_errors = sable::pe::PeImageGenerator::validate_pe(exe_bytes);
                     for (const auto& err : pe_errors) {
                         std::println("\033[1;93mPE warning:\033[0m {}", err);
                     }
@@ -700,7 +699,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
                     if (second_colon != std::string::npos) {
                         try {
                             std::size_t line_num = std::stoull(err.substr(first_colon + 1, second_colon - first_colon - 1));
-                            std::string src_line = opus::get_source_line(source, line_num);
+                            std::string src_line = sable::get_source_line(source, line_num);
                             if (!src_line.empty()) {
                                 std::string line_str = std::format("{}", line_num);
                                 std::string padding(line_str.size(), ' ');
@@ -731,9 +730,9 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
         return std::chrono::duration<double, std::milli>(end - start).count();
     };
     auto total_start = now();
-    std::vector<opus::TimingEntry> stage_timings;
+    std::vector<sable::TimingEntry> stage_timings;
     auto add_stage_timing = [&](std::string_view name, double ms) {
-        stage_timings.push_back(opus::TimingEntry{
+        stage_timings.push_back(sable::TimingEntry{
             .name = std::string(name),
             .ms = ms
         });
@@ -744,9 +743,9 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
     if (project_path_arg) {
         project_file = *project_path_arg;
     } else {
-        auto found = opus::find_project_file(std::filesystem::current_path());
+        auto found = sable::find_project_file(std::filesystem::current_path());
         if (!found) {
-            std::print(std::cerr, "\033[1;91merror\033[0m: no opus.project found in current directory or parents\n");
+            std::print(std::cerr, "\033[1;91merror\033[0m: no sable.project found in current directory or parents\n");
             return 1;
         }
         project_file = *found;
@@ -755,7 +754,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
     std::println("Loading project: {}", project_file.string());
     
     auto load_project_start = now();
-    auto config_result = opus::load_project(project_file);
+    auto config_result = sable::load_project(project_file);
     if (timings) {
         add_stage_timing("driver.load_project", elapsed_ms(load_project_start, now()));
     }
@@ -791,9 +790,9 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
     }
     std::string project_root = std::filesystem::weakly_canonical(config.project_dir).string();
     
-    opus::Compiler compiler;
+    sable::Compiler compiler;
     auto output_kind = project_mode_to_output_kind(config.mode);
-    if (!opus::output_is_native_image(output_kind)) {
+    if (!sable::output_is_native_image(output_kind)) {
         std::print(std::cerr, "\033[1;91merror\033[0m: invalid project mode '{}'; expected 'dll' or 'exe'\n", config.mode);
         return 1;
     }
@@ -804,7 +803,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
         .project_root = project_root,
         .import_search_paths = import_search_paths,
         .output_kind = output_kind,
-        .healing_mode = config.healing.value_or(opus::ast::HealingMode::Off),
+        .healing_mode = config.healing.value_or(sable::ast::HealingMode::Off),
         .debug_info = config.debug,
         .collect_timings = timings,
     });
@@ -819,33 +818,33 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
         std::string outname = config.output;
         if (outname.empty()) {
             outname = config.name;
-            if (opus::output_is_dll(output_kind)) outname += ".dll";
-            else if (opus::output_is_exe(output_kind)) outname += ".exe";
-            else outname += ".opus";
+            if (sable::output_is_dll(output_kind)) outname += ".dll";
+            else if (sable::output_is_exe(output_kind)) outname += ".exe";
+            else outname += ".sable";
         }
         
         std::filesystem::path output_path = config.project_dir / outname;
         
-        if (opus::output_is_native_image(output_kind)) {
+        if (sable::output_is_native_image(output_kind)) {
             auto main_offset = require_main_offset(result);
             if (!main_offset) {
                 std::print(std::cerr, "\033[1;91merror\033[0m: no 'main' function found; cannot generate a {} entry point\n",
-                    opus::output_is_exe(output_kind) ? "program" : "DLL");
+                    sable::output_is_exe(output_kind) ? "program" : "DLL");
                 return 1;
             }
             
             std::string debug_source = config.debug ? source : "";
             
-            opus::pe::PeImageGenerator pe_gen;
+            sable::pe::PeImageGenerator pe_gen;
             auto pe_start = now();
             auto pe_bytes = pe_gen.generate({
                 .code = result.code,
                 .main_offset = *main_offset,
-                .alloc_console = opus::output_is_dll(output_kind),
+                .alloc_console = sable::output_is_dll(output_kind),
                 .iat_fixups = result.iat_fixups,
                 .debug_source = debug_source,
-                .line_map = config.debug ? result.line_map : std::vector<opus::pe::LineMapEntry>{},
-                .healing_mode = config.healing.value_or(opus::ast::HealingMode::Off),
+                .line_map = config.debug ? result.line_map : std::vector<sable::pe::LineMapEntry>{},
+                .healing_mode = config.healing.value_or(sable::ast::HealingMode::Off),
                 .output_kind = output_kind,
                 .writable_text = result.needs_writable_text,
             });
@@ -854,7 +853,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
             }
             
             auto validate_start = now();
-            auto pe_errors = opus::pe::PeImageGenerator::validate_pe(pe_bytes);
+            auto pe_errors = sable::pe::PeImageGenerator::validate_pe(pe_bytes);
             for (const auto& err : pe_errors) {
                 std::println("\033[1;93mPE warning:\033[0m {}", err);
             }
@@ -874,7 +873,7 @@ static void print_timing_block(std::string_view title, const std::vector<opus::T
             
             std::println("\n\033[1;92mBuild successful!\033[0m");
             std::println("Output: {} ({} bytes)", output_path.string(), pe_bytes.size());
-            if (opus::output_is_exe(output_kind)) {
+            if (sable::output_is_exe(output_kind)) {
                 std::println("Entry point: exe startup -> calls main()");
             } else {
                 std::println("Entry point: DllMain -> calls main()");
@@ -937,7 +936,7 @@ export int main(int argc, char* argv[]) {
 
         if (command == "repl") {
             print_banner();
-            opus::Repl repl;
+            sable::Repl repl;
             repl.run();
             return 0;
         }
@@ -989,7 +988,7 @@ export int main(int argc, char* argv[]) {
         bool quiet = false;
         bool timings = false;
         bool fast_mode = false;
-        auto output_kind = opus::OutputKind::Exe;
+        auto output_kind = sable::OutputKind::Exe;
         std::string filename;
         
         for (int i = 1; i < argc; ++i) {
@@ -1003,7 +1002,7 @@ export int main(int argc, char* argv[]) {
             } else if (arg == "--quiet" || arg == "-q") {
                 quiet = true;
             } else if (arg == "--dll") {
-                output_kind = opus::OutputKind::Dll;
+                output_kind = sable::OutputKind::Dll;
             } else if (!arg.starts_with("-")) {
                 filename = arg;
             }
@@ -1023,3 +1022,5 @@ export int main(int argc, char* argv[]) {
         return 1;
     }
 }
+
+namespace opus = sable;

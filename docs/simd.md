@@ -1,6 +1,6 @@
 # SIMD Support
 
-Opus has AVX2 (256-bit) and AVX-512 (512-bit) SIMD intrinsics for high-performance numeric code.
+Sable has AVX2 (256-bit) and AVX-512 (512-bit) SIMD intrinsics for high-performance numeric code.
 
 ## Feature Detection
 

@@ -1,9 +1,0 @@
-// repro: float compare semantics - confirm what opus does with floats
-function int main() {
-    var a: f64 = 1.5
-    var b: f64 = 2.5
-    if a < b {
-        return 0
-    }
-    return 1
-}

@@ -1,11 +1,11 @@
 ﻿// lexer - supports c-style and english syntaxes
 
-export module opus.lexer;
+export module sable.lexer;
 
-import opus.types;
+import sable.types;
 import std;
 
-export namespace opus {
+export namespace sable {
 
 enum class TokenKind : std::uint8_t {
     // Literals
@@ -947,4 +947,4 @@ constexpr std::string_view token_kind_name(TokenKind k) {
     }
 }
 
-} // namespace opus
+} // namespace sable

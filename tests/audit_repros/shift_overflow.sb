@@ -1,0 +1,9 @@
+// repro: shift count >= 64 - x86 hardware masks to 6 bits, but Sable does no checking
+function int main() {
+    var x: i64 = 1
+    var n: i64 = 64
+    var y: i64 = x << n
+    // x86 will compute x << (n & 63) = x << 0 = 1
+    // many languages define this as 0 or UB
+    return y
+}

@@ -23,8 +23,8 @@ jobs:
       - name: Upload compiler
         uses: actions/upload-artifact@v4
         with:
-          name: opus-windows-x64
-          path: bin/Release/opus.exe
+          name: sable-windows-x64
+          path: bin/Release/sable.exe
           if-no-files-found: error
 
   windows-tests:
@@ -44,7 +44,7 @@ jobs:
           architecture: x64
       - uses: actions/download-artifact@v4
         with:
-          name: opus-windows-x64
+          name: sable-windows-x64
           path: bin/Release/
       - name: Run tests
         run: python tests/test_runner.py -v
@@ -104,7 +104,7 @@ jobs:
           sleep 20
       - uses: actions/download-artifact@v4
         with:
-          name: opus-windows-x64
+          name: sable-windows-x64
           path: bin/Release/
       - name: Measure toolchains
         run: python benchmarks/run.py --iterations 5 --warmup 2
@@ -134,7 +134,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends wine wine64 xvfb
       - uses: actions/download-artifact@v4
         with:
-          name: opus-windows-x64
+          name: sable-windows-x64
           path: bin/Release/
       - name: Run tests under Wine
         run: python3 tests/test_runner.py -v
