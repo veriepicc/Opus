@@ -1,0 +1,32 @@
+// Auto-generated High-Validity Sable Module
+
+struct Point_25831 {
+    x: int;
+    y: int;
+}
+
+view Header_55502 {
+    magic: int @ 0;
+    flags: int @ 8;
+}
+
+function int helper_34535(int a_68401, int b_21272) {
+    let x_68221 = ((b_21272 - a_68401) * -42);
+    print_int((-42 | 5));
+    let x_67843 = ((b_21272 | 100) / (a_68401 / a_68401));
+    let x_73873 = ((x_67843 + x_67843) % (x_67843 & a_68401));
+    for i_46558 in 1..10 {
+        i_46558 = (-42 - (10 | x_67843));
+    }
+    return x_68221;
+}
+
+function int main() {
+    let res = helper_34535(10, 20);
+    print_int(res);
+    let x_33746 = 1000;
+    let x_98570 = x_33746;
+    let x_17794 = 2;
+    let x_95507 = ((x_98570 & x_17794) ^ (-5 | x_98570));
+    return 0;
+}
