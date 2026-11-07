@@ -1,6 +1,6 @@
 # Multi-Platform Benchmark Results
 
-Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepicc/Opus/actions/runs/42390598080) · Source: `4d1effd7c57b`.
+Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepicc/Opus/actions/runs/42391108095) · Source: `0c2cdb13f741`.
 
 
 ---
@@ -18,11 +18,11 @@ Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepic
 
 | Benchmark | Best Runtime | Fastest Compile | Smallest Binary |
 | :--- | :--- | :--- | :--- |
-| Math Loop (80M iter) | **Opus** (1343.87ms) | **GCC** (84.3ms) | **TCC** (2560B) |
-| State Accumulation (50M iter) | **Opus** (1336.36ms) | **GCC** (24.8ms) | **TCC** (2560B) |
-| Branch Parity (40M iter) | **Opus** (1348.64ms) | **GCC** (30.7ms) | **TCC** (2560B) |
-| General Logic (6M iter) | **GCC** (1334.02ms) | **GCC** (33.2ms) | **TCC** (2560B) |
-| HFT Order Book (12M iter) | **Opus** (1352.83ms) | **GCC** (44.1ms) | **TCC** (4096B) |
+| Math Loop (80M iter) | **GCC** (1344.52ms) | **GCC** (104.2ms) | **TCC** (2560B) |
+| State Accumulation (50M iter) | **Opus** (1347.97ms) | **GCC** (24.3ms) | **TCC** (2560B) |
+| Branch Parity (40M iter) | **GCC** (1356.13ms) | **GCC** (31.0ms) | **TCC** (2560B) |
+| General Logic (6M iter) | **Opus** (1337.50ms) | **GCC** (29.7ms) | **TCC** (2560B) |
+| HFT Order Book (12M iter) | **TCC** (1328.66ms) | **GCC** (44.4ms) | **TCC** (4096B) |
 
 ## Detailed Measurements
 
@@ -31,45 +31,45 @@ Automated multi-host benchmarks recorded on [CI Run](https://github.com/veriepic
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 3227.2 | 4,608 B | 1343.87 | 1364.28 | **Fastest** |
-| **GCC** | 84.3 | 14,336 B | 1348.94 | 1358.57 | 1.00x baseline |
-| **TCC** | 1363.2 | 2,560 B | 1354.98 | 1418.97 | 1.01x baseline |
+| **Opus** | 3200.3 | 4,608 B | 1347.05 | 1351.49 | 1.00x baseline |
+| **GCC** | 104.2 | 14,336 B | 1344.52 | 1352.27 | **Fastest** |
+| **TCC** | 1361.9 | 2,560 B | 1352.41 | 1422.98 | 1.01x baseline |
 
 ### State Accumulation (50M iter)
 *Multiple state updates with scalar induction*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 1588.4 | 4,608 B | 1336.36 | 1352.59 | **Fastest** |
-| **GCC** | 24.8 | 14,336 B | 1349.60 | 1351.99 | 1.01x baseline |
-| **TCC** | 1350.8 | 2,560 B | 1343.67 | 1387.04 | 1.01x baseline |
+| **Opus** | 1488.7 | 4,608 B | 1347.97 | 1369.60 | **Fastest** |
+| **GCC** | 24.3 | 14,336 B | 1355.47 | 1363.03 | 1.01x baseline |
+| **TCC** | 1361.9 | 2,560 B | 1369.72 | 1380.54 | 1.02x baseline |
 
 ### Branch Parity (40M iter)
 *Alternating parity branch recurrence*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 1382.0 | 4,608 B | 1348.64 | 1356.21 | **Fastest** |
-| **GCC** | 30.7 | 14,336 B | 1364.80 | 1370.57 | 1.01x baseline |
-| **TCC** | 1369.1 | 2,560 B | 1352.54 | 1355.50 | 1.00x baseline |
+| **Opus** | 1402.3 | 4,608 B | 1358.60 | 1366.65 | 1.00x baseline |
+| **GCC** | 31.0 | 14,336 B | 1356.13 | 1364.52 | **Fastest** |
+| **TCC** | 1355.4 | 2,560 B | 1359.23 | 1369.11 | 1.00x baseline |
 
 ### General Logic (6M iter)
 *Control flow folding, conditionals, and math blend*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 1362.1 | 4,608 B | 1347.56 | 1357.85 | 1.01x baseline |
-| **GCC** | 33.2 | 14,336 B | 1334.02 | 1348.34 | **Fastest** |
-| **TCC** | 1366.7 | 2,560 B | 1358.00 | 1364.17 | 1.02x baseline |
+| **Opus** | 1355.6 | 4,608 B | 1337.50 | 1347.47 | **Fastest** |
+| **GCC** | 29.7 | 14,336 B | 1338.05 | 1349.85 | 1.00x baseline |
+| **TCC** | 1335.9 | 2,560 B | 1343.26 | 1363.48 | 1.00x baseline |
 
 ### HFT Order Book (12M iter)
 *L2 order book matching, inventory skew, and risk checksums*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 1352.8 | 7,168 B | 1352.83 | 1377.29 | **Fastest** |
-| **GCC** | 44.1 | 14,336 B | 1360.58 | 1408.73 | 1.01x baseline |
-| **TCC** | 1372.0 | 4,096 B | 1354.89 | 1400.41 | 1.00x baseline |
+| **Opus** | 1353.3 | 7,168 B | 1359.55 | 1370.57 | 1.02x baseline |
+| **GCC** | 44.4 | 14,336 B | 1345.37 | 1350.48 | 1.01x baseline |
+| **TCC** | 1356.2 | 4,096 B | 1328.66 | 1353.50 | **Fastest** |
 
 ## Reproduction
 
@@ -88,12 +88,12 @@ python benchmarks/run.py
 
 ---
 
-## Platform: Windows AMD64 (INTEL(R) XEON(R) PLATINUM 8573C)
+## Platform: Windows AMD64 (AMD EPYC 7763 64-Core Processor)
 
 # Benchmark Results
 
 - Date: 2026-11-07
-- Host: `Windows AMD64 (INTEL(R) XEON(R) PLATINUM 8573C)`
+- Host: `Windows AMD64 (AMD EPYC 7763 64-Core Processor)`
 - Toolchains: Opus, GCC, MSVC, TCC
 - Settings: GCC `-O3 -fwrapv`, MSVC `/O2`, TCC default optimization; Opus native x64.
 
@@ -101,11 +101,11 @@ python benchmarks/run.py
 
 | Benchmark | Best Runtime | Fastest Compile | Smallest Binary |
 | :--- | :--- | :--- | :--- |
-| Math Loop (80M iter) | **Opus** (3.41ms) | **TCC** (11.0ms) | **TCC** (2560B) |
-| State Accumulation (50M iter) | **Opus** (3.38ms) | **Opus** (7.5ms) | **TCC** (2560B) |
-| Branch Parity (40M iter) | **Opus** (3.30ms) | **Opus** (7.6ms) | **TCC** (2560B) |
-| General Logic (6M iter) | **GCC** (13.68ms) | **Opus** (7.6ms) | **TCC** (2560B) |
-| HFT Order Book (12M iter) | **GCC** (111.00ms) | **Opus** (7.9ms) | **TCC** (4096B) |
+| Math Loop (80M iter) | **Opus** (3.03ms) | **TCC** (10.5ms) | **TCC** (2560B) |
+| State Accumulation (50M iter) | **Opus** (3.01ms) | **Opus** (6.8ms) | **TCC** (2560B) |
+| Branch Parity (40M iter) | **Opus** (3.01ms) | **Opus** (7.1ms) | **TCC** (2560B) |
+| General Logic (6M iter) | **GCC** (16.29ms) | **Opus** (7.7ms) | **TCC** (2560B) |
+| HFT Order Book (12M iter) | **MSVC** (127.57ms) | **TCC** (8.1ms) | **TCC** (4096B) |
 
 ## Detailed Measurements
 
@@ -114,50 +114,50 @@ python benchmarks/run.py
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 15.8 | 4,608 B | 3.41 | 3.50 | **Fastest** |
-| **GCC** | 3860.8 | 14,848 B | 4.35 | 4.53 | 1.28x baseline |
-| **MSVC** | 5019.8 | 108,032 B | 18.04 | 18.53 | 5.30x baseline |
-| **TCC** | 11.0 | 2,560 B | 106.76 | 107.81 | 31.35x baseline |
+| **Opus** | 16.7 | 4,608 B | 3.03 | 3.14 | **Fastest** |
+| **GCC** | 3198.7 | 14,848 B | 4.00 | 4.15 | 1.32x baseline |
+| **MSVC** | 4378.3 | 108,032 B | 29.02 | 29.20 | 9.58x baseline |
+| **TCC** | 10.5 | 2,560 B | 128.82 | 131.16 | 42.52x baseline |
 
 ### State Accumulation (50M iter)
 *Multiple state updates with scalar induction*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 7.5 | 4,608 B | 3.38 | 3.46 | **Fastest** |
-| **GCC** | 85.5 | 14,848 B | 4.32 | 4.51 | 1.28x baseline |
-| **MSVC** | 89.5 | 108,032 B | 20.41 | 20.73 | 6.04x baseline |
-| **TCC** | 8.1 | 2,560 B | 69.05 | 71.12 | 20.44x baseline |
+| **Opus** | 6.8 | 4,608 B | 3.01 | 3.05 | **Fastest** |
+| **GCC** | 83.0 | 14,848 B | 3.98 | 4.09 | 1.32x baseline |
+| **MSVC** | 86.4 | 108,032 B | 21.74 | 21.84 | 7.23x baseline |
+| **TCC** | 7.6 | 2,560 B | 82.10 | 82.44 | 27.31x baseline |
 
 ### Branch Parity (40M iter)
 *Alternating parity branch recurrence*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 7.6 | 4,608 B | 3.30 | 3.39 | **Fastest** |
-| **GCC** | 310.6 | 14,848 B | 17.32 | 17.76 | 5.24x baseline |
-| **MSVC** | 118.1 | 108,032 B | 29.31 | 31.65 | 8.87x baseline |
-| **TCC** | 8.1 | 2,560 B | 47.54 | 55.62 | 14.39x baseline |
+| **Opus** | 7.1 | 4,608 B | 3.01 | 3.09 | **Fastest** |
+| **GCC** | 260.6 | 14,848 B | 18.29 | 18.37 | 6.08x baseline |
+| **MSVC** | 89.4 | 108,032 B | 22.76 | 23.19 | 7.57x baseline |
+| **TCC** | 7.9 | 2,560 B | 49.27 | 49.41 | 16.39x baseline |
 
 ### General Logic (6M iter)
 *Control flow folding, conditionals, and math blend*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 7.6 | 4,608 B | 17.94 | 19.26 | 1.31x baseline |
-| **GCC** | 170.9 | 15,360 B | 13.68 | 14.06 | **Fastest** |
-| **MSVC** | 96.9 | 108,032 B | 38.94 | 39.70 | 2.85x baseline |
-| **TCC** | 8.4 | 2,560 B | 38.33 | 38.70 | 2.80x baseline |
+| **Opus** | 7.7 | 4,608 B | 20.20 | 20.51 | 1.24x baseline |
+| **GCC** | 153.9 | 15,360 B | 16.29 | 16.56 | **Fastest** |
+| **MSVC** | 100.2 | 108,032 B | 38.35 | 38.57 | 2.35x baseline |
+| **TCC** | 8.2 | 2,560 B | 46.32 | 46.54 | 2.84x baseline |
 
 ### HFT Order Book (12M iter)
 *L2 order book matching, inventory skew, and risk checksums*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 7.9 | 7,168 B | 229.03 | 231.53 | 2.06x baseline |
-| **GCC** | 215.2 | 15,872 B | 111.00 | 112.74 | **Fastest** |
-| **MSVC** | 107.4 | 108,544 B | 115.69 | 116.22 | 1.04x baseline |
-| **TCC** | 9.0 | 4,096 B | 258.14 | 258.79 | 2.33x baseline |
+| **Opus** | 8.1 | 7,168 B | 420.28 | 421.70 | 3.29x baseline |
+| **GCC** | 200.9 | 15,872 B | 128.81 | 129.72 | 1.01x baseline |
+| **MSVC** | 105.2 | 108,544 B | 127.57 | 127.92 | **Fastest** |
+| **TCC** | 8.1 | 4,096 B | 393.80 | 394.97 | 3.09x baseline |
 
 ## Reproduction
 
@@ -168,12 +168,12 @@ python benchmarks/run.py
 
 ---
 
-## Platform: Windows AMD64 (AMD EPYC 9V74 80-Core Processor)
+## Platform: Windows AMD64 (AMD EPYC 7763 64-Core Processor)
 
 # Benchmark Results
 
 - Date: 2026-11-07
-- Host: `Windows AMD64 (AMD EPYC 9V74 80-Core Processor)`
+- Host: `Windows AMD64 (AMD EPYC 7763 64-Core Processor)`
 - Toolchains: Opus, GCC, MSVC, TCC
 - Settings: GCC `-O3 -fwrapv`, MSVC `/O2`, TCC default optimization; Opus native x64.
 
@@ -181,11 +181,11 @@ python benchmarks/run.py
 
 | Benchmark | Best Runtime | Fastest Compile | Smallest Binary |
 | :--- | :--- | :--- | :--- |
-| Math Loop (80M iter) | **Opus** (3.59ms) | **TCC** (12.6ms) | **TCC** (2560B) |
-| State Accumulation (50M iter) | **Opus** (3.51ms) | **Opus** (7.8ms) | **TCC** (2560B) |
-| Branch Parity (40M iter) | **Opus** (3.48ms) | **Opus** (7.5ms) | **TCC** (2560B) |
-| General Logic (6M iter) | **GCC** (15.99ms) | **Opus** (8.9ms) | **TCC** (2560B) |
-| HFT Order Book (12M iter) | **GCC** (112.46ms) | **Opus** (9.0ms) | **TCC** (4096B) |
+| Math Loop (80M iter) | **Opus** (4.39ms) | **TCC** (14.1ms) | **TCC** (2560B) |
+| State Accumulation (50M iter) | **Opus** (4.32ms) | **Opus** (8.6ms) | **TCC** (2560B) |
+| Branch Parity (40M iter) | **Opus** (4.25ms) | **Opus** (8.5ms) | **TCC** (2560B) |
+| General Logic (6M iter) | **GCC** (17.84ms) | **Opus** (9.1ms) | **TCC** (2560B) |
+| HFT Order Book (12M iter) | **GCC** (130.96ms) | **Opus** (9.4ms) | **TCC** (4096B) |
 
 ## Detailed Measurements
 
@@ -194,50 +194,50 @@ python benchmarks/run.py
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 15.8 | 4,608 B | 3.59 | 3.85 | **Fastest** |
-| **GCC** | 3772.7 | 14,848 B | 4.62 | 4.66 | 1.29x baseline |
-| **MSVC** | 3456.7 | 107,520 B | 27.40 | 27.48 | 7.64x baseline |
-| **TCC** | 12.6 | 2,560 B | 114.73 | 116.16 | 31.98x baseline |
+| **Opus** | 20.3 | 4,608 B | 4.39 | 4.46 | **Fastest** |
+| **GCC** | 3077.0 | 14,848 B | 5.62 | 5.67 | 1.28x baseline |
+| **MSVC** | 3500.4 | 107,520 B | 30.34 | 30.46 | 6.91x baseline |
+| **TCC** | 14.1 | 2,560 B | 130.41 | 133.56 | 29.72x baseline |
 
 ### State Accumulation (50M iter)
 *Multiple state updates with scalar induction*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 7.8 | 4,608 B | 3.51 | 3.73 | **Fastest** |
-| **GCC** | 85.2 | 14,848 B | 4.58 | 4.67 | 1.31x baseline |
-| **MSVC** | 88.8 | 107,520 B | 19.01 | 19.09 | 5.42x baseline |
-| **TCC** | 8.8 | 2,560 B | 73.67 | 75.89 | 20.99x baseline |
+| **Opus** | 8.6 | 4,608 B | 4.32 | 4.42 | **Fastest** |
+| **GCC** | 100.7 | 14,848 B | 5.53 | 5.63 | 1.28x baseline |
+| **MSVC** | 101.3 | 107,520 B | 21.09 | 21.32 | 4.88x baseline |
+| **TCC** | 9.8 | 2,560 B | 83.57 | 85.76 | 19.33x baseline |
 
 ### Branch Parity (40M iter)
 *Alternating parity branch recurrence*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 7.5 | 4,608 B | 3.48 | 3.52 | **Fastest** |
-| **GCC** | 400.7 | 14,848 B | 18.11 | 18.70 | 5.20x baseline |
-| **MSVC** | 86.0 | 107,520 B | 26.80 | 28.89 | 7.69x baseline |
-| **TCC** | 8.2 | 2,560 B | 40.82 | 44.35 | 11.72x baseline |
+| **Opus** | 8.5 | 4,608 B | 4.25 | 4.44 | **Fastest** |
+| **GCC** | 385.2 | 14,848 B | 20.20 | 20.38 | 4.75x baseline |
+| **MSVC** | 100.5 | 107,520 B | 30.41 | 30.52 | 7.15x baseline |
+| **TCC** | 9.9 | 2,560 B | 50.38 | 50.74 | 11.84x baseline |
 
 ### General Logic (6M iter)
 *Control flow folding, conditionals, and math blend*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 8.9 | 4,608 B | 17.41 | 17.69 | 1.09x baseline |
-| **GCC** | 150.9 | 14,848 B | 15.99 | 16.37 | **Fastest** |
-| **MSVC** | 102.0 | 108,032 B | 16.85 | 16.93 | 1.05x baseline |
-| **TCC** | 9.2 | 2,560 B | 38.93 | 39.09 | 2.44x baseline |
+| **Opus** | 9.1 | 4,608 B | 21.32 | 21.49 | 1.20x baseline |
+| **GCC** | 171.7 | 14,848 B | 17.84 | 17.88 | **Fastest** |
+| **MSVC** | 112.7 | 108,032 B | 18.54 | 18.63 | 1.04x baseline |
+| **TCC** | 9.9 | 2,560 B | 47.46 | 47.54 | 2.66x baseline |
 
 ### HFT Order Book (12M iter)
 *L2 order book matching, inventory skew, and risk checksums*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 9.0 | 7,168 B | 219.50 | 220.19 | 1.95x baseline |
-| **GCC** | 172.2 | 15,360 B | 112.46 | 113.72 | **Fastest** |
-| **MSVC** | 111.6 | 108,544 B | 120.41 | 120.50 | 1.07x baseline |
-| **TCC** | 9.1 | 4,096 B | 258.79 | 261.30 | 2.30x baseline |
+| **Opus** | 9.4 | 7,168 B | 427.40 | 430.78 | 3.26x baseline |
+| **GCC** | 199.1 | 15,360 B | 130.96 | 133.92 | **Fastest** |
+| **MSVC** | 124.7 | 108,544 B | 140.14 | 141.61 | 1.07x baseline |
+| **TCC** | 10.6 | 4,096 B | 401.21 | 406.16 | 3.06x baseline |
 
 ## Reproduction
 
@@ -261,11 +261,11 @@ python benchmarks/run.py
 
 | Benchmark | Best Runtime | Fastest Compile | Smallest Binary |
 | :--- | :--- | :--- | :--- |
-| Math Loop (80M iter) | **Opus** (15.95ms) | **TCC** (62.0ms) | **TCC** (2560B) |
-| State Accumulation (50M iter) | **Opus** (15.38ms) | **Opus** (30.4ms) | **TCC** (2560B) |
-| Branch Parity (40M iter) | **Opus** (15.35ms) | **Opus** (28.6ms) | **TCC** (2560B) |
-| General Logic (6M iter) | **Opus** (31.32ms) | **TCC** (34.1ms) | **TCC** (2560B) |
-| HFT Order Book (12M iter) | **GCC** (148.23ms) | **TCC** (34.3ms) | **TCC** (4096B) |
+| Math Loop (80M iter) | **Opus** (14.98ms) | **TCC** (55.9ms) | **TCC** (2560B) |
+| State Accumulation (50M iter) | **Opus** (15.79ms) | **Opus** (31.1ms) | **TCC** (2560B) |
+| Branch Parity (40M iter) | **Opus** (15.36ms) | **Opus** (29.4ms) | **TCC** (2560B) |
+| General Logic (6M iter) | **GCC** (31.47ms) | **TCC** (31.7ms) | **TCC** (2560B) |
+| HFT Order Book (12M iter) | **GCC** (147.80ms) | **TCC** (33.2ms) | **TCC** (4096B) |
 
 ## Detailed Measurements
 
@@ -274,45 +274,45 @@ python benchmarks/run.py
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 101.6 | 4,608 B | 15.95 | 16.29 | **Fastest** |
-| **GCC** | 5024.6 | 14,848 B | 17.85 | 18.63 | 1.12x baseline |
-| **TCC** | 62.0 | 2,560 B | 195.16 | 195.50 | 12.24x baseline |
+| **Opus** | 115.2 | 4,608 B | 14.98 | 15.44 | **Fastest** |
+| **GCC** | 4785.4 | 14,848 B | 18.29 | 18.56 | 1.22x baseline |
+| **TCC** | 55.9 | 2,560 B | 195.02 | 196.27 | 13.02x baseline |
 
 ### State Accumulation (50M iter)
 *Multiple state updates with scalar induction*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 30.4 | 4,608 B | 15.38 | 15.65 | **Fastest** |
-| **GCC** | 239.4 | 14,848 B | 18.27 | 18.60 | 1.19x baseline |
-| **TCC** | 32.9 | 2,560 B | 195.64 | 196.12 | 12.72x baseline |
+| **Opus** | 31.1 | 4,608 B | 15.79 | 15.92 | **Fastest** |
+| **GCC** | 243.7 | 14,848 B | 19.33 | 19.63 | 1.22x baseline |
+| **TCC** | 33.8 | 2,560 B | 196.29 | 199.26 | 12.43x baseline |
 
 ### Branch Parity (40M iter)
 *Alternating parity branch recurrence*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 28.6 | 4,608 B | 15.35 | 15.73 | **Fastest** |
-| **GCC** | 503.2 | 14,848 B | 37.19 | 37.67 | 2.42x baseline |
-| **TCC** | 31.2 | 2,560 B | 103.41 | 103.62 | 6.74x baseline |
+| **Opus** | 29.4 | 4,608 B | 15.36 | 15.64 | **Fastest** |
+| **GCC** | 494.3 | 14,848 B | 38.08 | 38.66 | 2.48x baseline |
+| **TCC** | 33.9 | 2,560 B | 103.79 | 104.69 | 6.76x baseline |
 
 ### General Logic (6M iter)
 *Control flow folding, conditionals, and math blend*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 38.1 | 4,608 B | 31.32 | 31.71 | **Fastest** |
-| **GCC** | 365.1 | 15,360 B | 32.10 | 32.32 | 1.02x baseline |
-| **TCC** | 34.1 | 2,560 B | 88.84 | 89.05 | 2.84x baseline |
+| **Opus** | 39.8 | 4,608 B | 31.52 | 31.99 | 1.00x baseline |
+| **GCC** | 362.3 | 15,360 B | 31.47 | 32.04 | **Fastest** |
+| **TCC** | 31.7 | 2,560 B | 88.03 | 88.61 | 2.80x baseline |
 
 ### HFT Order Book (12M iter)
 *L2 order book matching, inventory skew, and risk checksums*
 
 | Toolchain | Compile (ms) | Binary Size | Runtime Min (ms) | Runtime Avg (ms) | Performance |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Opus** | 34.8 | 7,168 B | 579.22 | 580.68 | 3.91x baseline |
-| **GCC** | 489.0 | 15,872 B | 148.23 | 148.60 | **Fastest** |
-| **TCC** | 34.3 | 4,096 B | 470.07 | 471.00 | 3.17x baseline |
+| **Opus** | 33.3 | 7,168 B | 578.90 | 579.60 | 3.92x baseline |
+| **GCC** | 439.6 | 15,872 B | 147.80 | 148.12 | **Fastest** |
+| **TCC** | 33.2 | 4,096 B | 469.02 | 470.66 | 3.17x baseline |
 
 ## Reproduction
 
