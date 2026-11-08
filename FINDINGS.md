@@ -1083,3 +1083,40 @@ function int main() {
 
 ```
 ---
+
+## Finding `9d5d4cfa96f7` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:06:23Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_9d5d4cfa96f7.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+function int helper_43706(int a_82866, int b_4182) {
+    for i_35908 in 1..10 {
+        for i_70182 in 1..5 {
+            i_70182 = ((2 % a_82866) / (b_4182 | a_82866));
+        }
+    }
+    let x_9760 = 42;
+    let x_11681 = (x_9760 ^ (255 & -10));
+    return 100;
+}
+
+function int main() {
+    let res = helper_43706(10, 20);
+    print_int(res);
+    print_int((-1 & 1000));
+    print_int((-5 & 5));
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+
+```
+---

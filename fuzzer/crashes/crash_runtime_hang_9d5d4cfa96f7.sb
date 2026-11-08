@@ -1,0 +1,20 @@
+// Auto-generated High-Validity Sable Module
+
+function int helper_43706(int a_82866, int b_4182) {
+    for i_35908 in 1..10 {
+        for i_70182 in 1..5 {
+            i_70182 = ((2 % a_82866) / (b_4182 | a_82866));
+        }
+    }
+    let x_9760 = 42;
+    let x_11681 = (x_9760 ^ (255 & -10));
+    return 100;
+}
+
+function int main() {
+    let res = helper_43706(10, 20);
+    print_int(res);
+    print_int((-1 & 1000));
+    print_int((-5 & 5));
+    return 0;
+}
