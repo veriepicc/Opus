@@ -90,26 +90,8 @@ def run_proc(argv, timeout=10, cwd=None, env=None):
 
 def classify_outcome(code: int, output: str, timed_out: bool) -> tuple[bool, str, str]:
     """Returns (is_finding, category, description)."""
-    if timed_out:
-        return True, "HANG", "Compiler Hang / Infinite Loop (>10s)"
-
-    u_code = code & 0xFFFFFFFF
-    
-    # Specific Windows NTSTATUS crash codes
-    if u_code == 0xC0000005:
-        return True, "ACCESS_VIOLATION", "Access Violation (0xC0000005) - Null deref or bad memory read/write"
-    if u_code == 0xC00000FD:
-        return True, "STACK_OVERFLOW", "Stack Overflow (0xC00000FD) - Infinite recursion in AST/codegen"
-    if u_code == 0xC0000028:
-        return True, "BAD_STACK", "Bad Stack Pointer / Frame Corruption (0xC0000028)"
-    if u_code == 0xC0000374:
-        return True, "HEAP_CORRUPTION", "Heap Corruption (0xC0000374) - Use-after-free or double free in compiler"
-    if code < 0:
-        sig = -code
-        signame = f"SIG{signal.Signals(sig).name}" if sig in signal.Signals._value2member_map_ else f"Signal {sig}"
-        return True, "CRASH_SIGNAL", f"Compiler terminated by {signame}"
-
     lower = output.lower()
+    # Check for Sable built-in crash handler FIRST (even on timeout, because "freeze" pauses at fault site)
     if "=== sable crash detected ===" in lower or "[paused] attach debugger..." in lower:
         exc_match = re.search(r"Exception:\s*([^\n\r]+)", output)
         loc_match = re.search(r"Location:\s*([^\n\r]+)", output)
@@ -120,6 +102,9 @@ def classify_outcome(code: int, output: str, timed_out: bool) -> tuple[bool, str
             diag.append(loc_match.group(1).strip())
         detail = " | ".join(diag) if diag else "VEH Debugger Intercept"
         return True, "SABLE_CRASH", f"Native Image Fault: {detail}"
+
+    if timed_out:
+        return True, "HANG", "Compiler Hang / Infinite Loop (>10s)"
 
     for marker in (
         "internal compiler error",
