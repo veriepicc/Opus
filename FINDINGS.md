@@ -1337,3 +1337,32 @@ function int main() {
 0
 ```
 ---
+
+## Finding `56da7e560023` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:13:46Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_56da7e560023.sb`
+
+### Minimal Reproducer:
+```sable
+function int helper_3684(int a_11108, int b_45394) {
+    let x_62611 = b_45394;
+    if (-1 > x_62611) {
+    }
+}
+function int main() {
+    for i_7560 in 0..5 {
+        i_7560 = 2;
+    }
+}
+```
+
+### Compiler Output:
+```text
+1020
+90
+20
+```
+---

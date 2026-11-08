@@ -1,0 +1,10 @@
+function int helper_3684(int a_11108, int b_45394) {
+    let x_62611 = b_45394;
+    if (-1 > x_62611) {
+    }
+}
+function int main() {
+    for i_7560 in 0..5 {
+        i_7560 = 2;
+    }
+}
