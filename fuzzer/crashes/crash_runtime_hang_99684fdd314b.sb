@@ -1,0 +1,12 @@
+function int helper_25172(int a_66932, int b_97436) {
+}
+function int main() {
+    let x_76496 = ((1 ^ 3) & -1);
+    for i_44779 in 1..5 {
+        for i_22430 in 1..5 {
+            i_22430 = (i_44779 - x_76496);
+        }
+    }
+    for i_4679 in 0..10 {
+    }
+}

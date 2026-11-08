@@ -1396,3 +1396,32 @@ function int main() {
 20
 ```
 ---
+
+## Finding `99684fdd314b` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:16:36Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_99684fdd314b.sb`
+
+### Minimal Reproducer:
+```sable
+function int helper_25172(int a_66932, int b_97436) {
+}
+function int main() {
+    let x_76496 = ((1 ^ 3) & -1);
+    for i_44779 in 1..5 {
+        for i_22430 in 1..5 {
+            i_22430 = (i_44779 - x_76496);
+        }
+    }
+    for i_4679 in 0..10 {
+    }
+}
+```
+
+### Compiler Output:
+```text
+0
+```
+---
