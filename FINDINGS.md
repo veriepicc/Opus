@@ -1029,3 +1029,57 @@ function int main() {
 
 ```
 ---
+
+## Finding `5a40cfb39e20` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:05:40Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_5a40cfb39e20.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+struct Point_96012 {
+    x: int;
+    y: int;
+}
+
+view Header_73699 {
+    magic: int @ 0;
+    flags: int @ 8;
+}
+
+function int helper_79221(int a_76406, int b_31052) {
+    let x_24622 = 0;
+    for i_83767 in 0..10 {
+        for i_6349 in 1..10 {
+            i_6349 = x_24622;
+        }
+    }
+    if (-5 >= (x_24622 ^ b_31052)) {
+        let x_54642 = 1;
+    } else {
+        let x_14820 = 2;
+    }
+    return -5;
+}
+
+function int main() {
+    let res = helper_79221(10, 20);
+    print_int(res);
+    print_int(-10);
+    let x_28227 = ((1 % 10) / -5);
+    let x_9322 = ((x_28227 | x_28227) + x_28227);
+    let x_12087 = (x_9322 % (x_9322 * x_9322));
+    let x_86078 = ((x_28227 & x_9322) % (x_12087 % x_28227));
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+
+```
+---
