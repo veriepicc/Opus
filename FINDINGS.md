@@ -1120,3 +1120,57 @@ function int main() {
 
 ```
 ---
+
+## Finding `e2a287f50bb7` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:07:09Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_e2a287f50bb7.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+struct Point_49232 {
+    x: int;
+    y: int;
+}
+
+function int helper_8175(int a_24266, int b_77468) {
+    print_int(b_77468);
+    let x_32497 = (a_24266 & (a_24266 / -10));
+    print_int(-10);
+    let x_55737 = x_32497;
+    let x_27542 = x_32497;
+    let x_65722 = ((5 + x_55737) + a_24266);
+    let x_4021 = ((x_32497 & b_77468) & (-1 / 1));
+    return 10;
+}
+
+function int main() {
+    let res = helper_8175(10, 20);
+    print_int(res);
+    for i_88871 in 1..10 {
+        for i_15811 in 1..10 {
+            i_15811 = i_88871;
+        }
+    }
+    for i_1446 in 1..5 {
+        let x_68681 = ((-1 % 255) % (5 / 42));
+    }
+    for i_23300 in 0..10 {
+        let x_17636 = 0;
+    }
+    let x_30019 = (i_1446 & (i_1446 * i_23300));
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+20
+-10
+10
+```
+---
