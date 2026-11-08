@@ -716,3 +716,63 @@ function int main() {
 
 ```
 ---
+
+## Finding `8a7c2c08a15a` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:02:37Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_8a7c2c08a15a.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+view Header_63204 {
+    magic: int @ 0;
+    flags: int @ 8;
+}
+
+function int helper_65525(int a_60063, int b_73210) {
+    if (((100 ^ 255) & (a_60063 & -1)) >= ((-5 % 255) & (0 / a_60063))) {
+        b_73210 = (2 * (5 | a_60063));
+    }
+    if false {
+        switch b_73210 {
+            case 0: return 0;
+            case 1: return 1;
+            case 2: return 2;
+            else: return 0;
+        }
+    }
+    print_int(a_60063);
+    if true {
+        switch a_60063 {
+            case 0: return 0;
+            case 1: return 1;
+            case 2: return 2;
+            case 3: return 3;
+            else: return 0;
+        }
+    }
+    return 3;
+}
+
+function int main() {
+    let res = helper_65525(10, 20);
+    print_int(res);
+    print_int((255 % 3));
+    for i_64004 in 0..5 {
+        i_64004 = (-1 / 42);
+    }
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+10
+0
+0
+```
+---
