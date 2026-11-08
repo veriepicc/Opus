@@ -1306,3 +1306,34 @@ function int main() {
 
 ```
 ---
+
+## Finding `5f9c0a69f27c` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:12:47Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_5f9c0a69f27c.sb`
+
+### Minimal Reproducer:
+```sable
+struct Point_72669 {
+}
+function int helper_28098(int a_69678, int b_70806) {
+    switch b_70806 {
+        case 0: return 0;
+    }
+}
+function int main() {
+    for i_67974 in 0..5 {
+        for i_24614 in 1..10 {
+            i_67974 = -5;
+        }
+    }
+}
+```
+
+### Compiler Output:
+```text
+0
+```
+---

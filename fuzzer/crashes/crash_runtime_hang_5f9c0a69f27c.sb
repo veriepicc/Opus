@@ -1,0 +1,14 @@
+struct Point_72669 {
+}
+function int helper_28098(int a_69678, int b_70806) {
+    switch b_70806 {
+        case 0: return 0;
+    }
+}
+function int main() {
+    for i_67974 in 0..5 {
+        for i_24614 in 1..10 {
+            i_67974 = -5;
+        }
+    }
+}
