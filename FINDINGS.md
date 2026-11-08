@@ -469,3 +469,54 @@ function int main() {
 0
 ```
 ---
+
+## Finding `7a70b3dff517` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:00:56Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_7a70b3dff517.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+function int helper_3978(int a_74129, int b_21601) {
+    for i_37428 in 0..10 {
+        for i_31482 in 1..10 {
+            i_31482 = i_37428;
+        }
+    }
+    let x_50480 = 42;
+    switch x_50480 {
+        case 0: return 0;
+        case 1: return 1;
+        else: return 0;
+    }
+    let x_27054 = -1;
+    return x_50480;
+}
+
+function int main() {
+    let res = helper_3978(10, 20);
+    print_int(res);
+    switch 0 {
+        case 0: return 0;
+        case 1: return 1;
+        case 2: return 2;
+        case 3: return 3;
+        else: return 0;
+    }
+    let x_55215 = ((5 - 1000) % (100 + 2));
+    let x_67424 = (3 | (2 - x_55215));
+    print_int((x_55215 - -5));
+    let x_55476 = 5;
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+
+```
+---
