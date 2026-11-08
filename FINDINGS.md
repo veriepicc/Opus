@@ -936,3 +936,53 @@ function int main() {
 101
 ```
 ---
+
+## Finding `b0445ecd2e76` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:04:56Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_b0445ecd2e76.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+struct Point_30210 {
+    x: int;
+    y: int;
+}
+
+function int helper_59060(int a_58295, int b_23218) {
+    let x_72525 = ((a_58295 | 1) - (a_58295 ^ a_58295));
+    print_int(5);
+    let x_43972 = b_23218;
+    print_int(b_23218);
+    let x_78599 = 255;
+    a_58295 = (1 | b_23218);
+    for i_86458 in 0..5 {
+        i_86458 = ((1000 ^ x_78599) | (-42 * x_43972));
+    }
+    return (-10 % (x_78599 ^ -1));
+}
+
+function int main() {
+    let res = helper_59060(10, 20);
+    print_int(res);
+    switch 0 {
+        case 0: return 0;
+        case 1: return 1;
+        else: return 0;
+    }
+    print_int((3 / -5));
+    print_int((2 / -10));
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+5
+20
+```
+---
