@@ -110,6 +110,17 @@ def classify_outcome(code: int, output: str, timed_out: bool) -> tuple[bool, str
         return True, "CRASH_SIGNAL", f"Compiler terminated by {signame}"
 
     lower = output.lower()
+    if "=== sable crash detected ===" in lower or "[paused] attach debugger..." in lower:
+        exc_match = re.search(r"Exception:\s*([^\n\r]+)", output)
+        loc_match = re.search(r"Location:\s*([^\n\r]+)", output)
+        diag = []
+        if exc_match:
+            diag.append(exc_match.group(1).strip())
+        if loc_match:
+            diag.append(loc_match.group(1).strip())
+        detail = " | ".join(diag) if diag else "VEH Debugger Intercept"
+        return True, "SABLE_CRASH", f"Native Image Fault: {detail}"
+
     for marker in (
         "internal compiler error",
         "assertion failed",
@@ -391,7 +402,9 @@ class DeltaDebugger:
         self.runtime = runtime
 
     def test(self, content: str) -> bool:
-        with tempfile.NamedTemporaryFile(suffix=".sb", delete=False, mode="w", encoding="utf-8", dir=ROOT) as tf:
+        scratch_dir = ROOT / ".fuzz_work"
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=".sb", delete=False, mode="w", encoding="utf-8", dir=scratch_dir) as tf:
             tf.write(content)
             temp_name = tf.name
         try:
@@ -670,9 +683,17 @@ class FuzzCoordinator:
         print(f"Artifacts: {self.crashes_dir}")
         print(f"===============================================\n")
 
-        # Use relative scratch directory inside repo to avoid path conversion issues
+        # Use relative scratch directory inside repo with embedded debug & crash handler
         scratch_dir = ROOT / ".fuzz_work"
         scratch_dir.mkdir(parents=True, exist_ok=True)
+        (scratch_dir / "sable.project").write_text("""project FuzzWork {
+    entry: "main.sb"
+    output: "fuzz.exe"
+    mode: "exe"
+    debug: true
+    healing: "freeze"
+}
+""", encoding="utf-8")
 
         try:
             while time.time() - self.start_time < self.duration:
@@ -681,7 +702,7 @@ class FuzzCoordinator:
                 src_file = scratch_dir / f"fuzz_cand_{self.mode}_{self.total_iterations % 20}.sb"
                 src_file.write_text(sample, encoding="utf-8")
 
-                # Step 1: Compile with --fast --quiet
+                # Step 1: Fast compilation check (skip project discovery for speed)
                 code, output, timed_out = run_proc([self.compiler, "--fast", "--quiet", str(src_file)], timeout=8)
                 is_find, category, desc = classify_outcome(code, output, timed_out)
 
@@ -689,7 +710,7 @@ class FuzzCoordinator:
                     self.log_finding(sample, category, desc, code, output)
                 elif code == 0:
                     self.valid_compiles += 1
-                    # Step 2: For clean compiles, execute via --run with short timeout
+                    # Step 2: Execute via --run (without --fast so it discovers sable.project and enables VEH debug handler)
                     run_code, run_out, run_to = run_proc([self.compiler, "--run", str(src_file)], timeout=3)
                     run_find, run_cat, run_desc = classify_outcome(run_code, run_out, run_to)
                     if run_find:
