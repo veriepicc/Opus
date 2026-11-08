@@ -1513,3 +1513,62 @@ function int main() {
   R10 = 0000000000000014  R11 = 000000000
 ```
 ---
+
+## Finding `1d839654754c` — RUNTIME_SABLE_CRASH
+- **Timestamp**: `2026-11-08 00:25:00Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Native Image Fault: INTEGER_DIVIDE_BY_ZERO | line 9
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_sable_crash_1d839654754c.sb`
+
+### Minimal Reproducer:
+```sable
+view Header_89851 {
+}
+function int helper_3136(int a_23130, int b_91085) {
+    for i_42713 in 0..10 {
+        if false {
+            if (((-10 | 10) & (a_23130 & 2)) == ((i_42713 % 1) - i_42713)) {
+            }
+        }
+    }
+}
+function int main() {
+    let x_18489 = ((-1 * -10) ^ (5 * -5));
+    let x_93731 = ((x_18489 / 2) % (2 / x_18489));
+    let x_54811 = ((x_93731 % 3) | (x_93731 * 42));
+}
+```
+
+### Compiler Output:
+```text
+[36m[pe][0m slot usage (exe):
+  print_impl:      85/96 bytes
+  set_title:       20/32 bytes
+  alloc_console:   20/32 bytes
+  print_hex:      460/512 bytes
+  crash_handler: 3740/4864 bytes
+  startup total: 7648 bytes (0x1DE0)
+
+=== SABLE CRASH DETECTED ===
+  Exception: INTEGER_DIVIDE_BY_ZERO
+  Fault RIP: 0000000180002E63
+  Sable image base: 0000000180000000
+  Fault RVA: 0x0000000000002E63
+  Location: line 9
+  -------------------------------------------
+  7 | 
+  8 | function int helper_3136(int a_23130, int b_91085) {
+> 9 |     b_91085 = (a_23130 / (b_91085 / 42));
+  10 |     for i_42713 in 0..10 {
+  11 |         if false {
+  -------------------------------------------
+  Registers:
+  RAX = 000000000000000A  RBX = 0000000000000000
+  RCX = 000000000000000A  RDX = 0000000000000000
+  RSP = 000000000014FE70  RBP = 000000000014FEA0
+  RSI = 0000000000000000  RDI = 0000000000000000
+  R8  = 000000000014FE28  R9  = 0000000000000000
+  R10 = 0000000000000000  R11 = 0
+```
+---
