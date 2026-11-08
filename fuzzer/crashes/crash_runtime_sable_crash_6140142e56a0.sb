@@ -1,0 +1,11 @@
+function int helper_26537(int a_73333, int b_36800) {
+    let x_11760 = a_73333;
+    if true {
+        let x_3446 = (a_73333 % (-10 % x_11760));
+    }
+}
+function int main() {
+    let res = helper_26537(10, 20);
+    for i_46624 in 1..5 {
+    }
+}

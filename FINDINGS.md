@@ -1458,3 +1458,58 @@ function int main() {
 
 ```
 ---
+
+## Finding `6140142e56a0` — RUNTIME_SABLE_CRASH
+- **Timestamp**: `2026-11-08 00:23:33Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Native Image Fault: INTEGER_DIVIDE_BY_ZERO | line 11
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_sable_crash_6140142e56a0.sb`
+
+### Minimal Reproducer:
+```sable
+function int helper_26537(int a_73333, int b_36800) {
+    let x_11760 = a_73333;
+    if true {
+        let x_3446 = (a_73333 % (-10 % x_11760));
+    }
+}
+function int main() {
+    let res = helper_26537(10, 20);
+    for i_46624 in 1..5 {
+    }
+}
+```
+
+### Compiler Output:
+```text
+[36m[pe][0m slot usage (exe):
+  print_impl:      85/96 bytes
+  set_title:       20/32 bytes
+  alloc_console:   20/32 bytes
+  print_hex:      460/512 bytes
+  crash_handler: 3740/4864 bytes
+  startup total: 7648 bytes (0x1DE0)
+
+=== SABLE CRASH DETECTED ===
+  Exception: INTEGER_DIVIDE_BY_ZERO
+  Fault RIP: 0000000180002F18
+  Sable image base: 0000000180000000
+  Fault RVA: 0x0000000000002F18
+  Location: line 11
+  -------------------------------------------
+  9 |     let x_11760 = a_73333;
+  10 |     if true {
+> 11 |         let x_3446 = (a_73333 % (-10 % x_11760));
+  12 |     }
+  13 |     let x_12670 = (-5 % b_36800);
+  -------------------------------------------
+  Registers:
+  RAX = 000000000000000A  RBX = 0000000000000000
+  RCX = 00007FFC9F614D50  RDX = 0000000000000000
+  RSP = 000000000014FEC0  RBP = 000000000014FEF0
+  RSI = 0000000000000000  RDI = 0000000000000000
+  R8  = 000000000014FE28  R9  = 0000000000000000
+  R10 = 0000000000000014  R11 = 000000000
+```
+---
