@@ -1366,3 +1366,33 @@ function int main() {
 20
 ```
 ---
+
+## Finding `1f0f20eff5b0` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:14:56Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_1f0f20eff5b0.sb`
+
+### Minimal Reproducer:
+```sable
+function int helper_47367(int a_46744, int b_62531) {
+    let x_86755 = 3;
+    for i_36482 in 1..10 {
+        i_36482 = ((b_62531 - a_46744) / (a_46744 | x_86755));
+    }
+}
+function int main() {
+    let res = helper_47367(10, 20);
+    let x_17834 = 2;
+    switch x_17834 {
+        case 1: return 1;
+    }
+}
+```
+
+### Compiler Output:
+```text
+20
+```
+---
