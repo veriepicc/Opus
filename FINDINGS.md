@@ -1211,3 +1211,60 @@ function int main() {
 
 ```
 ---
+
+## Finding `8d340aa6f73a` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:08:39Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_8d340aa6f73a.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+struct Point_30821 {
+    x: int;
+    y: int;
+}
+
+function int helper_89230(int a_30236, int b_64472) {
+    print_int((0 / a_30236));
+    let x_63829 = b_64472;
+    let x_33638 = ((x_63829 + a_30236) ^ x_63829);
+    switch x_63829 {
+        case 0: return 0;
+        case 1: return 1;
+        else: return 0;
+    }
+    print_int((1000 ^ a_30236));
+    let x_134 = x_33638;
+    return ((5 | a_30236) % (a_30236 % b_64472));
+}
+
+function int main() {
+    let res = helper_89230(10, 20);
+    print_int(res);
+    print_int((-42 ^ 3));
+    for i_36934 in 0..10 {
+        let x_91283 = i_36934;
+    }
+    for i_66806 in 1..10 {
+        for i_90527 in 1..10 {
+            let x_6310 = ((3 | 3) & (i_36934 - i_36934));
+        }
+    }
+    for i_94942 in 1..10 {
+        i_94942 = 2;
+    }
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+0
+0
+-43
+```
+---
