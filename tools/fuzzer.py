@@ -370,6 +370,14 @@ class SableCorpusMutator:
         else: # loop_boundary_swap
             return source.replace("0..10", "0..1000", 1)
 
+def normalize_repro(text: str) -> str:
+    # collapse random identifiers, numeric literals and whitespace so the same
+    # bug minimized from different samples lands on the same signature
+    t = re.sub(r"_\d+", "_N", text)
+    t = re.sub(r"\b\d+\b", "N", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
 # ============================================================================
 # AUTOMATED DELTA DEBUGGER (CRASH MINIMIZER)
 # ============================================================================
@@ -377,9 +385,10 @@ class SableCorpusMutator:
 class DeltaDebugger:
     """Automated crash minimizer using hierarchical delta debugging."""
 
-    def __init__(self, compiler_bin: Path, target_sig: str):
+    def __init__(self, compiler_bin: Path, target_sig: str, runtime: bool = False):
         self.compiler = compiler_bin
         self.target_sig = target_sig
+        self.runtime = runtime
 
     def test(self, content: str) -> bool:
         with tempfile.NamedTemporaryFile(suffix=".sb", delete=False, mode="w", encoding="utf-8", dir=ROOT) as tf:
@@ -390,6 +399,11 @@ class DeltaDebugger:
             is_find, cat, desc = classify_outcome(code, out, to)
             if is_find and cat == self.target_sig:
                 return True
+            if self.runtime and code == 0:
+                run_code, run_out, run_to = run_proc([self.compiler, "--run", temp_name], timeout=5)
+                run_find, run_cat, run_desc = classify_outcome(run_code, run_out, run_to)
+                if run_find and f"RUNTIME_{run_cat}" == self.target_sig:
+                    return True
             return False
         finally:
             try:
@@ -529,6 +543,22 @@ class FuzzCoordinator:
         self.mutator = SableCorpusMutator(self.rng)
         
         self.seen_signatures = set()
+        self.category_counts = {}
+        self.max_findings_per_category = 5
+        # seed dedup from previously published crash reproducers
+        if self.crashes_dir.exists():
+            for f in self.crashes_dir.glob("*.sb"):
+                # filename: crash_<category>_<hash>.sb
+                parts = f.stem.split("_")
+                if len(parts) >= 3:
+                    cat = "_".join(parts[1:-1]).upper()
+                    try:
+                        sig = f"{cat}:{hashlib.sha256(normalize_repro(f.read_text(encoding='utf-8', errors='replace')).encode()).hexdigest()[:16]}"
+                        self.seen_signatures.add(sig)
+                    except OSError:
+                        pass
+        if self.seen_signatures:
+            print(f"[DEDUP] seeded {len(self.seen_signatures)} known signatures from {self.crashes_dir}")
         self.total_iterations = 0
         self.total_crashes = 0
         self.valid_compiles = 0
@@ -560,25 +590,34 @@ class FuzzCoordinator:
             return chosen(self.rng)
 
     def log_finding(self, sample: str, category: str, description: str, code: int, output: str):
-        content_hash = hashlib.sha256(sample.encode("utf-8")).hexdigest()[:12]
-        sig_key = f"{category}_{code}"
-        
-        if sig_key in self.seen_signatures and len(self.seen_signatures) > 30:
-            return
-
-        self.seen_signatures.add(sig_key)
-        self.total_crashes += 1
-
         print(f"\n=======================================================")
         print(f"[!CRASH DETECTED] Category: {category} | Exit: {code}")
         print(f"Details: {description}")
         print(f"Minimizing reproducer...")
 
-        dd = DeltaDebugger(self.compiler, category)
+        is_runtime = category.startswith("RUNTIME_")
+        dd = DeltaDebugger(self.compiler, category, runtime=is_runtime)
         try:
             minimized = dd.minimize(sample)
         except Exception:
             minimized = sample
+
+        # dedup on the root cause: normalized shape of the minimized reproducer
+        sig_key = f"{category}:{hashlib.sha256(normalize_repro(minimized).encode()).hexdigest()[:16]}"
+        if sig_key in self.seen_signatures:
+            print(f"[DEDUP] {sig_key} already known, skipping (same bug)")
+            return
+
+        # cap per-category findings so one root bug family can't flood the log
+        if self.category_counts.get(category, 0) >= self.max_findings_per_category:
+            print(f"[CAP] {category} already has {self.max_findings_per_category} findings this session, skipping further reports")
+            return
+
+        self.seen_signatures.add(sig_key)
+        self.category_counts[category] = self.category_counts.get(category, 0) + 1
+        self.total_crashes += 1
+
+        content_hash = hashlib.sha256(minimized.encode("utf-8")).hexdigest()[:12]
 
         crash_filename = f"crash_{category.lower()}_{content_hash}.sb"
         crash_path = self.crashes_dir / crash_filename
