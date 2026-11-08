@@ -1425,3 +1425,36 @@ function int main() {
 0
 ```
 ---
+
+## Finding `afadcd561910` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:17:57Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_afadcd561910.sb`
+
+### Minimal Reproducer:
+```sable
+struct Point_47804 {
+}
+view Header_70197 {
+}
+function int helper_50813(int a_47281, int b_27392) {
+    for i_82834 in 0..5 {
+    }
+    for i_94591 in 1..10 {
+        i_94591 = ((a_47281 % i_94591) ^ (3 ^ i_94591));
+    }
+}
+function int main() {
+    let res = helper_50813(10, 20);
+    for i_54389 in 0..10 {
+    }
+}
+```
+
+### Compiler Output:
+```text
+
+```
+---
