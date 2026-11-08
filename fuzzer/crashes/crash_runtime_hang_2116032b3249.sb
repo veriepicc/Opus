@@ -1,0 +1,26 @@
+// Auto-generated High-Validity Sable Module
+
+view Header_24303 {
+    magic: int @ 0;
+    flags: int @ 8;
+}
+
+function int helper_71350(int a_76343, int b_90697) {
+    print_int(a_76343);
+    b_90697 = 0;
+    let x_51975 = ((b_90697 * a_76343) ^ (a_76343 - 10));
+    return ((1000 - 100) & (1000 - a_76343));
+}
+
+function int main() {
+    let res = helper_71350(10, 20);
+    print_int(res);
+    print_int((10 ^ 10));
+    print_int((1 | 100));
+    let x_3558 = (-5 ^ (2 & -1));
+    let x_6019 = -1;
+    for i_35625 in 1..10 {
+        i_35625 = x_6019;
+    }
+    return 0;
+}
