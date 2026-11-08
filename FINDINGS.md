@@ -776,3 +776,66 @@ function int main() {
 0
 ```
 ---
+
+## Finding `13f773216022` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:02:54Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_13f773216022.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+struct Point_34525 {
+    x: int;
+    y: int;
+}
+
+view Header_9974 {
+    magic: int @ 0;
+    flags: int @ 8;
+}
+
+function int helper_63255(int a_2812, int b_79667) {
+    if false {
+        let x_36003 = 255;
+    }
+    for i_78344 in 0..10 {
+        for i_88614 in 1..10 {
+            let x_99497 = ((a_2812 * a_2812) - (a_2812 * 2));
+        }
+    }
+    for i_20184 in 1..5 {
+        for i_43841 in 1..10 {
+            i_43841 = ((42 ^ b_79667) ^ -42);
+        }
+    }
+    return a_2812;
+}
+
+function int main() {
+    let res = helper_63255(10, 20);
+    print_int(res);
+    if (255 >= (100 & -42)) {
+        if ((2 | (-5 ^ 3)) <= ((10 - 42) - (-42 - 3))) {
+            print_int((255 + 3));
+        }
+    } else {
+        print_int((3 ^ -5));
+    }
+    switch 0 {
+        case 0: return 0;
+        case 1: return 1;
+        else: return 0;
+    }
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+
+```
+---
