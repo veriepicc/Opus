@@ -670,3 +670,49 @@ function int main() {
 0
 ```
 ---
+
+## Finding `14a3d22b4e8b` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:02:30Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_14a3d22b4e8b.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+struct Point_4994 {
+    x: int;
+    y: int;
+}
+
+function int helper_24831(int a_99865, int b_26034) {
+    if (b_26034 <= ((5 - 2) - b_26034)) {
+        print_int((a_99865 ^ a_99865));
+    }
+    if (5 < (b_26034 & (3 ^ a_99865))) {
+        let x_47387 = b_26034;
+    }
+    for i_22266 in 0..10 {
+        i_22266 = (3 + (b_26034 % b_26034));
+    }
+    return -1;
+}
+
+function int main() {
+    let res = helper_24831(10, 20);
+    print_int(res);
+    print_int((2 * 255));
+    let x_67106 = (-1 % -1);
+    let x_24129 = -42;
+    print_int(x_67106);
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+
+```
+---
