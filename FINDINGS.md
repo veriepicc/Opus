@@ -563,3 +563,59 @@ function int main() {
 31
 ```
 ---
+
+## Finding `f79b96508e82` — RUNTIME_HANG
+- **Timestamp**: `2026-11-08 00:01:24Z`
+- **Exit Code**: `-999` (`0xfffffc19`)
+- **Reason**: Executable Fault during --run: Compiler Hang / Infinite Loop (>10s)
+- **Target Mode**: `types`
+- **Artifact File**: `fuzzer/crashes/crash_runtime_hang_f79b96508e82.sb`
+
+### Minimal Reproducer:
+```sable
+// Auto-generated High-Validity Sable Module
+
+function int helper_52283(int a_67239, int b_61331) {
+    let x_52905 = (a_67239 / b_61331);
+    switch b_61331 {
+        case 0: return 0;
+        case 1: return 1;
+        case 2: return 2;
+        case 3: return 3;
+        else: return 0;
+    }
+    b_61331 = -10;
+    switch a_67239 {
+        case 0: return 0;
+        case 1: return 1;
+        case 2: return 2;
+        case 3: return 3;
+        else: return 0;
+    }
+    let x_25897 = ((2 | 10) / (-5 * b_61331));
+    let x_43954 = 1000;
+    let x_31821 = ((x_43954 - 42) * (1 / a_67239));
+    return ((x_31821 / 42) & (x_31821 + x_25897));
+}
+
+function int main() {
+    let res = helper_52283(10, 20);
+    print_int(res);
+    if true {
+        print_int((5 | 255));
+    }
+    let x_89612 = -1;
+    for i_59371 in 1..5 {
+        i_59371 = x_89612;
+    }
+    let x_66474 = -42;
+    return 0;
+}
+```
+
+### Compiler Output:
+```text
+0
+255
+```
+---
