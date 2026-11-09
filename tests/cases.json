@@ -328,6 +328,12 @@
   },
   {
     "kind": "reject",
+    "Name": "invalid_for_loop_var_mutation",
+    "File": "tests/invalid_for_loop_var_mutation.sb",
+    "ExpectedErrorContains": "cannot rebind immutable variable: i"
+  },
+  {
+    "kind": "reject",
     "Name": "invalid_unknown_qualified_symbol",
     "File": "tests/invalid_unknown_qualified_symbol.sb",
     "ExpectedErrorContains": "import namespace 'text' has no exported member 'text_lne' (did you mean 'text_len'?)"

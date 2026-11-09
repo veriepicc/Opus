@@ -8896,7 +8896,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         
         // loop variable = start
         auto& sym = current_scope_->define(for_stmt.name, 
-            Type::make_primitive(PrimitiveType::I64), true);
+            Type::make_primitive(PrimitiveType::I64), false);
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, start_sym.stack_offset);
         emit_.mov_store(x64::Reg::RBP, sym.stack_offset, x64::Reg::RAX);
         
@@ -16132,7 +16132,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         // loop variable
         auto& loop_var = current_scope_->define(pfor.name,
-            Type::make_primitive(PrimitiveType::I64), true);
+            Type::make_primitive(PrimitiveType::I64), false);
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, iter_start.stack_offset);
         emit_.mov_store(x64::Reg::RBP, loop_var.stack_offset, x64::Reg::RAX);
 
