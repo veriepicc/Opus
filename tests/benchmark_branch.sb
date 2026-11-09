@@ -15,5 +15,5 @@ fn main() -> i64 {
         i = i + 1;
     }
 
-    return result;
+    return result & 255;
 }

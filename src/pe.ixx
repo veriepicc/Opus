@@ -943,8 +943,8 @@ private:
             emit8(code, 0xE8);
             emit32(code, static_cast<std::uint32_t>(main_rel));
             
-            // mov ecx, eax (return value -> ExitProcess arg)
-            emit8(code, 0x89); emit8(code, 0xC1);
+            // movzx ecx, al (8-bit normalized exit code -> ExitProcess arg)
+            emit8(code, 0x0F); emit8(code, 0xB6); emit8(code, 0xC8);
             
             // call [rip+ExitProcess]
             std::size_t exit_rip = text_rva + code.size() + 6;

@@ -1,0 +1,17 @@
+function int main() {
+    let n = 40000000;
+    let mut a = malloc(n * 8) as *int;
+    let mut y = malloc(n * 8) as *int;
+
+    parallel for i in range(0, n) { a[i] = i; }
+
+    parallel for i in range(0, n) {
+        y[i] = a[i] * 8 + 1;
+    }
+
+    let mid = n / 2;
+    let check = y[mid];
+    free(a);
+    free(y);
+    return check;
+}

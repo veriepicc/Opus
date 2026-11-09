@@ -1369,6 +1369,29 @@ public:
         emit_mem_operand(Reg(zmm_src & 7), base, offset);
     }
 
+    // vmovntdq [base+offset], zmm - non-temporal streaming store (bypasses cache pollution)
+    void vmovntdq_zmm_store(Reg base, std::int32_t offset, std::uint8_t zmm_src) {
+        // EVEX.512.66.0F.W0 E7 /r
+        emit_evex(0x01, 0x01, false, zmm_src, 0, static_cast<std::uint8_t>(base));
+        buf_.emit8(0xE7);
+        emit_mem_operand(Reg(zmm_src & 7), base, offset);
+    }
+
+    // prefetcht0 [base+offset] - pulls cache line into L1 cache
+    void prefetch_t0(Reg base, std::int32_t offset) {
+        buf_.emit8(rex(false, Reg::RAX, base));
+        buf_.emit8(0x0F);
+        buf_.emit8(0x18);
+        emit_mem_operand(Reg(1), base, offset); // /1 is prefetcht0
+    }
+
+    // sfence - store fence for streaming writes
+    void sfence() {
+        buf_.emit8(0x0F);
+        buf_.emit8(0xAE);
+        buf_.emit8(0xF8);
+    }
+
     void vmovdqa32_zmm(std::uint8_t dst, std::uint8_t src) {
         // EVEX.512.66.0F.W0 6F /r (register-register form)
         emit_evex(0x01, 0x01, false, dst, 0, src);

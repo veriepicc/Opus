@@ -32,6 +32,7 @@ Output:
   --timings     print compile/build timing breakdown
   --quiet, -q   suppress normal compile output
   --fast        skip project discovery for single-file compiles
+  --no-vectorize disable loop auto-vectorization
 
 Project:
   build         find sable.project and build it
@@ -466,7 +467,7 @@ static void print_timing_block(std::string_view title, const std::vector<sable::
     return 0;
 }
 
-[[nodiscard]] int run_file(const std::string& filename, bool run_immediately, sable::OutputKind output_kind, bool quiet, bool timings, bool fast_mode, const std::filesystem::path& compiler_exe) {
+[[nodiscard]] int run_file(const std::string& filename, bool run_immediately, sable::OutputKind output_kind, bool quiet, bool timings, bool fast_mode, const std::filesystem::path& compiler_exe, bool vectorize_cli = true) {
     auto now = [] { return std::chrono::steady_clock::now(); };
     auto elapsed_ms = [](auto start, auto end) {
         return std::chrono::duration<double, std::milli>(end - start).count();
@@ -497,6 +498,7 @@ static void print_timing_block(std::string_view title, const std::vector<sable::
     auto source_root = source_path.has_parent_path() ? source_path.parent_path().generic_string() : std::string{};
     bool project_debug = false;
     auto project_healing = sable::ast::HealingMode::Off;
+    bool project_vectorize = vectorize_cli;
 
     auto discovery_start = now();
     if (!fast_mode && source_path.has_parent_path()) {
@@ -506,6 +508,7 @@ static void print_timing_block(std::string_view title, const std::vector<sable::
                 source_root = std::filesystem::weakly_canonical(config.project_dir).string();
                 project_debug = config.debug;
                 project_healing = config.healing.value_or(sable::ast::HealingMode::Off);
+                project_vectorize = config.vectorize && vectorize_cli;
                 for (const auto& include_path : config.includes) {
                     if (std::find(import_search_paths.begin(), import_search_paths.end(), include_path) == import_search_paths.end()) {
                         import_search_paths.push_back(include_path);
@@ -529,6 +532,7 @@ static void print_timing_block(std::string_view title, const std::vector<sable::
             .debug_info = project_debug,
             .collect_timings = timings,
             .collect_function_offsets = !quiet,
+            .vectorize = project_vectorize,
         });
         if (timings) {
             add_stage_timing("driver.compile_and_run", elapsed_ms(compile_run_start, now()));
@@ -554,6 +558,7 @@ static void print_timing_block(std::string_view title, const std::vector<sable::
             .debug_info = project_debug,
             .collect_timings = timings,
             .collect_function_offsets = !quiet,
+            .vectorize = project_vectorize,
         });
         if (timings) {
             add_stage_timing("driver.compile_call", elapsed_ms(compile_start, now()));
@@ -806,6 +811,7 @@ static void print_timing_block(std::string_view title, const std::vector<sable::
         .healing_mode = config.healing.value_or(sable::ast::HealingMode::Off),
         .debug_info = config.debug,
         .collect_timings = timings,
+        .vectorize = config.vectorize,
     });
     if (timings) {
         add_stage_timing("driver.compile_call", elapsed_ms(compile_start, now()));
@@ -988,6 +994,7 @@ export int main(int argc, char* argv[]) {
         bool quiet = false;
         bool timings = false;
         bool fast_mode = false;
+        bool vectorize = true;
         auto output_kind = sable::OutputKind::Exe;
         std::string filename;
         
@@ -1003,6 +1010,8 @@ export int main(int argc, char* argv[]) {
                 quiet = true;
             } else if (arg == "--dll") {
                 output_kind = sable::OutputKind::Dll;
+            } else if (arg == "--no-vectorize" || arg == "--no-simd") {
+                vectorize = false;
             } else if (!arg.starts_with("-")) {
                 filename = arg;
             }
@@ -1013,7 +1022,7 @@ export int main(int argc, char* argv[]) {
             return 1;
         }
 
-        return run_file(filename, run, output_kind, quiet, timings, fast_mode, compiler_exe);
+        return run_file(filename, run, output_kind, quiet, timings, fast_mode, compiler_exe, vectorize);
     } catch (const std::exception& ex) {
         std::print(std::cerr, "\033[1;91minternal error\033[0m: uncaught exception: {}\n", ex.what());
         return 1;

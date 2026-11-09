@@ -514,6 +514,7 @@ struct CompileOptions {
     bool collect_function_artifacts = false;
     bool collect_timings = false;
     bool collect_function_offsets = true;
+    bool vectorize = true;
 };
 
 struct TimingEntry {
@@ -649,6 +650,7 @@ public:
         codegen.set_output_kind(output_kind);
         codegen.set_collect_line_map(opts.collect_line_map || opts.debug_info);
         codegen.set_collect_timings(opts.collect_timings);
+        codegen.set_vectorize(opts.vectorize);
         
         codegen.set_source_path(std::string(filename));
         codegen.set_project_root(project_root);

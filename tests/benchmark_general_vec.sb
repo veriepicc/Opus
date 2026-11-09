@@ -1,0 +1,20 @@
+function int main() {
+    let n = 20000000;
+    let mut a = malloc(n * 8) as *int;
+    let mut b = malloc(n * 8) as *int;
+    let mut c = malloc(n * 8) as *int;
+
+    parallel for i in range(0, n) { a[i] = 7; }
+    parallel for i in range(0, n) { b[i] = 11; }
+
+    parallel for i in range(0, n) {
+        c[i] = (a[i] * 17 + 31) + (a[i] + b[i] * 3);
+    }
+
+    let mid = n / 2;
+    let check = c[mid];
+    free(a);
+    free(b);
+    free(c);
+    return check;
+}

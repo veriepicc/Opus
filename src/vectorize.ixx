@@ -1,817 +1,366 @@
-// vectorize.ixx - aggressive auto-vectorization for Sable
-// this is the heart of our SIMD engine
-
-module;
-
-#ifdef _MSC_VER
-#include <intrin.h>
-#endif
-
 export module sable.vectorize;
 import sable.x64;
-import sable.ast;
-import sable.types;
 import std;
 
 export namespace sable::vectorize {
 
-// ========================================================================
-// CPU CAPABILITY DETECTION
-// ========================================================================
+// kernel abi: (void* const* buffers, uint64_t count)
+// map: writes buffers[output]
+// sum: returns accumulated bits in rax
+enum class Element { i32, i64, f32, f64 };
+enum class Op { load, constant, add, sub, mul, bit_and, bit_or, bit_xor };
+enum class Result { map, sum };
+enum class Width { avx2, avx512 };
+using Value = std::uint16_t;
 
-enum class CpuLevel {
-    SSE42,   // baseline: pentium 4 / nehalem 2008+
-    AVX2,    // mainstream: haswell 2013+
-    AVX512F, // enthusiast: skylake-x 2017+
+struct Node {
+    Op op = Op::constant;
+    Value a = 0, b = 0;
+    std::uint64_t bits = 0;
 };
 
-struct CpuCapabilities {
-    CpuLevel level = CpuLevel::SSE42;
-    bool has_avx512f = false;
-    bool has_avx512bw = false;
-    bool has_avx512dq = false;
-    bool has_avx512vnni = false;
-    bool has_avx2 = false;
-    bool has_sse42 = false;
-    
-    // vector widths in bytes
-    int vec_width_bytes() const {
-        switch (level) {
-            case CpuLevel::SSE42: return 16;   // 128-bit
-            case CpuLevel::AVX2:  return 32;   // 256-bit
-            case CpuLevel::AVX512F: return 64;  // 512-bit
-        }
-        return 16;
-    }
-    
-    // elements per vector for i32
-    int i32_per_vec() const {
-        return vec_width_bytes() / 4;
-    }
+struct Loop {
+    Element element = Element::i64;
+    Result result = Result::map;
+    std::uint16_t buffers = 0, output = 0;
+    std::vector<Node> nodes;
+    Value root = 0;
+    bool reassociate_fp = false;
 };
 
-#ifdef _MSC_VER
-#include <intrin.h>
-
-inline void cpuid(std::int32_t leaf, std::int32_t subleaf, std::int32_t* ebx, std::int32_t* ecx, std::int32_t* edx) {
-    std::int32_t regs[4] = {0};
-    __cpuidex(regs, leaf, subleaf);
-    *ebx = regs[0];
-    *ecx = regs[1];
-    *edx = regs[2];
-}
-
-#else
-inline void cpuid(std::int32_t leaf, std::int32_t subleaf, std::int32_t* ebx, std::int32_t* ecx, std::int32_t* edx) {
-    __asm__ volatile (
-        "cpuid"
-        : "=a"(*ebx), "=c"(*ecx), "=d"(*edx)
-        : "a"(leaf), "c"(subleaf)
-    );
-}
-#endif
-
-inline CpuCapabilities detect_cpu() {
-    CpuCapabilities caps;
-    
-    std::int32_t ebx = 0, ecx = 0, edx = 0;
-    cpuid(1, 0, &ebx, &ecx, &edx);
-    
-    caps.has_sse42 = (edx >> 20) & 1;  // SSE4.2
-    
-    // check osxsave for AVX
-    bool has_osxsave = (ecx >> 27) & 1;
-    bool has_avx = (ecx >> 28) & 1;
-    
-    caps.level = CpuLevel::SSE42;  // baseline
-    
-    if (has_osxsave && has_avx) {
-        cpuid(7, 0, &ebx, &ecx, &edx);
-        
-        caps.has_avx2 = (ebx >> 5) & 1;      // AVX2
-        caps.has_avx512f = (ebx >> 16) & 1;  // AVX512 Foundation
-        caps.has_avx512bw = (ebx >> 30) & 1; // AVX512 Byte/Word
-        caps.has_avx512dq = (ebx >> 17) & 1; // AVX512 DWord/QWord
-        caps.has_avx512vnni = (ecx >> 11) & 1; // AVX512 VNNI
-        
-        if (caps.has_avx512f) {
-            caps.level = CpuLevel::AVX512F;
-        } else if (caps.has_avx2) {
-            caps.level = CpuLevel::AVX2;
-        }
-    }
-    
-    return caps;
-}
-
-// global singleton - initialized once at program start
-inline const CpuCapabilities& get_caps() {
-    static CpuCapabilities caps = detect_cpu();
-    return caps;
-}
-
-// ========================================================================
-// LOOP ANALYSIS
-// ========================================================================
-
-enum class LoopPattern {
-    Unknown,
-    CounterBased,    // while i < n { ... i++ }
-    RangeBased,      // for i in range(start, end)
-    Reduction,       // sum/product accumulation
-    Memcpy,          // memory copy pattern
-    Memset,          // memory set pattern
-    ArrayUpdate,     // array[index] = ...
+// target cpu capabilities
+struct Target {
+    bool avx2 = false, avx512f = false, avx512dq = false;
+    Width preferred = Width::avx2;
+    unsigned unroll = 2;
 };
 
-struct LoopInfo {
-    LoopPattern pattern = LoopPattern::Unknown;
-    std::string counter_name;
-    std::int64_t trip_count = -1;  // -1 = unknown
-    std::int64_t step = 1;
-    std::int64_t start = 0;
-    std::int64_t end = 0;
-    Type element_type;
-    bool is_reduction = false;
-    ast::BinaryExpr::Op reduction_op = ast::BinaryExpr::Op::Add;
-    std::string accum_name;
-    const ast::Expr* accum_init = nullptr;
-    const ast::Expr* body_expr = nullptr;  // the main computation
+struct Report {
+    bool emitted = false;
+    std::string reason;
+    Width width = Width::avx2;
+    unsigned lanes = 0, unroll = 0, peak_registers = 0;
+    std::size_t code_bytes = 0, live_nodes = 0;
 };
 
-inline std::int64_t get_literal_int64(const ast::Expr& expr) {
-    if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
-        if (auto* val = std::get_if<std::int64_t>(&lit->value)) {
-            return *val;
+namespace detail {
+using R = x64::Reg;
+using E = x64::Emitter;
+inline bool floating(Element t) { return t == Element::f32 || t == Element::f64; }
+inline unsigned bytes(Element t) { return t == Element::i32 || t == Element::f32 ? 4 : 8; }
+inline bool binary(Op op) { return op >= Op::add; }
+
+struct Step {
+    Node node;
+    unsigned dst = 0, lhs = 0, rhs = 0;
+    Value original = 0;
+};
+struct Plan {
+    std::vector<Step> steps;
+    std::vector<unsigned> inputs;
+    std::vector<Step> constants;
+    unsigned root_reg = 0, peak = 0;
+};
+
+inline std::optional<Plan> plan(const Loop& loop, unsigned registers, std::string& reason) {
+    auto reject = [&](std::string text) -> std::optional<Plan> {
+        reason = std::move(text); return std::nullopt;
+    };
+    if (loop.nodes.empty() || loop.nodes.size() > 128 || loop.root >= loop.nodes.size())
+        return reject("loop expression must contain 1..128 topologically ordered nodes");
+    if (loop.buffers > 32 || (loop.result == Result::map && loop.output >= loop.buffers))
+        return reject("invalid buffer table");
+    if (loop.element != Element::i32 && loop.element != Element::i64 &&
+        loop.element != Element::f32 && loop.element != Element::f64)
+        return reject("unsupported element type");
+    if (loop.result != Result::map && loop.result != Result::sum)
+        return reject("unsupported result operation");
+    if (loop.result == Result::sum && floating(loop.element) && !loop.reassociate_fp)
+        return reject("floating reduction requires explicit reassociation permission");
+
+    std::vector<bool> live(loop.nodes.size());
+    live[loop.root] = true;
+    for (std::size_t i = loop.nodes.size(); i-- > 0;) {
+        if (!live[i]) continue;
+        const auto& n = loop.nodes[i];
+        if (n.op < Op::load || n.op > Op::bit_xor) return reject("unsupported operation");
+        if (n.op == Op::load && n.bits >= loop.buffers) return reject("invalid input buffer");
+        if (binary(n.op)) {
+            if (n.a >= i || n.b >= i) return reject("cyclic or forward expression reference");
+            if (floating(loop.element) && n.op >= Op::bit_and)
+                return reject("floating bit operations require an explicit bitcast");
+            live[n.a] = live[n.b] = true;
         }
     }
-    return 0;
-}
 
-inline bool is_counter_based_while(const ast::WhileStmt& w, LoopInfo& info) {
-    using Op = ast::BinaryExpr::Op;
-    auto* cond = std::get_if<ast::BinaryExpr>(&w.condition->kind);
-    if (!cond || cond->op != Op::Lt) return false;
-    
-    auto* lhs_ident = std::get_if<ast::IdentExpr>(&cond->lhs->kind);
-    if (!lhs_ident) return false;
-    
-    std::int64_t limit = get_literal_int64(*cond->rhs);
-    if (limit == 0 && cond->rhs) return false;
-    
-    info.counter_name = lhs_ident->name;
-    info.start = 0;
-    info.end = limit;
-    info.trip_count = limit;
-    info.pattern = LoopPattern::CounterBased;
-    
-    return true;
-}
-
-inline bool is_range_based_for(const ast::ForStmt& f, LoopInfo& info) {
-    auto* call = std::get_if<ast::CallExpr>(&f.iterable->kind);
-    if (!call) return false;
-    
-    auto* callee = std::get_if<ast::IdentExpr>(&call->callee->kind);
-    if (!callee || callee->name != "range") return false;
-    
-    info.counter_name = f.name;
-    info.pattern = LoopPattern::RangeBased;
-    
-    if (call->args.size() == 1) {
-        info.start = 0;
-        info.end = get_literal_int64(*call->args[0]);
-        info.trip_count = info.end;
-    } else if (call->args.size() == 2) {
-        info.start = get_literal_int64(*call->args[0]);
-        info.end = get_literal_int64(*call->args[1]);
-        info.trip_count = info.end - info.start;
+    std::vector<unsigned> uses(loop.nodes.size()), assigned(loop.nodes.size());
+    for (std::size_t i = 0; i < loop.nodes.size(); ++i)
+        if (live[i] && binary(loop.nodes[i].op)) {
+            ++uses[loop.nodes[i].a]; ++uses[loop.nodes[i].b];
+        }
+    ++uses[loop.root];
+    std::array<bool, 6> busy{};
+    Plan p;
+    unsigned const_alloc = 8;
+    for (std::size_t i = 0; i < loop.nodes.size(); ++i) {
+        if (!live[i]) continue;
+        const auto& n = loop.nodes[i];
+        Step s{n, 0, 0, 0, static_cast<Value>(i)};
+        if (n.op == Op::constant && const_alloc < 16) {
+            assigned[i] = s.dst = const_alloc++;
+            p.constants.push_back(s);
+            p.steps.push_back(s);
+            continue;
+        }
+        if (binary(n.op)) {
+            s.lhs = assigned[n.a]; s.rhs = assigned[n.b];
+            if (--uses[n.a] == 0 && assigned[n.a] < 6) busy[s.lhs] = false;
+            if (--uses[n.b] == 0 && assigned[n.b] < 6) busy[s.rhs] = false;
+        }
+        unsigned r = 0;
+        while (r < registers && busy[r]) ++r;
+        if (r == registers) return reject("vector register budget exceeded");
+        busy[r] = true; assigned[i] = s.dst = r;
+        p.peak = std::max(p.peak, static_cast<unsigned>(std::count(busy.begin(), busy.end(), true)));
+        if (n.op == Op::load && std::find(p.inputs.begin(), p.inputs.end(), n.bits) == p.inputs.end())
+            p.inputs.push_back(static_cast<unsigned>(n.bits));
+        p.steps.push_back(s);
     }
-    
-    return true;
+    p.root_reg = assigned[loop.root];
+    return p;
 }
 
-inline bool is_simple_reduction(const ast::Stmt& body, const std::string& counter, LoopInfo& info) {
-    if (!body.is<ast::ExprStmt>()) return false;
-    
-    auto* assign = std::get_if<ast::BinaryExpr>(&body.as<ast::ExprStmt>().expr->kind);
-    if (!assign || assign->op != ast::BinaryExpr::Op::Assign) return false;
-    
-    auto* lhs_ident = std::get_if<ast::IdentExpr>(&assign->lhs->kind);
-    if (!lhs_ident) return false;
-    
-    info.accum_name = lhs_ident->name;
-    
-    auto* rhs_bin = std::get_if<ast::BinaryExpr>(&assign->rhs->kind);
-    if (!rhs_bin) return false;
-    
-    if (rhs_bin->op != ast::BinaryExpr::Op::Add && rhs_bin->op != ast::BinaryExpr::Op::Mul) {
-        return false;
+inline void memory32(E& e, bool store, R reg, R base, std::int32_t offset = 0) {
+    auto& b = e.buffer();
+    b.emit8(e.rex(false, reg, base)); b.emit8(store ? 0x89 : 0x8b);
+    e.emit_mem_operand(reg, base, offset);
+}
+
+inline void scalar_binary(E& e, Element type, Op op) {
+    if (floating(type)) {
+        auto& b = e.buffer();
+        b.emit8(0x66); b.emit8(0x48); b.emit8(0x0f); b.emit8(0x6e); b.emit8(0xc0);
+        b.emit8(0x66); b.emit8(0x49); b.emit8(0x0f); b.emit8(0x6e); b.emit8(0xca);
+        b.emit8(type == Element::f32 ? 0xf3 : 0xf2);
+        b.emit8(0x0f); b.emit8(op == Op::add ? 0x58 : op == Op::sub ? 0x5c : 0x59);
+        b.emit8(0xc1);
+        b.emit8(0x66); b.emit8(0x48); b.emit8(0x0f); b.emit8(0x7e); b.emit8(0xc0);
+    } else {
+        switch (op) {
+        case Op::add: e.add(R::RAX, R::R10); break;
+        case Op::sub: e.sub(R::RAX, R::R10); break;
+        case Op::mul: e.imul(R::RAX, R::R10); break;
+        case Op::bit_and: e.and_(R::RAX, R::R10); break;
+        case Op::bit_or: e.or_(R::RAX, R::R10); break;
+        case Op::bit_xor: e.xor_(R::RAX, R::R10); break;
+        default: break;
+        }
     }
-    
-    info.reduction_op = rhs_bin->op;
-    info.is_reduction = true;
-    info.pattern = LoopPattern::Reduction;
-    
-    return true;
 }
 
-// ========================================================================
-// SIMD KERNEL GENERATOR
-// ========================================================================
+inline void vector_binary(E& e, Element type, Width width, Op op,
+                          unsigned dst, unsigned lhs, unsigned rhs) {
+    unsigned map = 1, pp = 1, opcode = 0;
+    bool w = false;
+    if (floating(type)) {
+        pp = type == Element::f32 ? 0 : 1;
+        w = width == Width::avx512 && type == Element::f64;
+        opcode = op == Op::add ? 0x58 : op == Op::sub ? 0x5c : 0x59;
+    } else {
+        bool q = type == Element::i64;
+        switch (op) {
+        case Op::add: opcode = q ? 0xd4 : 0xfe; w = q && width == Width::avx512; break;
+        case Op::sub: opcode = q ? 0xfb : 0xfa; w = q && width == Width::avx512; break;
+        case Op::mul: map = 2; opcode = 0x40; w = q; break;
+        case Op::bit_and: opcode = 0xdb; break;
+        case Op::bit_or: opcode = 0xeb; break;
+        case Op::bit_xor: opcode = 0xef; break;
+        default: break;
+        }
+    }
+    if (width == Width::avx512) e.emit_evex(map, pp, w, dst, lhs, rhs);
+    else e.emit_vex3(map, pp, w, dst, lhs, rhs);
+    e.buffer().emit8(static_cast<std::uint8_t>(opcode));
+    e.buffer().emit8(e.modrm(3, R(dst), R(rhs)));
+}
 
-class SimdKernelGen {
+class Kernel {
+    E& e;
+    const Loop& loop;
+    const Plan& p;
+    Width width;
+    unsigned size, lanes, vector_bytes;
+    std::int32_t frame;
+
+    void address(unsigned buffer) {
+        e.mov_load(R::R11, R::RCX, static_cast<std::int32_t>(buffer * 8));
+        e.add(R::R11, R::R8);
+    }
+    void load_vector(unsigned reg) {
+        e.prefetch_t0(R::R11, 256);
+        if (width == Width::avx512) e.vmovdqu32_zmm_load(reg, R::R11);
+        else e.vmovdqu_load(reg, R::R11, 0);
+    }
+    void store_vector(unsigned reg, R base, std::int32_t offset = 0) {
+        if (width == Width::avx512) e.vmovdqu32_zmm_store(base, offset, reg);
+        else e.vmovdqu_store(base, offset, reg);
+    }
+    void broadcast_constant(unsigned reg, std::uint64_t bits) {
+        e.mov_imm64(R::RAX, bits);
+        if (width == Width::avx512) {
+            if (size == 4) e.vpbroadcastd_zmm(reg, R::RAX);
+            else e.vpbroadcastq_zmm(x64::ZmmReg(reg), R::RAX);
+        } else {
+            if (size == 4) e.vpbroadcastd(reg, R::RAX);
+            else e.vpbroadcastq(reg, R::RAX);
+        }
+    }
+    void vector_body(unsigned accumulator) {
+        for (const auto& s : p.steps) {
+            const auto& n = s.node;
+            if (n.op == Op::load) {
+                address(static_cast<unsigned>(n.bits)); load_vector(s.dst);
+            } else if (n.op == Op::constant) {
+            } else vector_binary(e, loop.element, width, n.op, s.dst, s.lhs, s.rhs);
+        }
+        if (loop.result == Result::map) {
+            address(loop.output); store_vector(p.root_reg, R::R11);
+        } else vector_binary(e, loop.element, width, Op::add, accumulator, accumulator, p.root_reg);
+        e.add_imm(R::R8, vector_bytes);
+        e.sub_imm(R::RDX, lanes);
+    }
+    void scalar_body() {
+        for (const auto& s : p.steps) {
+            const auto& n = s.node;
+            if (n.op == Op::load) {
+                address(static_cast<unsigned>(n.bits));
+                if (size == 4) memory32(e, false, R::RAX, R::R11);
+                else e.mov_load(R::RAX, R::R11);
+            } else if (n.op == Op::constant) e.mov_imm64(R::RAX, n.bits);
+            else {
+                e.mov_load(R::RAX, R::RSP, n.a * 8);
+                e.mov_load(R::R10, R::RSP, n.b * 8);
+                scalar_binary(e, loop.element, n.op);
+            }
+            e.mov_store(R::RSP, s.original * 8, R::RAX);
+        }
+        e.mov_load(R::RAX, R::RSP, loop.root * 8);
+        if (loop.result == Result::map) {
+            address(loop.output);
+            if (size == 4) memory32(e, true, R::RAX, R::R11);
+            else e.mov_store(R::R11, 0, R::RAX);
+        } else {
+            e.mov(R::R10, R::R9); scalar_binary(e, loop.element, Op::add);
+            e.mov(R::R9, R::RAX);
+        }
+        e.add_imm(R::R8, size); e.sub_imm(R::RDX, 1);
+    }
+
 public:
-    SimdKernelGen(x64::Emitter& emit, const CpuCapabilities& caps)
-        : emit_(emit), caps_(caps) {}
-    
-    // generate vectorized loop for reduction (sum/product)
-    bool gen_reduction_kernel(
-        const LoopInfo& info,
-        const ast::Stmt& body,
-        x64::Reg counter_reg,
-        x64::Reg limit_reg,
-        x64::Reg accum_reg,
-        x64::Reg base_ptr_reg
-    ) {
-        int vec_width = caps_.i32_per_vec();
-        
-        // choose vector register based on CPU level
-        std::uint8_t vec_reg = 0;
-        std::uint8_t scratch_reg = 1;
-        
-        // broadcast accumulator to vector
-        emit_.mov(x64::Reg::RAX, accum_reg);
-        if (caps_.level >= CpuLevel::AVX512F) {
-            emit_.vpbroadcastd_zmm(static_cast<x64::ZmmReg>(vec_reg), x64::Reg::RAX);
-        } else if (caps_.level >= CpuLevel::AVX2) {
-            emit_.vpbroadcastd(vec_reg, x64::Reg::RAX);
-        } else {
-            emit_.movd_from_gpr(x64::XmmReg(vec_reg), x64::Reg::RAX);
-            emit_.punpcklqdq(x64::XmmReg(vec_reg), x64::XmmReg(vec_reg));
-        }
-        
-        // main vectorized loop
-        std::size_t loop_start = emit_.buffer().pos();
-        
-        // load vector from memory
-        if (caps_.level >= CpuLevel::AVX512F) {
-            emit_.vmovdqu32_zmm_load(vec_reg + 2, base_ptr_reg, 0);
-        } else if (caps_.level >= CpuLevel::AVX2) {
-            emit_.vmovdqu_load(vec_reg + 2, base_ptr_reg, 0);
-        } else {
-            emit_.movdqu_load(x64::XmmReg(vec_reg + 2), base_ptr_reg, 0);
-        }
-        
-        // reduction operation
-        if (info.reduction_op == ast::BinaryExpr::Op::Add) {
-            if (caps_.level >= CpuLevel::AVX512F) {
-                emit_.vpaddd_zmm(x64::ZmmReg(vec_reg), x64::ZmmReg(vec_reg), x64::ZmmReg(vec_reg + 2));
-            } else if (caps_.level >= CpuLevel::AVX2) {
-                emit_.vpaddd(vec_reg, vec_reg, vec_reg + 2);
-            } else {
-                emit_.paddd(x64::XmmReg(vec_reg), x64::XmmReg(vec_reg + 2));
-            }
-        } else if (info.reduction_op == ast::BinaryExpr::Op::Mul) {
-            if (caps_.level >= CpuLevel::AVX512F) {
-                emit_.vpmulld_zmm(x64::ZmmReg(vec_reg), x64::ZmmReg(vec_reg), x64::ZmmReg(vec_reg + 2));
-            } else if (caps_.level >= CpuLevel::AVX2) {
-                emit_.vpmulld(vec_reg, vec_reg, vec_reg + 2);
-            } else {
-                emit_.pmulld(x64::XmmReg(vec_reg), x64::XmmReg(vec_reg + 2));
+    Kernel(E& emitter, const Loop& l, const Plan& plan, Width w)
+        : e(emitter), loop(l), p(plan), width(w), size(bytes(l.element)),
+          lanes((w == Width::avx512 ? 64 : 32) / size), vector_bytes(lanes * size),
+          frame(static_cast<std::int32_t>((l.nodes.size() * 8 + 128 + 15) & ~std::size_t(15))) {}
+
+    void emit(unsigned unroll) {
+        e.sub_imm(R::RSP, frame);
+        e.xor_(R::R8, R::R8); e.xor_(R::R9, R::R9);
+        e.test(R::RDX, R::RDX);
+        auto empty = e.jcc_rel32(E::CC_E);
+        std::vector<std::size_t> fallback;
+        if (loop.result == Result::map && !p.inputs.empty()) {
+            e.mov(R::RAX, R::RDX); e.shr_imm(R::RAX, size == 4 ? 62 : 61);
+            e.test(R::RAX, R::RAX); fallback.push_back(e.jcc_rel32(E::CC_NE));
+            e.mov(R::R10, R::RDX); e.imul_imm(R::R10, R::R10, size);
+            for (auto input : p.inputs) {
+                if (input == loop.output) continue;
+                e.mov_load(R::RAX, R::RCX, loop.output * 8);
+                e.mov_load(R::R11, R::RCX, input * 8);
+                e.cmp(R::RAX, R::R11);
+                auto identical = e.jcc_rel32(E::CC_E);
+                auto below = e.jcc_rel32(E::CC_B);
+                e.sub(R::RAX, R::R11); e.cmp(R::RAX, R::R10);
+                fallback.push_back(e.jcc_rel32(E::CC_B));
+                auto next = e.jmp_rel32_placeholder();
+                e.patch_jump(below);
+                e.sub(R::R11, R::RAX); e.cmp(R::R11, R::R10);
+                fallback.push_back(e.jcc_rel32(E::CC_B));
+                e.patch_jump(next); e.patch_jump(identical);
             }
         }
-        
-        // increment pointers
-        emit_.add_smart(base_ptr_reg, vec_width * 4);
-        emit_.add_smart(counter_reg, vec_width);
-        
-        // loop until counter >= limit
-        emit_.cmp(counter_reg, limit_reg);
-        std::size_t exit_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);  // jump to exit if >=
-        
-        // main vectorized loop body
-        std::size_t loop_body_end = emit_.buffer().pos();
-        
-        // jump back to start
-        emit_.jmp_rel32_to(loop_start);
-        
-        // patch the exit jump to here (after loop body)
-        emit_.patch_jump(exit_patch);
-        
-        // horizontal reduction of vector to scalar
-        if (caps_.level >= CpuLevel::AVX512F) {
-            // vextracti32x8 + horizontal add
-            emit_.vextracti32x8(x64::YmmReg(scratch_reg), x64::ZmmReg(vec_reg), 1);
-            emit_.vpaddd(static_cast<std::uint8_t>(vec_reg), static_cast<std::uint8_t>(vec_reg), scratch_reg);
-            emit_.vextracti128(x64::XmmReg(scratch_reg), x64::YmmReg(vec_reg), 0);
-            emit_.vpaddd(static_cast<std::uint8_t>(vec_reg), static_cast<std::uint8_t>(vec_reg), scratch_reg);
-            
-            // extract to GP
-            emit_.movq_to_gpr(x64::Reg::RAX, x64::XmmReg(vec_reg));
-        } else if (caps_.level >= CpuLevel::AVX2) {
-            // extract 128-bit halves and add
-            emit_.vextracti128(x64::XmmReg(scratch_reg), x64::YmmReg(vec_reg), 1);
-            emit_.vpaddd(static_cast<std::uint8_t>(vec_reg), static_cast<std::uint8_t>(vec_reg), scratch_reg);
-            
-            // horizontal add within 128 bits
-            emit_.movdqa(x64::XmmReg(scratch_reg), x64::XmmReg(vec_reg));
-            emit_.psrldq(x64::XmmReg(scratch_reg), x64::XmmReg(scratch_reg), 8);
-            emit_.paddd(x64::XmmReg(vec_reg), x64::XmmReg(scratch_reg));
-            
-            // extract low 32 bits
-            emit_.movq_to_gpr(x64::Reg::RAX, x64::XmmReg(vec_reg));
-        } else {
-            // SSE4.2 horizontal add
-            emit_.movdqa(x64::XmmReg(scratch_reg), x64::XmmReg(vec_reg));
-            emit_.psrldq(x64::XmmReg(scratch_reg), 8);
-            emit_.paddd(x64::XmmReg(vec_reg), x64::XmmReg(scratch_reg));
-            emit_.movd_to_gpr(x64::Reg::RAX, x64::XmmReg(vec_reg));
+        if (loop.result == Result::sum) {
+            vector_binary(e, Element::i32, width, Op::bit_xor, 4, 4, 4);
+            vector_binary(e, Element::i32, width, Op::bit_xor, 5, 5, 5);
         }
-        
-        emit_.mov(accum_reg, x64::Reg::RAX);
-        
-        return true;
-    }
-    
-    // generate vectorized kernel for general array operations
-    bool gen_array_kernel(
-        const LoopInfo& info,
-        x64::Reg counter_reg,
-        x64::Reg limit_reg,
-        x64::Reg src_ptr,
-        x64::Reg dst_ptr
-    ) {
-        int vec_width = caps_.i32_per_vec();
-        
-        std::size_t loop_start = emit_.buffer().pos();
-        
-        // load vector
-        if (caps_.level >= CpuLevel::AVX512F) {
-            emit_.vmovdqu32_zmm_load(0, src_ptr, 0);
-        } else if (caps_.level >= CpuLevel::AVX2) {
-            emit_.vmovdqu_load(0, src_ptr, 0);
-        } else {
-            emit_.movdqu_load(x64::XmmReg(0), src_ptr, 0);
+        for (const auto& c : p.constants) {
+            broadcast_constant(c.dst, c.node.bits);
         }
-        
-        // store vector
-        if (caps_.level >= CpuLevel::AVX512F) {
-            emit_.vmovdqu32_zmm_store(dst_ptr, 0, 0);
-        } else if (caps_.level >= CpuLevel::AVX2) {
-            emit_.vmovdqu_store(dst_ptr, 0, 0);
-        } else {
-            emit_.movdqu_store(dst_ptr, 0, x64::XmmReg(0));
+        if (unroll > 1) {
+            e.cmp_imm(R::RDX, lanes * unroll);
+            auto short_loop = e.jcc_rel32(E::CC_B);
+            auto top = e.buffer().pos();
+            for (unsigned u = 0; u < unroll; ++u) vector_body(4 + u % 2);
+            e.cmp_imm(R::RDX, lanes * unroll); e.jcc_rel32_to(E::CC_AE, top);
+            e.patch_jump(short_loop);
         }
-        
-        // increment
-        emit_.add_smart(src_ptr, vec_width * 4);
-        emit_.add_smart(dst_ptr, vec_width * 4);
-        emit_.add_smart(counter_reg, vec_width);
-        
-        // loop until counter >= limit
-        emit_.cmp(counter_reg, limit_reg);
-        std::size_t exit_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
-        
-        // jump back to start
-        emit_.jmp_rel32_to(loop_start);
-        
-        // patch the exit jump to here
-        emit_.patch_jump(exit_patch);
-        
-        return true;
+        e.cmp_imm(R::RDX, lanes);
+        auto no_vector = e.jcc_rel32(E::CC_B);
+        auto top = e.buffer().pos();
+        vector_body(4);
+        e.cmp_imm(R::RDX, lanes); e.jcc_rel32_to(E::CC_AE, top);
+        e.patch_jump(no_vector);
+        if (loop.result == Result::sum) {
+            vector_binary(e, loop.element, width, Op::add, 4, 4, 5);
+            e.lea(R::R11, R::RSP, frame - 128); store_vector(4, R::R11);
+            for (unsigned lane = 0; lane < lanes; ++lane) {
+                if (size == 4) memory32(e, false, R::RAX, R::RSP, frame - 128 + lane * size);
+                else e.mov_load(R::RAX, R::RSP, frame - 128 + lane * size);
+                e.mov(R::R10, R::R9); scalar_binary(e, loop.element, Op::add);
+                e.mov(R::R9, R::RAX);
+            }
+        }
+        for (auto patch : fallback) e.patch_jump(patch);
+        e.test(R::RDX, R::RDX);
+        auto no_tail = e.jcc_rel32(E::CC_E);
+        auto tail = e.buffer().pos();
+        scalar_body(); e.test(R::RDX, R::RDX); e.jcc_rel32_to(E::CC_NE, tail);
+        e.patch_jump(no_tail); e.patch_jump(empty);
+        e.mov(R::RAX, R::R9);
+        if (size == 4) {
+            e.buffer().emit8(0x89); e.buffer().emit8(0xc0);
+        }
+        if (loop.result == Result::map) {
+            e.sfence();
+        }
+        e.buffer().emit8(0xc5); e.buffer().emit8(0xf8); e.buffer().emit8(0x77);
+        e.add_imm(R::RSP, frame); e.ret();
     }
-    
-    // generate masked remainder loop for AVX512
-    bool gen_masked_remainder(
-        x64::Reg counter_reg,
-        x64::Reg limit_reg,
-        std::uint8_t k_reg,
-        x64::Reg src_ptr,
-        x64::Reg dst_ptr
-    ) {
-        if (caps_.level < CpuLevel::AVX512F) return false;
-        
-        // calculate remainder count: limit - counter
-        emit_.mov(x64::Reg::RCX, limit_reg);
-        emit_.sub(x64::Reg::RCX, counter_reg);
-        
-        // set mask based on remainder (k = (1 << count) - 1)
-        emit_.mov_imm(x64::Reg::EAX, 1);
-        emit_.shl(x64::Reg::RAX);
-        emit_.dec(x64::Reg::RAX);
-        emit_.kmovb_from_gpr(k_reg, x64::Reg::RAX);
-        
-        // masked load - will use k_reg for masking
-        emit_.vmovdqu32_zmm_load(k_reg, src_ptr, 0);
-        
-        // masked store - this is incomplete, just placeholder
-        emit_.vmovdqu32_zmm_store(dst_ptr, 0, 0);
-        
-        return true;
-    }
-    
-private:
-    x64::Emitter& emit_;
-    const CpuCapabilities& caps_;
 };
 
-// ========================================================================
-// STRIP-MINING VECTORIZER
-// ========================================================================
+} // namespace detail
 
-// forward declarations
-inline LoopInfo analyze_loop(const ast::WhileStmt& w);
-inline LoopInfo analyze_loop(const ast::ForStmt& f);
-
-class LoopVectorizer {
-public:
-    LoopVectorizer(x64::Emitter& emit) 
-        : emit_(emit), caps_(get_caps()), simd_gen_(emit, caps_) {}
-    
-    bool try_vectorize(const ast::WhileStmt& w) {
-        LoopInfo info = analyze_loop(w);
-        
-        if (info.trip_count <= 0 || info.trip_count < caps_.i32_per_vec()) {
-            return false;
+// emits vector loop kernel directly into output emitter
+[[nodiscard]] inline Report compile(const Loop& loop, const Target& target, x64::Emitter& output) {
+    Report report;
+    if (!target.avx2) { report.reason = "avx2 execution support required"; return report; }
+    report.width = target.preferred == Width::avx512 && target.avx512f ? Width::avx512 : Width::avx2;
+    auto p = detail::plan(loop, loop.result == Result::sum ? 4 : 6, report.reason);
+    if (!p) return report;
+    for (const auto& s : p->steps)
+        if (loop.element == Element::i64 && s.node.op == Op::mul &&
+            (report.width != Width::avx512 || !target.avx512dq)) {
+            report.reason = "packed i64 multiply requires avx512dq"; return report;
         }
-        
-        switch (info.pattern) {
-            case LoopPattern::Reduction:
-                return vectorize_reduction(info, w);
-            case LoopPattern::CounterBased:
-            case LoopPattern::RangeBased:
-                return vectorize_generic(info, w);
-            default:
-                return false;
-        }
-    }
-    
-    bool try_vectorize(const ast::ForStmt& f) {
-        LoopInfo info = analyze_loop(f);
-        
-        if (info.trip_count <= 0 || info.trip_count < caps_.i32_per_vec()) {
-            return false;
-        }
-        
-        switch (info.pattern) {
-            case LoopPattern::Reduction:
-                return vectorize_reduction(info, f);
-            case LoopPattern::CounterBased:
-            case LoopPattern::RangeBased:
-                return vectorize_generic(info, f);
-            default:
-                return false;
-        }
-    }
-    
-private:
-    bool vectorize_reduction(const LoopInfo& info, const ast::WhileStmt& w) {
-        // for now, let scalar handle it - reduction needs more analysis
-        (void)w;
-        return false;
-    }
-    
-    bool vectorize_reduction(const LoopInfo& info, const ast::ForStmt& f) {
-        // for now, let scalar handle it
-        (void)f;
-        return false;
-    }
-    
-    bool vectorize_generic(const LoopInfo& info, const ast::WhileStmt& w) {
-        // generic counter-based loops cant be vectorized without
-        // analyzing the body for memory access patterns. bail out
-        // and let scalar codegen handle it.
-        (void)info;
-        (void)w;
-        return false;
-    }
-    
-    bool vectorize_generic(const LoopInfo& info, const ast::ForStmt& f) {
-        // same deal - no body analysis means no safe vectorization
-        (void)info;
-        (void)f;
-        return false;
-    }
-    
-    bool vectorize_counter_based(const LoopInfo& info) {
-        int vec_width = caps_.i32_per_vec();
-        
-        emit_.push(x64::Reg::RBP);
-        emit_.mov(x64::Reg::RBP, x64::Reg::RSP);
-        emit_.sub_imm(x64::Reg::RSP, 40);
-        
-        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
-        emit_.mov_imm(x64::Reg::RDX, static_cast<std::int32_t>(info.trip_count - (info.trip_count % vec_width)));
-        
-        // completely unrolled for tiny loops (no branches at all)
-        if (info.trip_count <= 64) {
-            emit_unrolled_small(info.trip_count, vec_width);
-            emit_.mov(x64::Reg::RSP, x64::Reg::RBP);
-            emit_.pop(x64::Reg::RBP);
-            return true;
-        }
-        
-        // fully unrolled for medium loops (no branches at all)
-        if (info.trip_count <= 256) {
-            emit_unrolled_medium(info.trip_count, vec_width);
-            emit_.mov(x64::Reg::RSP, x64::Reg::RBP);
-            emit_.pop(x64::Reg::RBP);
-            return true;
-        }
-        
-        // big unroll for large loops (16x) with software pipelining
-        if (info.trip_count >= 64) {
-            constexpr int kBigUnroll = 16;
-            std::size_t big_loop_start = emit_.buffer().pos();
-            emit_.cmp(x64::Reg::RCX, x64::Reg::RDX);
-            std::size_t small_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
-            
-            // unroll with multiple registers for better ILP
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            
-            emit_.add_imm(x64::Reg::RCX, kBigUnroll * vec_width);
-            emit_.jmp_rel32_to(big_loop_start);
-            emit_.patch_jump(small_patch);
-        }
-        
-        // medium unroll (8x) with prefetch
-        std::size_t loop_start = emit_.buffer().pos();
-        
-        if (caps_.level >= CpuLevel::AVX512F) {
-            for (int i = 0; i < 8; ++i) {
-                emit_.vmovdqu32_zmm_load(0, x64::Reg::R8, 0);
-                emit_.vmovdqu32_zmm_store(x64::Reg::R9, 0, 0);
-            }
-            emit_.add_imm(x64::Reg::R8, 64 * 8);
-            emit_.add_imm(x64::Reg::R9, 64 * 8);
-            emit_.add_imm(x64::Reg::RCX, 8 * 16);
-        } else if (caps_.level >= CpuLevel::AVX2) {
-            for (int i = 0; i < 8; ++i) {
-                emit_.vmovdqu_load(0, x64::Reg::R8, 0);
-                emit_.vmovdqu_store(x64::Reg::R9, 0, 0);
-            }
-            emit_.add_imm(x64::Reg::R8, 32 * 8);
-            emit_.add_imm(x64::Reg::R9, 32 * 8);
-            emit_.add_imm(x64::Reg::RCX, 8 * 8);
-        } else {
-            for (int i = 0; i < 8; ++i) {
-                emit_.movdqu_load(x64::XmmReg(0), x64::Reg::R8, 0);
-                emit_.movdqu_store(x64::Reg::R9, 0, x64::XmmReg(0));
-            }
-            emit_.add_imm(x64::Reg::R8, 16 * 8);
-            emit_.add_imm(x64::Reg::R9, 16 * 8);
-            emit_.add_imm(x64::Reg::RCX, 8 * 4);
-        }
-        
-        emit_.cmp(x64::Reg::RCX, x64::Reg::RDX);
-        std::size_t exit_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
-        emit_.jmp_rel32_to(loop_start);
-        emit_.patch_jump(exit_patch);
-        
-        emit_.mov(x64::Reg::RSP, x64::Reg::RBP);
-        emit_.pop(x64::Reg::RBP);
-        
-        return true;
-    }
-    
-    void emit_unrolled_small(int count, int vec_width) {
-        // no branches, just unroll completely
-        for (int i = 0; i < count; ++i) {
-            emit_simd_body(vec_width);
-        }
-    }
-    
-    void emit_unrolled_medium(int count, int vec_width) {
-        // unroll in blocks of 16 to fit instruction cache
-        int blocks = count / 16;
-        int remainder = count % 16;
-        
-        for (int b = 0; b < blocks; ++b) {
-            // unroll 16x with independent register pressure
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-            emit_simd_body(vec_width);
-        }
-        
-        for (int i = 0; i < remainder; ++i) {
-            emit_simd_body(vec_width);
-        }
-    }
-    
-    void emit_simd_body_multi(int vec_width, int reg_idx) {
-        // use different register each iteration for better pipelining
-        std::uint8_t reg = static_cast<std::uint8_t>(reg_idx & 3);
-        
-        if (caps_.level >= CpuLevel::AVX512F) {
-            emit_.vmovdqu32_zmm_load(reg, x64::Reg::R8, 0);
-            emit_.vmovdqu32_zmm_store(x64::Reg::R9, 0, reg);
-            emit_.add_imm(x64::Reg::R8, vec_width * 4);
-            emit_.add_imm(x64::Reg::R9, vec_width * 4);
-        } else if (caps_.level >= CpuLevel::AVX2) {
-            emit_.vmovdqu_load(reg, x64::Reg::R8, 0);
-            emit_.vmovdqu_store(x64::Reg::R9, 0, reg);
-            emit_.add_imm(x64::Reg::R8, vec_width * 4);
-            emit_.add_imm(x64::Reg::R9, vec_width * 4);
-        } else {
-            emit_.movdqu_load(x64::XmmReg(reg), x64::Reg::R8, 0);
-            emit_.movdqu_store(x64::Reg::R9, 0, x64::XmmReg(reg));
-            emit_.add_imm(x64::Reg::R8, vec_width * 4);
-            emit_.add_imm(x64::Reg::R9, vec_width * 4);
-        }
-    }
-    
-    void emit_simd_body(int vec_width) {
-        if (caps_.level >= CpuLevel::AVX512F) {
-            emit_.vmovdqu32_zmm_load(0, x64::Reg::R8, 0);
-            emit_.vmovdqu32_zmm_store(x64::Reg::R9, 0, 0);
-            emit_.add_imm(x64::Reg::R8, vec_width * 4);
-            emit_.add_imm(x64::Reg::R9, vec_width * 4);
-        } else if (caps_.level >= CpuLevel::AVX2) {
-            emit_.vmovdqu_load(0, x64::Reg::R8, 0);
-            emit_.vmovdqu_store(x64::Reg::R9, 0, 0);
-            emit_.add_imm(x64::Reg::R8, vec_width * 4);
-            emit_.add_imm(x64::Reg::R9, vec_width * 4);
-        } else {
-            emit_.movdqu_load(x64::XmmReg(0), x64::Reg::R8, 0);
-            emit_.movdqu_store(x64::Reg::R9, 0, x64::XmmReg(0));
-            emit_.add_imm(x64::Reg::R8, vec_width * 4);
-            emit_.add_imm(x64::Reg::R9, vec_width * 4);
-        }
-    }
-    
-    void emit_simd_loop_avx512(const LoopInfo& info) {
-        std::size_t loop_start = emit_.buffer().pos();
-        
-        // load 16x i32
-        emit_.vmovdqu32_zmm_load(0, x64::Reg::R8, 0);
-        
-        // store 16x i32
-        emit_.vmovdqu32_zmm_store(x64::Reg::R9, 0, 0);
-        
-        // advance pointers by 64 bytes
-        emit_.add_imm(x64::Reg::R8, 64);
-        emit_.add_imm(x64::Reg::R9, 64);
-        emit_.add_imm(x64::Reg::RCX, 16);
-        
-        // compare and loop
-        emit_.cmp(x64::Reg::RCX, x64::Reg::RDX);
-        std::size_t exit_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
-        
-        // jump back to start
-        emit_.jmp_rel32_to(loop_start);
-        
-        // patch the exit jump
-        emit_.patch_jump(exit_patch);
-    }
-    
-    void emit_simd_loop_avx2(const LoopInfo& info) {
-        std::size_t loop_start = emit_.buffer().pos();
-        
-        // load 8x i32
-        emit_.vmovdqu_load(0, x64::Reg::R8, 0);
-        
-        // store 8x i32
-        emit_.vmovdqu_store(x64::Reg::R9, 0, 0);
-        
-        // advance by 32 bytes
-        emit_.add_imm(x64::Reg::R8, 32);
-        emit_.add_imm(x64::Reg::R9, 32);
-        emit_.add_imm(x64::Reg::RCX, 8);
-        
-        emit_.cmp(x64::Reg::RCX, x64::Reg::RDX);
-        std::size_t exit_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
-        
-        // jump back to start
-        emit_.jmp_rel32_to(loop_start);
-        
-        // patch the exit jump
-        emit_.patch_jump(exit_patch);
-    }
-    
-    void emit_simd_loop_sse42(const LoopInfo& info) {
-        std::size_t loop_start = emit_.buffer().pos();
-        
-        // load 4x i32
-        emit_.movdqu_load(x64::XmmReg(0), x64::Reg::R8, 0);
-        
-        // store 4x i32
-        emit_.movdqu_store(x64::Reg::R9, 0, x64::XmmReg(0));
-        
-        // advance by 16 bytes
-        emit_.add_imm(x64::Reg::R8, 16);
-        emit_.add_imm(x64::Reg::R9, 16);
-        emit_.add_imm(x64::Reg::RCX, 4);
-        
-        emit_.cmp(x64::Reg::RCX, x64::Reg::RDX);
-        std::size_t exit_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
-        
-        // jump back to start
-        emit_.jmp_rel32_to(loop_start);
-        
-        // patch the exit jump
-        emit_.patch_jump(exit_patch);
-    }
-    
-    x64::Emitter& emit_;
-    const CpuCapabilities& caps_;
-    SimdKernelGen simd_gen_;
-};
-
-// ========================================================================
-// INTEGRATION HELPERS
-// ========================================================================
-
-// check if a while loop can be vectorized
-inline bool can_vectorize(const ast::WhileStmt& w) {
-    LoopInfo info;
-    if (!is_counter_based_while(w, info)) return false;
-    if (info.trip_count <= 0) return false;
-    return true;
-}
-
-// check if a for loop can be vectorized
-inline bool can_vectorize(const ast::ForStmt& f) {
-    LoopInfo info;
-    if (!is_range_based_for(f, info)) return false;
-    if (info.trip_count <= 0) return false;
-    return true;
-}
-
-// analyze while loop
-inline LoopInfo analyze_loop(const ast::WhileStmt& w) {
-    LoopInfo info;
-    if (is_counter_based_while(w, info)) {
-        if (w.body.size() == 1) {
-            is_simple_reduction(*w.body[0], info.counter_name, info);
-        }
-    }
-    return info;
-}
-
-// analyze for loop
-inline LoopInfo analyze_loop(const ast::ForStmt& f) {
-    LoopInfo info;
-    if (is_range_based_for(f, info)) {
-        if (f.body.size() == 1) {
-            is_simple_reduction(*f.body[0], info.counter_name, info);
-        }
-    }
-    return info;
-}
-
-// check if vectorization is profitable
-inline bool is_profitable(const LoopInfo& info) {
-    const CpuCapabilities& caps = get_caps();
-    int min_trip_count = caps.i32_per_vec() * 2;  // at least 2 vectors
-    return info.trip_count >= min_trip_count;
-}
-
-// get the best ISA for current CPU
-inline CpuLevel get_best_isa() {
-    return get_caps().level;
-}
-
-// runtime check wrapper for AVX2
-inline void ensure_avx2_enabled() {
-    if (get_caps().level >= CpuLevel::AVX2) {
-        // xgetbv to check OS support for YMM regs
-        #ifdef _MSC_VER
-        std::int64_t xcr = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
-        #else
-        std::int64_t xcr = 0;
-        __asm__ volatile ("xgetbv" : "=a"(xcr) : "c"(0) : "edx");
-        #endif
-        (void)xcr;
-    }
+    report.lanes = (report.width == Width::avx512 ? 64 : 32) / detail::bytes(loop.element);
+    report.unroll = p->steps.size() > 24 ? 1 : std::clamp(target.unroll, 1u, 4u);
+    report.peak_registers = p->peak + (loop.result == Result::sum ? 2 : 0);
+    report.live_nodes = p->steps.size();
+    x64::Emitter temporary;
+    detail::Kernel(temporary, loop, *p, report.width).emit(report.unroll);
+    report.code_bytes = temporary.buffer().pos();
+    output.buffer().emit_bytes(temporary.buffer().span());
+    report.emitted = true;
+    return report;
 }
 
 } // namespace sable::vectorize

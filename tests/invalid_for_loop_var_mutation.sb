@@ -1,0 +1,6 @@
+function int main() {
+    for i in 0..5 {
+        i = 0
+    }
+    return 0
+}
