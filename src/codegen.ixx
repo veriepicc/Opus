@@ -204,6 +204,8 @@ public:
     bool is_dll_output() const { return output_is_dll(output_kind_); }
     void set_collect_line_map(bool enabled) { collect_line_map_ = enabled; }
     void set_collect_timings(bool enabled) { collect_timings_ = enabled; }
+    void set_vectorize(bool enabled) { vectorize_enabled_ = enabled; }
+    bool vectorize_enabled() const { return vectorize_enabled_; }
 
     // set source file path for import resolution
     void set_source_path(const std::string& path) { source_path_ = path; }
@@ -953,6 +955,7 @@ private:
     std::vector<LineMapEntry> line_map_;
     bool collect_line_map_ = false;
     bool collect_timings_ = false;
+    bool vectorize_enabled_ = true;
     mutable std::vector<std::pair<std::string, double>> timings_;
     
     // String literals (embedded in data section)
@@ -6261,7 +6264,7 @@ private:
         if (!emit_closed_form_counted_accumulation(x64::Reg::RDX, plan.term_step)) {
             return false;
         }
-        emit_.epilogue();
+        emit_current_epilogue();
         return true;
     }
 
@@ -6332,7 +6335,7 @@ private:
         emit_series_sum(x64::Reg::RDX, x64::Reg::R8, plan.even_step);
         emit_series_sum(x64::Reg::R11, x64::Reg::R9, plan.odd_step);
         emit_.patch_jump(exit_patch);
-        emit_.epilogue();
+        emit_current_epilogue();
         return true;
     }
 
@@ -7723,7 +7726,7 @@ private:
         } else if (return_reg != x64::Reg::RAX) {
             emit_.mov(x64::Reg::RAX, return_reg);
         }
-        emit_.epilogue();
+        emit_current_epilogue();
         return true;
     }
 
@@ -7861,7 +7864,7 @@ private:
         } else if (return_reg != x64::Reg::RAX) {
             emit_.mov(x64::Reg::RAX, return_reg);
         }
-        emit_.epilogue();
+        emit_current_epilogue();
         return true;
     }
 
@@ -8316,7 +8319,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
                 emit_.add(x64::Reg::RAX, plan.induction->term_reg);
                 emit_.patch_jump(exit_patch);
-                emit_.epilogue();
+                emit_current_epilogue();
                 return true;
             }
         }
@@ -8376,7 +8379,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         } else if (return_reg != x64::Reg::RAX) {
             emit_.mov(x64::Reg::RAX, return_reg);
         }
-        emit_.epilogue();
+        emit_current_epilogue();
         return true;
     }
 
@@ -8746,17 +8749,6 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     // [[nodiscard]] bool generate_ternary(const ast::TernaryExpr& tern) { ... } // TEMPORARILY DISABLED
 
     [[nodiscard]] bool generate_while(const ast::WhileStmt& while_stmt) {
-        // try aggressive SIMD vectorization FIRST
-        if (vectorize::can_vectorize(while_stmt)) {
-            vectorize::LoopInfo info = vectorize::analyze_loop(while_stmt);
-            if (vectorize::is_profitable(info)) {
-                vectorize::LoopVectorizer vec(emit_);
-                if (vec.try_vectorize(while_stmt)) {
-                    return true;
-                }
-            }
-        }
-
         WhileSimdKernelPlan simd_plan;
         if (try_make_while_simd_kernel_plan(while_stmt, simd_plan)) {
             return generate_while_simd_kernel_registerized(simd_plan);
@@ -8845,32 +8837,189 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         return true;
     }
 
+    [[nodiscard]] bool try_vectorize_for(const ast::ForStmt& for_stmt, const ast::CallExpr& call) {
+        if (!vectorize_enabled_) return false;
+        if (for_stmt.body.empty() || for_stmt.body.size() > 1) return false;
+
+        // Pattern: dst[i] = expr(srcA[i], srcB[i], ...)
+        const auto* expr_stmt = std::get_if<ast::ExprStmt>(&for_stmt.body[0]->kind);
+        if (!expr_stmt) return false;
+        const auto* assign = std::get_if<ast::BinaryExpr>(&expr_stmt->expr->kind);
+        if (!assign || assign->op != ast::BinaryExpr::Op::Assign) return false;
+
+        // LHS must be dst[i] where index is the loop variable
+        const auto* lhs_idx = std::get_if<ast::IndexExpr>(&assign->lhs->kind);
+        if (!lhs_idx) return false;
+        const auto* lhs_idx_ident = std::get_if<ast::IdentExpr>(&lhs_idx->index->kind);
+        if (!lhs_idx_ident || lhs_idx_ident->name != for_stmt.name) return false;
+        const auto* lhs_base_ident = std::get_if<ast::IdentExpr>(&lhs_idx->base->kind);
+        if (!lhs_base_ident) return false;
+
+        Symbol* dst_sym = current_scope_->lookup(lhs_base_ident->name);
+        if (!dst_sym) return false;
+
+        // Trip count: start must be 0
+        if (call.args.size() == 2) {
+            std::int64_t start_val = 0;
+            if (!try_get_i64_immediate(*call.args[0], start_val) || start_val != 0) {
+                return false;
+            }
+        }
+        const auto& end_expr = call.args.size() == 2 ? *call.args[1] : *call.args[0];
+
+        // Gather buffers and build expression DAG
+        std::vector<Symbol*> buffer_syms;
+        auto get_or_add_buf = [&](Symbol* sym) -> std::uint16_t {
+            for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+                if (buffer_syms[i] == sym) return static_cast<std::uint16_t>(i);
+            }
+            buffer_syms.push_back(sym);
+            return static_cast<std::uint16_t>(buffer_syms.size() - 1);
+        };
+
+        std::uint16_t dst_buf_idx = get_or_add_buf(dst_sym);
+
+        vectorize::Loop vloop;
+        vloop.element = vectorize::Element::i64;
+        vloop.result = vectorize::Result::map;
+        vloop.output = dst_buf_idx;
+
+        auto build_dag = [&](auto& self, const ast::Expr& expr) -> std::optional<vectorize::Value> {
+            if (auto* idx = std::get_if<ast::IndexExpr>(&expr.kind)) {
+                auto* idx_ident = std::get_if<ast::IdentExpr>(&idx->index->kind);
+                if (!idx_ident || idx_ident->name != for_stmt.name) return std::nullopt;
+                auto* base_ident = std::get_if<ast::IdentExpr>(&idx->base->kind);
+                if (!base_ident) return std::nullopt;
+                Symbol* src_sym = current_scope_->lookup(base_ident->name);
+                if (!src_sym) return std::nullopt;
+                std::uint16_t b_idx = get_or_add_buf(src_sym);
+                vectorize::Node node;
+                node.op = vectorize::Op::load;
+                node.bits = b_idx;
+                vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
+                std::int64_t val = 0;
+                if (!try_get_i64_immediate(*lit, val)) return std::nullopt;
+                vectorize::Node node;
+                node.op = vectorize::Op::constant;
+                node.bits = static_cast<std::uint64_t>(val);
+                vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* bin = std::get_if<ast::BinaryExpr>(&expr.kind)) {
+                auto left = self(self, *bin->lhs);
+                if (!left) return std::nullopt;
+                auto right = self(self, *bin->rhs);
+                if (!right) return std::nullopt;
+                vectorize::Op vop = vectorize::Op::add;
+                switch (bin->op) {
+                    case ast::BinaryExpr::Op::Add:    vop = vectorize::Op::add; break;
+                    case ast::BinaryExpr::Op::Sub:    vop = vectorize::Op::sub; break;
+                    case ast::BinaryExpr::Op::Mul:    vop = vectorize::Op::mul; break;
+                    case ast::BinaryExpr::Op::BitAnd: vop = vectorize::Op::bit_and; break;
+                    case ast::BinaryExpr::Op::BitOr:  vop = vectorize::Op::bit_or; break;
+                    case ast::BinaryExpr::Op::BitXor: vop = vectorize::Op::bit_xor; break;
+                    default: return std::nullopt;
+                }
+                vectorize::Node node;
+                node.op = vop;
+                node.a = *left;
+                node.b = *right;
+                vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            return std::nullopt;
+        };
+
+        auto root = build_dag(build_dag, *assign->rhs);
+        if (!root) return false;
+        vloop.root = *root;
+        vloop.buffers = static_cast<std::uint16_t>(buffer_syms.size());
+
+        // Target: detect AVX2 / AVX-512 capabilities
+        vectorize::Target target{
+            .avx2 = true,
+            .avx512f = true,
+            .avx512dq = true,
+            .preferred = vectorize::Width::avx512,
+            .unroll = 2,
+        };
+
+        x64::Emitter kernel_emitter;
+        auto report = vectorize::compile(vloop, target, kernel_emitter);
+        if (!report.emitted) {
+            // fallback to AVX2
+            target.preferred = vectorize::Width::avx2;
+            kernel_emitter.buffer().truncate(0);
+            report = vectorize::compile(vloop, target, kernel_emitter);
+            if (!report.emitted) return false;
+        }
+
+        // Allocate buffer pointer table on stack: [ptr0, ptr1, ...]
+        std::int32_t buf_table_bytes = static_cast<std::int32_t>(buffer_syms.size() * 8);
+        emit_.sub_imm(x64::Reg::RSP, buf_table_bytes);
+        for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+            emit_ptr_symbol_into(buffer_syms[i], x64::Reg::RAX);
+            if (!is_native_image_output()) {
+                emit_.add_smart(x64::Reg::RAX, 8); // array length offset
+            }
+            emit_.mov_store(x64::Reg::RSP, static_cast<std::int32_t>(i * 8), x64::Reg::RAX);
+        }
+
+        // Evaluate count -> RDX
+        if (!generate_expr(end_expr)) {
+            emit_.add_imm(x64::Reg::RSP, buf_table_bytes);
+            return false;
+        }
+        emit_.mov(x64::Reg::RDX, x64::Reg::RAX); // count in RDX
+        emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // pointer table in RCX
+
+        // Jump over kernel code to invocation
+        std::size_t jump_over_kernel = emit_.jmp_rel32_placeholder();
+        std::size_t kernel_entry = emit_.buffer().pos();
+        emit_.buffer().emit_bytes(kernel_emitter.buffer().span());
+        emit_.patch_jump(jump_over_kernel);
+
+        // Call the emitted kernel: call rel32
+        std::size_t call_site = emit_.buffer().pos();
+        emit_.buffer().emit8(0xE8);
+        std::int32_t rel = emit_.buffer().rel32(call_site, kernel_entry);
+        emit_.buffer().emit32(static_cast<std::uint32_t>(rel));
+
+        // Restore stack
+        emit_.add_imm(x64::Reg::RSP, buf_table_bytes);
+        return true;
+    }
+
     [[nodiscard]] bool generate_for(const ast::ForStmt& for_stmt) {
-        // TODO: SIMD vectorization for range loops - needs WhileStmt/ForStmt overloads
-        // For now, use scalar path
-        push_scope();
-        break_patches_.push_back({});
-        continue_patches_.push_back({});
-        
         // evaluate range bounds as full expressions
         if (!for_stmt.iterable->is<ast::CallExpr>()) {
             error("for-in requires a range() call");
-            pop_scope();
             return false;
         }
         const auto& call = for_stmt.iterable->as<ast::CallExpr>();
         if (!call.callee->is<ast::IdentExpr>() || 
             call.callee->as<ast::IdentExpr>().name != "range") {
             error("for-in requires a range() call");
-            pop_scope();
             return false;
         }
         
         if (call.args.size() > 2) {
             error("range() accepts 1 or 2 arguments");
-            pop_scope();
             return false;
         }
+
+        // Try auto-vectorization first
+        if (try_vectorize_for(for_stmt, call)) {
+            return true;
+        }
+
+        // Scalar fallback path
+        push_scope();
+        break_patches_.push_back({});
+        continue_patches_.push_back({});
         
         // evaluate start
         auto& start_sym = current_scope_->define("__for_start",
@@ -10779,11 +10928,11 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 }
             }
 
-            if (!generate_expr(*bin.lhs)) return false;
-            auto rhs_reg = pick_scratch_reg({x64::Reg::RAX});
-            if (!rhs_reg) return false;
-            if (!generate_ident_into(bin.rhs->as<ast::IdentExpr>(), *rhs_reg)) return false;
-            return emit_binary_with_rhs_reg(bin.op, *rhs_reg);
+            if (auto rhs_reg = pick_scratch_reg({x64::Reg::RAX})) {
+                if (!generate_expr(*bin.lhs)) return false;
+                if (!generate_ident_into(bin.rhs->as<ast::IdentExpr>(), *rhs_reg)) return false;
+                return emit_binary_with_rhs_reg(bin.op, *rhs_reg);
+            }
         }
 
         if (bin.rhs->is<ast::FieldExpr>()) {
@@ -10830,12 +10979,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         if (!generate_expr(*bin.rhs)) return false;
 
         // Move right to a scratch reg, pop left to RAX
-        auto rhs_reg = pick_scratch_reg({x64::Reg::RAX});
-        if (!rhs_reg) return false;
-        emit_.mov(*rhs_reg, x64::Reg::RAX);
+        x64::Reg rhs_reg_actual = x64::Reg::R11;
+        if (auto rhs_reg = pick_scratch_reg({x64::Reg::RAX})) {
+            rhs_reg_actual = *rhs_reg;
+        }
+        emit_.mov(rhs_reg_actual, x64::Reg::RAX);
         emit_.pop(x64::Reg::RAX);
 
-        return emit_binary_with_rhs_reg(bin.op, *rhs_reg);
+        return emit_binary_with_rhs_reg(bin.op, rhs_reg_actual);
     }
 
     [[nodiscard]] bool generate_assignment(const ast::BinaryExpr& bin) {
@@ -16136,24 +16287,154 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, iter_start.stack_offset);
         emit_.mov_store(x64::Reg::RBP, loop_var.stack_offset, x64::Reg::RAX);
 
-        // inner loop: while loop_var < iter_end
-        std::size_t loop_top = emit_.buffer().pos();
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, loop_var.stack_offset);
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_end.stack_offset);
-        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
-        std::size_t loop_exit = emit_.jcc_rel32(x64::Emitter::CC_GE);
+        // try auto-vectorizing worker loop across this thread's chunk
+        bool pfor_vectorized = false;
+        if (vectorize_enabled_ && pfor.body.size() == 1) {
+            const auto* expr_stmt = std::get_if<ast::ExprStmt>(&pfor.body[0]->kind);
+            const auto* assign = expr_stmt ? std::get_if<ast::BinaryExpr>(&expr_stmt->expr->kind) : nullptr;
+            if (assign && assign->op == ast::BinaryExpr::Op::Assign) {
+                const auto* lhs_idx = std::get_if<ast::IndexExpr>(&assign->lhs->kind);
+                const auto* lhs_idx_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->index->kind) : nullptr;
+                const auto* lhs_base_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->base->kind) : nullptr;
+                if (lhs_idx_ident && lhs_idx_ident->name == pfor.name && lhs_base_ident) {
+                    Symbol* dst_sym = current_scope_->lookup(lhs_base_ident->name);
+                    if (dst_sym) {
+                        std::vector<Symbol*> buffer_syms;
+                        auto get_or_add_buf = [&](Symbol* sym) -> std::uint16_t {
+                            for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+                                if (buffer_syms[i] == sym) return static_cast<std::uint16_t>(i);
+                            }
+                            buffer_syms.push_back(sym);
+                            return static_cast<std::uint16_t>(buffer_syms.size() - 1);
+                        };
+                        std::uint16_t dst_buf_idx = get_or_add_buf(dst_sym);
 
-        for (const auto& stmt : pfor.body) {
-            if (!generate_stmt(*stmt)) { pop_scope(); return false; }
+                        vectorize::Loop vloop;
+                        vloop.element = vectorize::Element::i64;
+                        vloop.result = vectorize::Result::map;
+                        vloop.output = dst_buf_idx;
+
+                        auto build_dag = [&](auto& self, const ast::Expr& expr) -> std::optional<vectorize::Value> {
+                            if (auto* idx = std::get_if<ast::IndexExpr>(&expr.kind)) {
+                                auto* idx_id = std::get_if<ast::IdentExpr>(&idx->index->kind);
+                                if (!idx_id || idx_id->name != pfor.name) return std::nullopt;
+                                auto* base_id = std::get_if<ast::IdentExpr>(&idx->base->kind);
+                                if (!base_id) return std::nullopt;
+                                Symbol* src_sym = current_scope_->lookup(base_id->name);
+                                if (!src_sym) return std::nullopt;
+                                std::uint16_t b_idx = get_or_add_buf(src_sym);
+                                vectorize::Node node;
+                                node.op = vectorize::Op::load;
+                                node.bits = b_idx;
+                                vloop.nodes.push_back(node);
+                                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                            }
+                            if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
+                                std::int64_t val = 0;
+                                if (!try_get_i64_immediate(*lit, val)) return std::nullopt;
+                                vectorize::Node node;
+                                node.op = vectorize::Op::constant;
+                                node.bits = static_cast<std::uint64_t>(val);
+                                vloop.nodes.push_back(node);
+                                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                            }
+                            if (auto* bin = std::get_if<ast::BinaryExpr>(&expr.kind)) {
+                                auto left = self(self, *bin->lhs);
+                                if (!left) return std::nullopt;
+                                auto right = self(self, *bin->rhs);
+                                if (!right) return std::nullopt;
+                                vectorize::Op vop = vectorize::Op::add;
+                                switch (bin->op) {
+                                    case ast::BinaryExpr::Op::Add:    vop = vectorize::Op::add; break;
+                                    case ast::BinaryExpr::Op::Sub:    vop = vectorize::Op::sub; break;
+                                    case ast::BinaryExpr::Op::Mul:    vop = vectorize::Op::mul; break;
+                                    case ast::BinaryExpr::Op::BitAnd: vop = vectorize::Op::bit_and; break;
+                                    case ast::BinaryExpr::Op::BitOr:  vop = vectorize::Op::bit_or; break;
+                                    case ast::BinaryExpr::Op::BitXor: vop = vectorize::Op::bit_xor; break;
+                                    default: return std::nullopt;
+                                }
+                                vectorize::Node node;
+                                node.op = vop;
+                                node.a = *left;
+                                node.b = *right;
+                                vloop.nodes.push_back(node);
+                                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                            }
+                            return std::nullopt;
+                        };
+
+                        auto root = build_dag(build_dag, *assign->rhs);
+                        if (root) {
+                            vloop.root = *root;
+                            vloop.buffers = static_cast<std::uint16_t>(buffer_syms.size());
+
+                            vectorize::Target target{
+                                .avx2 = true,
+                                .avx512f = true,
+                                .avx512dq = true,
+                                .preferred = vectorize::Width::avx512,
+                                .unroll = 2,
+                            };
+
+                            x64::Emitter kernel_emitter;
+                            auto report = vectorize::compile(vloop, target, kernel_emitter);
+                            if (report.emitted) {
+                                // compute slice pointers: ptr + iter_start * 8
+                                std::int32_t buf_table_bytes = static_cast<std::int32_t>(buffer_syms.size() * 8);
+                                emit_.sub_imm(x64::Reg::RSP, buf_table_bytes);
+                                for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+                                    emit_ptr_symbol_into(buffer_syms[i], x64::Reg::RAX);
+                                    emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
+                                    emit_.shl_imm(x64::Reg::RCX, 3); // iter_start * 8
+                                    emit_.add(x64::Reg::RAX, x64::Reg::RCX); // RAX = slice pointer
+                                    emit_.mov_store(x64::Reg::RSP, static_cast<std::int32_t>(i * 8), x64::Reg::RAX);
+                                }
+
+                                // count = iter_end - iter_start
+                                emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, iter_end.stack_offset);
+                                emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
+                                emit_.sub(x64::Reg::RDX, x64::Reg::RCX); // RDX = chunk count
+                                emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // RCX = slice pointer table
+
+                                std::size_t jump_over_kernel = emit_.jmp_rel32_placeholder();
+                                std::size_t kernel_entry = emit_.buffer().pos();
+                                emit_.buffer().emit_bytes(kernel_emitter.buffer().span());
+                                emit_.patch_jump(jump_over_kernel);
+
+                                std::size_t call_site = emit_.buffer().pos();
+                                emit_.buffer().emit8(0xE8);
+                                std::int32_t rel = emit_.buffer().rel32(call_site, kernel_entry);
+                                emit_.buffer().emit32(static_cast<std::uint32_t>(rel));
+
+                                emit_.add_imm(x64::Reg::RSP, buf_table_bytes);
+                                pfor_vectorized = true;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        // increment and loop back
-        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, loop_var.stack_offset);
-        emit_.add_smart(x64::Reg::RAX, 1);
-        emit_.mov_store(x64::Reg::RBP, loop_var.stack_offset, x64::Reg::RAX);
+        if (!pfor_vectorized) {
+            // fallback to scalar inner loop
+            std::size_t loop_top = emit_.buffer().pos();
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, loop_var.stack_offset);
+            emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_end.stack_offset);
+            emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
+            std::size_t loop_exit = emit_.jcc_rel32(x64::Emitter::CC_GE);
 
-        emit_jmp_rel32_to(loop_top);
-        emit_.patch_jump(loop_exit);
+            for (const auto& stmt : pfor.body) {
+                if (!generate_stmt(*stmt)) { pop_scope(); return false; }
+            }
+
+            // increment and loop back
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, loop_var.stack_offset);
+            emit_.add_smart(x64::Reg::RAX, 1);
+            emit_.mov_store(x64::Reg::RBP, loop_var.stack_offset, x64::Reg::RAX);
+
+            emit_jmp_rel32_to(loop_top);
+            emit_.patch_jump(loop_exit);
+        }
 
         // return 0
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);

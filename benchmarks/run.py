@@ -27,7 +27,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BENCH_DIR = ROOT_DIR / "benchmarks"
 SOURCES_DIR = BENCH_DIR / "sources"
-SCALAR_C = SOURCES_DIR / "scalar.c"
+BENCH_C = SOURCES_DIR / "benchmarks.c"
 OUT_DIR = BENCH_DIR / ".work"
 
 BENCHMARKS = [
@@ -66,6 +66,41 @@ BENCHMARKS = [
         "sable_file": ROOT_DIR / "tests" / "benchmark_hft.sb",
         "c_macro": 5,
     },
+    {
+        "id": "math_vec",
+        "name": "Math SIMD Vector (40M items)",
+        "desc": "Contiguous array math vectorization: y[i] = a[i] * 8 + 1",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_math_vec.sb",
+        "c_macro": 6,
+    },
+    {
+        "id": "state_vec",
+        "name": "State SIMD Vector (40M items)",
+        "desc": "Multi-stream state vectorization: out[i] = (a[i] + 3) + (b[i] + 5)",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_state_vec.sb",
+        "c_macro": 7,
+    },
+    {
+        "id": "branch_vec",
+        "name": "Branch SIMD Vector (40M items)",
+        "desc": "Masked parity vector math: out[i] = (a[i] & 1) * 3 + a[i] * 5",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_branch_vec.sb",
+        "c_macro": 8,
+    },
+    {
+        "id": "general_vec",
+        "name": "General SIMD Vector (20M items)",
+        "desc": "Multi-stage folding vector kernel across contiguous buffers",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_general_vec.sb",
+        "c_macro": 9,
+    },
+    {
+        "id": "hft_vec",
+        "name": "HFT SIMD Vector (20M items)",
+        "desc": "Vectorized order book depth spread and inventory PnL scan",
+        "sable_file": ROOT_DIR / "tests" / "benchmark_hft_vec.sb",
+        "c_macro": 10,
+    },
 ]
 
 def ensure_tcc(work_dir):
@@ -76,13 +111,15 @@ def ensure_tcc(work_dir):
     zip_path = work_dir / "tcc-win64.zip"
     url = "https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27-win64-bin.zip"
     try:
-        urllib.request.urlretrieve(url, zip_path)
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=2) as resp, open(zip_path, 'wb') as out_file:
+            shutil.copyfileobj(resp, out_file)
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall(work_dir)
         if tcc_bin.exists():
             return tcc_bin
-    except Exception as e:
-        print(f"note: tcc not available: {e}", file=sys.stderr)
+    except Exception:
+        pass
     return None
 
 def find_compiler(name):
@@ -203,17 +240,17 @@ def main():
                     cmd = ["wine"] + cmd
 
             elif c_info["type"] == "gcc":
-                cmd = [str(c_info["bin"]), "-O3", "-fwrapv", "-s", f"-DBENCH={bench['c_macro']}", str(SCALAR_C), "-o", str(exe_out)]
+                cmd = [str(c_info["bin"]), "-O3", "-mavx2", "-mfma", "-fwrapv", "-s", f"-DBENCH={bench['c_macro']}", str(BENCH_C), "-o", str(exe_out)]
 
             elif c_info["type"] == "tcc":
-                cmd = [str(c_info["bin"]), f"-DBENCH={bench['c_macro']}", str(SCALAR_C), "-o", str(exe_out)]
+                cmd = [str(c_info["bin"]), f"-DBENCH={bench['c_macro']}", str(BENCH_C), "-o", str(exe_out)]
                 if not is_windows:
                     cmd = ["wine"] + cmd
 
             elif c_info["type"] == "msvc":
                 cmd = [
-                    str(c_info["bin"]), "/nologo", "/O2", "/GS-", "/Ob2", "/Oi", "/Ot",
-                    f"/DBENCH={bench['c_macro']}", str(SCALAR_C),
+                    str(c_info["bin"]), "/nologo", "/O2", "/arch:AVX2", "/GS-", "/Ob2", "/Oi", "/Ot",
+                    f"/DBENCH={bench['c_macro']}", str(BENCH_C),
                     f"/Fe:{exe_out}", f"/Fo:{build_dir / 'benchmark.obj'}"
                 ]
 

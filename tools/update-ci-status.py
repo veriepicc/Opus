@@ -187,9 +187,14 @@ def main():
                 b_stat = fmt_stat('branch')
                 g_stat = fmt_stat('general')
                 h_stat = fmt_stat('hft')
+                mv_stat = fmt_stat('math_vec')
+                sv_stat = fmt_stat('state_vec')
+                bv_stat = fmt_stat('branch_vec')
+                gv_stat = fmt_stat('general_vec')
+                hv_stat = fmt_stat('hft_vec')
 
                 platform_rows.append(
-                    f"| **{host}** | `{cpu}` | {m_stat} | {s_stat} | {b_stat} | {g_stat} | {h_stat} |"
+                    f"| **{host}** | `{cpu}` | {m_stat} | {s_stat} | {b_stat} | {g_stat} | {h_stat} | {mv_stat} | {sv_stat} | {bv_stat} | {gv_stat} | {hv_stat} |"
                 )
             except Exception:
                 pass
@@ -197,8 +202,9 @@ def main():
     multi_arch_section = [
         "## Multi-Architecture Silicon Matrix (Sable: Compile / Runtime)",
         "",
-        "| Architecture & Host | Processor Model | Math (80M) | State (50M) | Branch (40M) | General (6M) | HFT (12M) |",
-        "| :--- | :--- | :---: | :---: | :---: | :---: | :---: |",
+        "### Scalar Benchmarks",
+        "| Architecture & Host | Processor Model | Math (80M) | State (50M) | Branch (40M) | General (6M) | HFT (12M) | Math Vec (40M) | State Vec (40M) | Branch Vec (40M) | General Vec (20M) | HFT Vec (20M) |",
+        "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
     ] + platform_rows + [
         "",
         f"Automated multi-host benchmarks recorded on [CI Run]({args.run_url}) · Source: `{args.commit[:12]}`.",

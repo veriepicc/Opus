@@ -566,6 +566,7 @@ struct ProjectDecl {
     std::vector<std::string> includes;
     bool debug = false;
     std::optional<HealingMode> healing;
+    bool vectorize = true;
 };
 
 struct Decl {

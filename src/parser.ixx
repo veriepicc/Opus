@@ -2606,6 +2606,12 @@ private:
                         return false;
                     }
                     proj.healing = *value;
+                } else if (key == "vectorize") {
+                    auto value = parse_bool_value("vectorize");
+                    if (!value) {
+                        return false;
+                    }
+                    proj.vectorize = *value;
                 } else {
                     error_invalid_project_property(key);
                     return false;

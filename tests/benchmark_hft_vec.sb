@@ -1,0 +1,20 @@
+function int main() {
+    let n = 20000000;
+    let mut bid = malloc(n * 8) as *int;
+    let mut ask = malloc(n * 8) as *int;
+    let mut pnl = malloc(n * 8) as *int;
+
+    parallel for i in range(0, n) { bid[i] = 100000 + (i & 7); }
+    parallel for i in range(0, n) { ask[i] = 100005 + (i & 7); }
+
+    parallel for i in range(0, n) {
+        pnl[i] = ((ask[i] - bid[i]) * 8) + (bid[i] * 2) - 17;
+    }
+
+    let mid = n / 2;
+    let check = pnl[mid];
+    free(bid);
+    free(ask);
+    free(pnl);
+    return check;
+}

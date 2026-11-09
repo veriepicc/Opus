@@ -17,6 +17,7 @@ struct ProjectConfig {
     std::vector<std::string> includes;
     bool debug = false;
     std::optional<ast::HealingMode> healing;
+    bool vectorize = true;
     
     std::filesystem::path project_dir;
     std::vector<std::filesystem::path> source_files;
@@ -59,6 +60,7 @@ std::expected<ProjectConfig, std::string> load_project(const std::filesystem::pa
     config.includes = proj.includes;
     config.debug = proj.debug;
     config.healing = proj.healing;
+    config.vectorize = proj.vectorize;
     
     // default: debug builds get auto healing, release gets none
     if (!config.healing.has_value()) {
