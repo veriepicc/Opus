@@ -102,6 +102,14 @@ jobs:
             Remove-Item Env:\SABLE_FORCE_WIDTH
           }
           Remove-Item tests/benchmark_math_vec.exe -ErrorAction SilentlyContinue
+          & ./bin/Release/sable.exe --quiet tests/diag_for_only.sb
+          Copy-Item tests/diag_for_only.exe diag_for_only_crash.exe
+      - name: Upload crashing exe
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-exe-${{ matrix.id }}
+          path: diag_for_only_crash.exe
       - name: Measure toolchains
         run: python benchmarks/run.py --iterations 5 --warmup 2
       - name: Upload benchmark results
