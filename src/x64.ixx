@@ -20,6 +20,21 @@ import std;
 
 export namespace sable::x64 {
 
+// read an environment variable into out; returns length (0 = unset)
+inline std::size_t env_string(const char* name, char* out, std::size_t cap) {
+#ifdef _WIN32
+    return GetEnvironmentVariableA(name, out, static_cast<DWORD>(cap));
+#else
+    const char* v = std::getenv(name);
+    if (!v) return 0;
+    std::size_t n = std::strlen(v);
+    if (n >= cap) n = cap - 1;
+    std::memcpy(out, v, n);
+    out[n] = '\0';
+    return n;
+#endif
+}
+
 enum class Reg : std::uint8_t {
     RAX = 0, RCX = 1, RDX = 2, RBX = 3,
     RSP = 4, RBP = 5, RSI = 6, RDI = 7,

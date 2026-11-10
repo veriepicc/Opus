@@ -8904,10 +8904,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         x64::Emitter per_width[3];
         // SABLE_FORCE_WIDTH=0/1/2 pins kernel selection to avx512/avx2/sse2 (testing)
-        const char* force_width = std::getenv("SABLE_FORCE_WIDTH");
-        int forced = force_width ? std::atoi(force_width) : -1;
+        std::uint64_t forced = []() -> std::uint64_t {
+            char buf[8] = {};
+            if (x64::env_string("SABLE_FORCE_WIDTH", buf, sizeof(buf)) == 0) return 64;
+            std::int64_t v = std::atoi(buf);
+            return v < 0 || v > 3 ? 64 : static_cast<std::uint64_t>(v);
+        }();
         for (int i = 0; i < 3; ++i) {
-            if (forced >= 0 && forced != i) {
+            if (forced != 64 && forced != static_cast<std::uint64_t>(i)) {
                 variants[i].supported = false;
             }
         }
