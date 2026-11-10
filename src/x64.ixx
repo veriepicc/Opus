@@ -384,6 +384,12 @@ public:
         buf_.emit8(modrm(0b11, Reg(EXT_IDIV), src));
     }
 
+    void idiv_mem(Reg base, std::int32_t offset) {
+        buf_.emit8(rex(true, Reg::RAX, base));
+        buf_.emit8(0xF7);
+        emit_mem_operand(Reg(EXT_IDIV), base, offset);
+    }
+
     // REX placeholder note: Reg::RAX is used as a placeholder register argument
     // in rex() calls where only the REX prefix bits (W/B/X/R) are needed.
     // It does not represent the actual RAX register in these contexts.

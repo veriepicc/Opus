@@ -6931,20 +6931,22 @@ private:
             return true;
         }
 
-        if (update.has_rhs_imm &&
-            update.rhs_imm >= (std::numeric_limits<std::int32_t>::min)() &&
-            update.rhs_imm <= (std::numeric_limits<std::int32_t>::max)()) {
-            auto imm32 = static_cast<std::int32_t>(update.rhs_imm);
-            if (update.op == ast::BinaryExpr::Op::Add) {
-                if (imm32 == 1) emit_.inc_mem(x64::Reg::RBP, update.sym->stack_offset);
-                else if (imm32 == -1) emit_.dec_mem(x64::Reg::RBP, update.sym->stack_offset);
-                else emit_.add_mem_imm(x64::Reg::RBP, update.sym->stack_offset, imm32);
-            } else {
-                if (imm32 == 1) emit_.dec_mem(x64::Reg::RBP, update.sym->stack_offset);
-                else if (imm32 == -1) emit_.inc_mem(x64::Reg::RBP, update.sym->stack_offset);
-                else emit_.sub_mem_imm(x64::Reg::RBP, update.sym->stack_offset, imm32);
+        if (update.op == ast::BinaryExpr::Op::Add || update.op == ast::BinaryExpr::Op::Sub) {
+            if (update.has_rhs_imm &&
+                update.rhs_imm >= (std::numeric_limits<std::int32_t>::min)() &&
+                update.rhs_imm <= (std::numeric_limits<std::int32_t>::max)()) {
+                auto imm32 = static_cast<std::int32_t>(update.rhs_imm);
+                if (update.op == ast::BinaryExpr::Op::Add) {
+                    if (imm32 == 1) emit_.inc_mem(x64::Reg::RBP, update.sym->stack_offset);
+                    else if (imm32 == -1) emit_.dec_mem(x64::Reg::RBP, update.sym->stack_offset);
+                    else emit_.add_mem_imm(x64::Reg::RBP, update.sym->stack_offset, imm32);
+                } else {
+                    if (imm32 == 1) emit_.dec_mem(x64::Reg::RBP, update.sym->stack_offset);
+                    else if (imm32 == -1) emit_.inc_mem(x64::Reg::RBP, update.sym->stack_offset);
+                    else emit_.sub_mem_imm(x64::Reg::RBP, update.sym->stack_offset, imm32);
+                }
+                return true;
             }
-            return true;
         }
 
         if (!update.rhs || !can_generate_pure_expr(*update.rhs)) {
@@ -9647,19 +9649,32 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     void emit_safe_idiv(x64::Reg divisor) {
         // if divisor == -1 and rax == INT64_MIN, idiv would trap (#DE).
         // we patch the result to (INT64_MIN, 0) to match wrapping semantics without faulting.
-        emit_.cmp_smart_imm(divisor, -1);
-        std::size_t do_idiv_a = emit_.jcc_rel32(x64::Emitter::CC_NE);
-        // cmp rax, INT64_MIN  (need full 64-bit cmp; divisor cannot be RDX since idiv/cqo uses RDX, so RDX is safe scratch here)
-        emit_.mov_imm64(x64::Reg::RDX, static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::min)()));
-        emit_.cmp(x64::Reg::RAX, x64::Reg::RDX);
-        std::size_t do_idiv_b = emit_.jcc_rel32(x64::Emitter::CC_NE);
-        // trap path: rax stays as INT_MIN (correct quotient), rdx=0 (correct remainder)
+        // constraint set: the dividend lives in RAX, the divisor may BE RDX (which cqo
+        // clobbers), and every other register can hold live data inside registerized
+        // loops. so: park the divisor on the stack, run the guard without touching any
+        // register, and idiv straight from memory.
+        emit_.push(divisor);
+        emit_.cmp_mem_imm(x64::Reg::RSP, 0, -1);
+        std::size_t do_idiv = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        // divisor == -1: trap only when rax == INT64_MIN. detect it on a scratch copy
+        // via shifts — shl sets CF = old bit63 and SF = old bit62; INT64_MIN is the
+        // only value with bit63=1 and bit62=0.
+        emit_.push(x64::Reg::RAX);
+        emit_.shl_imm(x64::Reg::RAX, 1);
+        std::size_t not_min_a = emit_.jcc_rel32(x64::Emitter::CC_AE);
+        std::size_t not_min_b = emit_.jcc_rel32(x64::Emitter::CC_NS);
+        // trap path: rax still holds INT64_MIN untouched; rdx:rax = (INT64_MIN, 0)
+        emit_.add_imm(x64::Reg::RSP, 8);
         emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
+        emit_.add_imm(x64::Reg::RSP, 8);
         std::size_t skip_real = emit_.jmp_rel32_placeholder();
-        emit_.patch_jump(do_idiv_a);
-        emit_.patch_jump(do_idiv_b);
+        emit_.patch_jump(not_min_a);
+        emit_.patch_jump(not_min_b);
+        emit_.add_imm(x64::Reg::RSP, 8); // drop the shifted copy
+        emit_.patch_jump(do_idiv);
         emit_.cqo();
-        emit_.idiv(divisor);
+        emit_.idiv_mem(x64::Reg::RSP, 0);
+        emit_.add_imm(x64::Reg::RSP, 8);
         emit_.patch_jump(skip_real);
     }
 
@@ -9794,9 +9809,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 emit_.imul_smart(dst, dst, imm);
                 return true;
             case Op::Div:
-                return true;
             case Op::Mod:
-                emit_.xor_32(dst, dst);
+                // div/mod by immediate has no scalar shortcut; route through the reg
+                // path with the immediate in a stack-protected R11.
+                emit_.push(x64::Reg::R11);
+                emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
+                {
+                    bool ok = emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R11);
+                    emit_.pop(x64::Reg::R11);
+                    if (!ok) return false;
+                }
                 return true;
             case Op::BitAnd:
                 if (imm == 0) {
@@ -9910,6 +9932,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                         emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
                         emit_.div(rhs);
                     } else {
+                        if (rhs == x64::Reg::RDX) {
+                        // cqo in emit_safe_idiv clobbers RDX; move the divisor somewhere
+                        // safe. push/pop keeps registerized-loop values in R11 alive.
+                        emit_.mov(x64::Reg::R11, x64::Reg::RDX);
+                        rhs = x64::Reg::R11;
+                    }
                         emit_safe_idiv(rhs);
                     }
                     emit_.mov(dst, x64::Reg::RAX);
@@ -9921,6 +9949,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
                     emit_.div(rhs);
                 } else {
+                    if (rhs == x64::Reg::RDX) {
+                        // cqo in emit_safe_idiv clobbers RDX; move the divisor somewhere
+                        // safe. push/pop keeps registerized-loop values in R11 alive.
+                        emit_.mov(x64::Reg::R11, x64::Reg::RDX);
+                        rhs = x64::Reg::R11;
+                    }
                     emit_safe_idiv(rhs);
                 }
                 return true;
@@ -9933,6 +9967,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                         emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
                         emit_.div(rhs);
                     } else {
+                        if (rhs == x64::Reg::RDX) {
+                        // cqo in emit_safe_idiv clobbers RDX; move the divisor somewhere
+                        // safe. push/pop keeps registerized-loop values in R11 alive.
+                        emit_.mov(x64::Reg::R11, x64::Reg::RDX);
+                        rhs = x64::Reg::R11;
+                    }
                         emit_safe_idiv(rhs);
                     }
                     emit_.mov(dst, x64::Reg::RDX);
@@ -9944,6 +9984,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     emit_.xor_32(x64::Reg::RDX, x64::Reg::RDX);
                     emit_.div(rhs);
                 } else {
+                    if (rhs == x64::Reg::RDX) {
+                        // cqo in emit_safe_idiv clobbers RDX; move the divisor somewhere
+                        // safe. push/pop keeps registerized-loop values in R11 alive.
+                        emit_.mov(x64::Reg::R11, x64::Reg::RDX);
+                        rhs = x64::Reg::R11;
+                    }
                     emit_safe_idiv(rhs);
                 }
                 emit_.mov(dst, x64::Reg::RDX);
