@@ -86,7 +86,7 @@ jobs:
           foreach ($t in 'diag_pfor_only', 'diag_for_only', 'benchmark_math_vec') {
             ./bin/Release/sable.exe --quiet "tests/$t.sb"
             ./tests/$t.exe
-            Write-Host "$t: exit $LASTEXITCODE"
+            Write-Host "${t}: exit $LASTEXITCODE"
             Remove-Item "tests/$t.exe" -ErrorAction SilentlyContinue
           }
           foreach ($w in '0', '1', '2') {
