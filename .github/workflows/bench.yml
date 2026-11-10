@@ -83,7 +83,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          ./bin/Release/sable.exe --quiet tests/benchmark_math_vec.sb
+          foreach ($t in 'diag_pfor_only', 'diag_for_only', 'benchmark_math_vec') {
+            ./bin/Release/sable.exe --quiet "tests/$t.sb"
+            ./tests/$t.exe
+            Write-Host "$t: exit $LASTEXITCODE"
+            Remove-Item "tests/$t.exe" -ErrorAction SilentlyContinue
+          }
           foreach ($w in '0', '1', '2') {
             $env:SABLE_FORCE_WIDTH = $w
             ./bin/Release/sable.exe --quiet tests/benchmark_math_vec.sb
@@ -91,7 +96,7 @@ jobs:
             Write-Host "width ${w}: exit $LASTEXITCODE"
             Remove-Item Env:\SABLE_FORCE_WIDTH
           }
-          Remove-Item tests/benchmark_math_vec.exe
+          Remove-Item tests/benchmark_math_vec.exe -ErrorAction SilentlyContinue
       - name: Measure toolchains
         run: python benchmarks/run.py --iterations 5 --warmup 2
       - name: Upload benchmark results
