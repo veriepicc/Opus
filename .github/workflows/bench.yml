@@ -79,6 +79,19 @@ jobs:
         with:
           name: sable-windows-x64-bench
           path: bin/Release/
+      - name: Dispatch diagnostic
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./bin/Release/sable.exe --quiet tests/benchmark_math_vec.sb
+          foreach ($w in '0', '1', '2') {
+            $env:SABLE_FORCE_WIDTH = $w
+            ./bin/Release/sable.exe --quiet tests/benchmark_math_vec.sb
+            ./tests/benchmark_math_vec.exe
+            Write-Host "width ${w}: exit $LASTEXITCODE"
+            Remove-Item Env:\SABLE_FORCE_WIDTH
+          }
+          Remove-Item tests/benchmark_math_vec.exe
       - name: Measure toolchains
         run: python benchmarks/run.py --iterations 5 --warmup 2
       - name: Upload benchmark results
