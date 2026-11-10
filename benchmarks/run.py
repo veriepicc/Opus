@@ -240,7 +240,7 @@ def main():
                     cmd = ["wine"] + cmd
 
             elif c_info["type"] == "gcc":
-                cmd = [str(c_info["bin"]), "-O3", "-mavx2", "-mfma", "-fwrapv", "-s", f"-DBENCH={bench['c_macro']}", str(BENCH_C), "-o", str(exe_out)]
+                cmd = [str(c_info["bin"]), "-O3", "-march=native", "-fwrapv", "-s", f"-DBENCH={bench['c_macro']}", str(BENCH_C), "-o", str(exe_out)]
 
             elif c_info["type"] == "tcc":
                 cmd = [str(c_info["bin"]), f"-DBENCH={bench['c_macro']}", str(BENCH_C), "-o", str(exe_out)]
@@ -249,7 +249,7 @@ def main():
 
             elif c_info["type"] == "msvc":
                 cmd = [
-                    str(c_info["bin"]), "/nologo", "/O2", "/arch:AVX2", "/GS-", "/Ob2", "/Oi", "/Ot",
+                    str(c_info["bin"]), "/nologo", "/O2", "/arch:AVX512", "/GS-", "/Ob2", "/Oi", "/Ot",
                     f"/DBENCH={bench['c_macro']}", str(BENCH_C),
                     f"/Fe:{exe_out}", f"/Fo:{build_dir / 'benchmark.obj'}"
                 ]
@@ -402,7 +402,7 @@ def generate_markdown(data):
         f"- **Date:** {date_str}",
         f"- **Host:** `{sys_name}`",
         f"- **CPU:** `{cpu}`",
-        "- **Toolchains:** Sable (native x64), MSVC (`/O2 /Ob2 /Oi /Ot /GS-`), GCC (`-O3 -fwrapv`), TCC",
+        "- **Toolchains:** Sable (native x64), MSVC (`/O2 /arch:AVX512 /Ob2 /Oi /Ot /GS-`), GCC (`-O3 -march=native -mprefer-vector-width=512 -fwrapv`), TCC",
         "",
         "## Execution Runtime (lower is better)",
         "",
@@ -441,7 +441,7 @@ def generate_markdown(data):
         "",
         "## Compilation Speed & Binary Size",
         "",
-        "| Workload | Sable | MSVC (`/O2`) | GCC (`-O3`) | TCC |",
+        "| Workload | Sable | MSVC (`/O2 /arch:AVX512`) | GCC (`-O3 -march=native -mprefer-vector-width=512`) | TCC |",
         "| :--- | ---: | ---: | ---: | ---: |",
     ]
 
