@@ -8891,6 +8891,150 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         return true;
     }
 
+    // emits runtime cpu-feature dispatch into multiple compiled kernel variants.
+    // layout: [jump-over][kernel blobs][dispatch], call it later with rcx = buffer table,
+    // rdx = count. avx512 -> avx2 -> sse2 floor; sse2 is mandatory on x86-64.
+    [[nodiscard]] bool emit_vector_dispatch(const vectorize::Loop& vloop, std::size_t& dispatch_entry) {
+        struct Variant { vectorize::Width width; bool supported; };
+        Variant variants[] = {
+            { vectorize::Width::avx512, true },
+            { vectorize::Width::avx2, true },
+            { vectorize::Width::sse2, true },
+        };
+
+        x64::Emitter per_width[3];
+        // SABLE_FORCE_WIDTH=0/1/2 pins kernel selection to avx512/avx2/sse2 (testing)
+        const char* force_width = std::getenv("SABLE_FORCE_WIDTH");
+        int forced = force_width ? std::atoi(force_width) : -1;
+        for (int i = 0; i < 3; ++i) {
+            if (forced >= 0 && forced != i) {
+                variants[i].supported = false;
+            }
+        }
+        for (int i = 0; i < 3; ++i) {
+            // claim only the capabilities of the requested width, otherwise compile()
+            // upgrades an sse2 request to avx2
+            bool want512 = variants[i].width == vectorize::Width::avx512;
+            bool want256 = variants[i].width == vectorize::Width::avx2;
+            vectorize::Target t{
+                .avx2 = want256 || want512,
+                .avx512f = want512,
+                .avx512dq = want512,
+                .sse2 = true,
+                .preferred = variants[i].width,
+                .unroll = 2,
+            };
+            auto rep = vectorize::compile(vloop, t, per_width[i]);
+            if (!rep.emitted) {
+                variants[i].supported = false;
+            }
+        }
+        if (!variants[2].supported) return false; // sse2 floor required
+
+        std::vector<std::size_t> jumps_over;
+        std::size_t kernel_begin[3] = {0, 0, 0};
+        for (int i = 0; i < 3; ++i) {
+            if (!variants[i].supported) continue;
+            auto jump = emit_.jmp_rel32_placeholder();
+            jumps_over.push_back(jump);
+            kernel_begin[i] = emit_.buffer().pos();
+            emit_.buffer().emit_bytes(per_width[i].buffer().span());
+        }
+        std::size_t dispatch_pos = emit_.buffer().pos();
+        dispatch_entry = dispatch_pos;
+
+        // runtime dispatch: avx512 ? k512 : avx2 ? k256 : sse2
+        // cpuid/xgetbv clobber rcx/rdx/rax, so the kernel args live on the stack
+        emit_.push(x64::Reg::RDX);
+        emit_.push(x64::Reg::RCX);
+        emit_.push(x64::Reg::RBX);
+
+        auto reload_args = [&]() {
+            emit_.mov_load(x64::Reg::RCX, x64::Reg::RSP, 8);
+            emit_.mov_load(x64::Reg::RDX, x64::Reg::RSP, 16);
+        };
+        auto discard_args = [&]() {
+            emit_.add_imm(x64::Reg::RSP, 16);
+        };
+
+        std::size_t done_all = 0;
+
+        if (variants[0].supported || variants[1].supported) {
+            emit_.mov_imm32(x64::Reg::EAX, 1);
+            emit_.xor_32(x64::Reg::ECX, x64::Reg::ECX);
+            emit_cpuid();
+            emit_.mov(x64::Reg::R10, x64::Reg::RCX);
+            emit_.and_imm(x64::Reg::R10, 0x18000000);
+            emit_.cmp_imm(x64::Reg::R10, 0x18000000);
+            std::size_t no_avx = emit_.jcc_rel32(x64::Emitter::CC_NE);
+            emit_.xor_32(x64::Reg::ECX, x64::Reg::ECX);
+            emit_xgetbv();
+            emit_.mov(x64::Reg::R10, x64::Reg::RAX);
+            emit_.and_imm(x64::Reg::R10, 0x6);
+            emit_.cmp_imm(x64::Reg::R10, 0x6);
+            std::size_t no_xstate = emit_.jcc_rel32(x64::Emitter::CC_NE);
+            emit_.mov_imm32(x64::Reg::EAX, 7);
+            emit_.xor_32(x64::Reg::ECX, x64::Reg::ECX);
+            emit_cpuid();
+            emit_.mov(x64::Reg::R10, x64::Reg::RBX);
+            emit_.and_imm(x64::Reg::R10, 1 << 5);
+            emit_.cmp_imm(x64::Reg::R10, 1 << 5);
+            std::size_t no_avx2 = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+            if (variants[0].supported) {
+                // avx512f: xcr0 opmask/zmm_lo/zmm_hi bits 5,6,7 + leaf7 ebx bit16
+                emit_.xor_32(x64::Reg::ECX, x64::Reg::ECX);
+                emit_xgetbv();
+                emit_.mov(x64::Reg::R10, x64::Reg::RAX);
+                emit_.and_imm(x64::Reg::R10, 0xE0);
+                emit_.cmp_imm(x64::Reg::R10, 0xE0);
+                std::size_t no_opz = emit_.jcc_rel32(x64::Emitter::CC_NE);
+                emit_.mov_imm32(x64::Reg::EAX, 7);
+                emit_.xor_32(x64::Reg::ECX, x64::Reg::ECX);
+                emit_cpuid();
+                emit_.mov(x64::Reg::R10, x64::Reg::RBX);
+                emit_.and_imm(x64::Reg::R10, 1 << 16);
+                emit_.cmp_imm(x64::Reg::R10, 1 << 16);
+                std::size_t no_avx512 = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+                reload_args();
+                std::size_t call512 = emit_.buffer().pos();
+                emit_.buffer().emit8(0xE8);
+                emit_.buffer().emit32(static_cast<std::uint32_t>(emit_.buffer().rel32(call512 + 1, kernel_begin[0])));
+                done_all = emit_.jmp_rel32_placeholder();
+
+                emit_.patch_jump(no_opz);
+                emit_.patch_jump(no_avx512);
+            }
+            if (variants[1].supported) {
+                reload_args();
+                std::size_t call256 = emit_.buffer().pos();
+                emit_.buffer().emit8(0xE8);
+                emit_.buffer().emit32(static_cast<std::uint32_t>(emit_.buffer().rel32(call256 + 1, kernel_begin[1])));
+                if (!done_all) done_all = emit_.jmp_rel32_placeholder();
+            }
+            emit_.patch_jump(no_avx);
+            emit_.patch_jump(no_xstate);
+            emit_.patch_jump(no_avx2);
+        }
+        // sse2 floor
+        {
+            reload_args();
+            std::size_t call128 = emit_.buffer().pos();
+            emit_.buffer().emit8(0xE8);
+            emit_.buffer().emit32(static_cast<std::uint32_t>(emit_.buffer().rel32(call128 + 1, kernel_begin[2])));
+            if (!done_all) done_all = emit_.jmp_rel32_placeholder();
+        }
+
+        emit_.patch_jump(done_all);
+        discard_args();
+        emit_.pop(x64::Reg::RBX);
+        emit_.ret();
+        // code flowing around the blob (scalar loop exits etc) lands here
+        for (auto j : jumps_over) emit_.patch_jump(j);
+        return true;
+    }
+
     [[nodiscard]] bool try_vectorize_for(const ast::ForStmt& for_stmt, const ast::CallExpr& call) {
         if (!vectorize_enabled_) return false;
         if (for_stmt.body.empty() || for_stmt.body.size() > 1) return false;
@@ -8992,24 +9136,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         vloop.root = *root;
         vloop.buffers = static_cast<std::uint16_t>(buffer_syms.size());
 
-        // Target: detect AVX2 / AVX-512 capabilities
-        vectorize::Target target{
-            .avx2 = true,
-            .avx512f = true,
-            .avx512dq = true,
-            .preferred = vectorize::Width::avx512,
-            .unroll = 2,
-        };
-
-        x64::Emitter kernel_emitter;
-        auto report = vectorize::compile(vloop, target, kernel_emitter);
-        if (!report.emitted) {
-            // fallback to AVX2
-            target.preferred = vectorize::Width::avx2;
-            kernel_emitter.buffer().truncate(0);
-            report = vectorize::compile(vloop, target, kernel_emitter);
-            if (!report.emitted) return false;
-        }
+        std::size_t dispatch_entry = 0;
+        if (!emit_vector_dispatch(vloop, dispatch_entry)) return false;
 
         // Allocate buffer pointer table on stack: [ptr0, ptr1, ...]
         std::int32_t buf_table_bytes = static_cast<std::int32_t>(buffer_syms.size() * 8);
@@ -9030,16 +9158,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.mov(x64::Reg::RDX, x64::Reg::RAX); // count in RDX
         emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // pointer table in RCX
 
-        // Jump over kernel code to invocation
-        std::size_t jump_over_kernel = emit_.jmp_rel32_placeholder();
-        std::size_t kernel_entry = emit_.buffer().pos();
-        emit_.buffer().emit_bytes(kernel_emitter.buffer().span());
-        emit_.patch_jump(jump_over_kernel);
-
-        // Call the emitted kernel: call rel32
+        // Call the dispatch: call rel32
         std::size_t call_site = emit_.buffer().pos();
         emit_.buffer().emit8(0xE8);
-        std::int32_t rel = emit_.buffer().rel32(call_site, kernel_entry);
+        std::int32_t rel = emit_.buffer().rel32(call_site + 1, dispatch_entry);
         emit_.buffer().emit32(static_cast<std::uint32_t>(rel));
 
         // Restore stack
@@ -16422,17 +16544,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                             vloop.root = *root;
                             vloop.buffers = static_cast<std::uint16_t>(buffer_syms.size());
 
-                            vectorize::Target target{
-                                .avx2 = true,
-                                .avx512f = true,
-                                .avx512dq = true,
-                                .preferred = vectorize::Width::avx512,
-                                .unroll = 2,
-                            };
-
-                            x64::Emitter kernel_emitter;
-                            auto report = vectorize::compile(vloop, target, kernel_emitter);
-                            if (report.emitted) {
+                            std::size_t dispatch_entry = 0;
+                            if (emit_vector_dispatch(vloop, dispatch_entry)) {
                                 // compute slice pointers: ptr + iter_start * 8
                                 std::int32_t buf_table_bytes = static_cast<std::int32_t>(buffer_syms.size() * 8);
                                 emit_.sub_imm(x64::Reg::RSP, buf_table_bytes);
@@ -16450,14 +16563,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                                 emit_.sub(x64::Reg::RDX, x64::Reg::RCX); // RDX = chunk count
                                 emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // RCX = slice pointer table
 
-                                std::size_t jump_over_kernel = emit_.jmp_rel32_placeholder();
-                                std::size_t kernel_entry = emit_.buffer().pos();
-                                emit_.buffer().emit_bytes(kernel_emitter.buffer().span());
-                                emit_.patch_jump(jump_over_kernel);
-
                                 std::size_t call_site = emit_.buffer().pos();
                                 emit_.buffer().emit8(0xE8);
-                                std::int32_t rel = emit_.buffer().rel32(call_site, kernel_entry);
+                                std::int32_t rel = emit_.buffer().rel32(call_site + 1, dispatch_entry);
                                 emit_.buffer().emit32(static_cast<std::uint32_t>(rel));
 
                                 emit_.add_imm(x64::Reg::RSP, buf_table_bytes);
