@@ -1051,7 +1051,7 @@ public:
 
     // vmovdqu128 [mem], xmm - store 128 bits (2x i64) from XMM (SSE2)
     void movdqu128_store(Reg base, std::int32_t offset, XmmReg src) {
-        buf_.emit8(0x66);
+        buf_.emit8(0xF3);
         buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(src)), base));
         buf_.emit8(0x0F);
         buf_.emit8(0x7F);
