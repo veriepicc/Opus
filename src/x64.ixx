@@ -1178,25 +1178,29 @@ public:
 
     // vpsrlq ymm, ymm, imm8 - shift qword lanes right logical (VEX.256)
     void vpsrlq_imm(std::uint8_t dst, std::uint8_t src, std::uint8_t imm) {
-        emit_vex3(0x01, 0x01, false, dst, 2, src);
+        // VPSRLQ ymm_dst, ymm_src, imm8: VEX.NDD.256.66.0F 73 /2
+        // reg = sub-opcode digit, vvvv = dest, rm = src
+        emit_vex3(0x01, 0x01, false, 2, dst, src);
         buf_.emit8(0x73);
-        buf_.emit8(modrm(0b11, Reg(2), Reg(dst)));
+        buf_.emit8(modrm(0b11, Reg(2), Reg(src)));
         buf_.emit8(imm);
     }
 
     // vpsllq ymm, ymm, imm8 - shift qword lanes left (VEX.256)
     void vpsllq_imm(std::uint8_t dst, std::uint8_t src, std::uint8_t imm) {
-        emit_vex3(0x01, 0x01, false, dst, 6, src);
+        // VPSLLQ ymm_dst, ymm_src, imm8: VEX.NDD.256.66.0F 73 /6
+        emit_vex3(0x01, 0x01, false, 6, dst, src);
         buf_.emit8(0x73);
-        buf_.emit8(modrm(0b11, Reg(6), Reg(dst)));
+        buf_.emit8(modrm(0b11, Reg(6), Reg(src)));
         buf_.emit8(imm);
     }
 
     // vpmuludq ymm, ymm, ymm - low-dword qword multiply (VEX.256)
     void vpmuludq(std::uint8_t dst, std::uint8_t src1, std::uint8_t src2) {
-        emit_vex3(0x02, 0x01, false, dst, src1, src2);
+        // VPMULUDQ is 66 0F F4 (map 0F, not 0F38)
+        emit_vex3(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xF4);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // psrldq xmm, imm8 - shift right logical double quadword (for extracting high lanes)
@@ -1658,7 +1662,7 @@ public:
     void vpcmpgtq_mem(std::uint8_t dst, std::uint8_t src, Reg base, std::int32_t offset) {
         emit_vex3(0x02, 0x01, true, dst, src, static_cast<std::uint8_t>(base));
         buf_.emit8(0x37);
-        emit_mem_operand(Reg(dst & 7), base, offset);
+        emit_mem_operand(Reg(dst), base, offset);
     }
 
     // vpmadd52 ymm, ymm, ymm (unsigned multiply-add of 64-bit -> 128-bit accumulator)
@@ -1674,7 +1678,7 @@ public:
     void vpmadd52_mem(std::uint8_t dst, std::uint8_t src, Reg base, std::int32_t offset) {
         emit_vex3(0x02, 0x01, false, dst, src, static_cast<std::uint8_t>(base));
         buf_.emit8(0xB5);
-        emit_mem_operand(Reg(dst & 7), base, offset);
+        emit_mem_operand(Reg(dst), base, offset);
     }
 
     // vextracti128 ymm, [base+offset], imm8 (extract 128 bits from ymm to memory)
@@ -1753,14 +1757,14 @@ public:
         // EVEX.512.66.0F38.W0 B5 /r
         emit_evex(0x02, 0x01, false, dst, src1, src2);
         buf_.emit8(0xB5);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpmadd52 with memory operand
     void vpmadd52_zmm_mem(std::uint8_t dst, std::uint8_t src, Reg base, std::int32_t offset) {
         emit_evex(0x02, 0x01, false, dst, src, static_cast<std::uint8_t>(base));
         buf_.emit8(0xB5);
-        emit_mem_operand(Reg(dst & 7), base, offset);
+        emit_mem_operand(Reg(dst), base, offset);
     }
 
     // vpor zmm, zmm, zmm (bitwise OR)
@@ -1768,7 +1772,7 @@ public:
         // EVEX.512.66.0F EB /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xEB);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpand zmm, zmm, zmm (bitwise AND)
@@ -1776,7 +1780,7 @@ public:
         // EVEX.512.66.0F DB /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xDB);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpxor zmm, zmm, zmm (bitwise XOR)
@@ -1784,7 +1788,7 @@ public:
         // EVEX.512.66.0F EF /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xEF);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpcmpgtq zmm, zmm, zmm (packed compare greater than quadword)
@@ -1792,7 +1796,7 @@ public:
         // EVEX.512.66.0F38.W1 37 /r
         emit_evex(0x02, 0x01, true, dst, src1, src2);
         buf_.emit8(0x37);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpmovmskb r64, zmm (move mask bits to integer register)
@@ -1808,7 +1812,7 @@ public:
         // EVEX.512.0F 57 /r
         emit_evex(0x01, 0x00, false, dst, src1, src2);
         buf_.emit8(0x57);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vxorpd zmm, zmm, zmm (AVX-512 xor double precision)
@@ -1816,7 +1820,7 @@ public:
         // EVEX.512.66.0F 57 /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0x57);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpcmpd k, zmm, zmm, imm8 (packed compare dword -> mask)
