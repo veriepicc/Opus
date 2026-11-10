@@ -8987,6 +8987,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
             if (variants[0].supported) {
                 // avx512f: xcr0 opmask/zmm_lo/zmm_hi bits 5,6,7 + leaf7 ebx bit16
+                // avx512dq: leaf7 ebx bit17 (needed for vpmullq in mul kernels)
                 emit_.xor_32(x64::Reg::ECX, x64::Reg::ECX);
                 emit_xgetbv();
                 emit_.mov(x64::Reg::R10, x64::Reg::RAX);
@@ -8997,8 +8998,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 emit_.xor_32(x64::Reg::ECX, x64::Reg::ECX);
                 emit_cpuid();
                 emit_.mov(x64::Reg::R10, x64::Reg::RBX);
-                emit_.and_imm(x64::Reg::R10, 1 << 16);
-                emit_.cmp_imm(x64::Reg::R10, 1 << 16);
+                emit_.and_imm(x64::Reg::R10, (1 << 16) | (1 << 17));
+                emit_.cmp_imm(x64::Reg::R10, (1 << 16) | (1 << 17));
                 std::size_t no_avx512 = emit_.jcc_rel32(x64::Emitter::CC_NE);
 
                 reload_args();
