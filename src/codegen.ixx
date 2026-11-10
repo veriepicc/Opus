@@ -8933,7 +8933,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 variants[i].supported = false;
             }
         }
-        if (!variants[2].supported) return false; // sse2 floor required
+        // unforced runs need the sse2 floor; a forced width stands alone
+        if (forced < 0 && !variants[2].supported) return false;
 
         std::vector<std::size_t> jumps_over;
         std::size_t kernel_begin[3] = {0, 0, 0};
