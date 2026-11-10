@@ -20,6 +20,21 @@ import std;
 
 export namespace sable::x64 {
 
+// read an environment variable into out; returns length (0 = unset)
+inline std::size_t env_string(const char* name, char* out, std::size_t cap) {
+#ifdef _WIN32
+    return GetEnvironmentVariableA(name, out, static_cast<DWORD>(cap));
+#else
+    const char* v = std::getenv(name);
+    if (!v) return 0;
+    std::size_t n = std::strlen(v);
+    if (n >= cap) n = cap - 1;
+    std::memcpy(out, v, n);
+    out[n] = '\0';
+    return n;
+#endif
+}
+
 enum class Reg : std::uint8_t {
     RAX = 0, RCX = 1, RDX = 2, RBX = 3,
     RSP = 4, RBP = 5, RSI = 6, RDI = 7,
@@ -1009,9 +1024,10 @@ public:
     // paddq xmm, xmm - packed add quadword (64-bit x2)
     void paddq(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0xD4);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // paddq xmm, [mem] - packed add quadword from memory
@@ -1025,9 +1041,10 @@ public:
     // psubq xmm, xmm - packed subtract quadword (64-bit x2)
     void psubq(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0xFB);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // psubq xmm, [mem] - packed subtract quadword from memory
@@ -1041,6 +1058,7 @@ public:
     // vmovdqu128 xmm, [mem] - load 128 bits (2x i64) into XMM (SSE2)
     void movdqu128_load(XmmReg dst, Reg base, std::int32_t offset = 0) {
         buf_.emit8(0xF3);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), base));
         buf_.emit8(0x0F);
         buf_.emit8(0x6F);
         emit_mem_operand(Reg(static_cast<std::uint8_t>(dst)), base, offset);
@@ -1048,7 +1066,8 @@ public:
 
     // vmovdqu128 [mem], xmm - store 128 bits (2x i64) from XMM (SSE2)
     void movdqu128_store(Reg base, std::int32_t offset, XmmReg src) {
-        buf_.emit8(0x66);
+        buf_.emit8(0xF3);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(src)), base));
         buf_.emit8(0x0F);
         buf_.emit8(0x7F);
         emit_mem_operand(Reg(static_cast<std::uint8_t>(src)), base, offset);
@@ -1057,6 +1076,7 @@ public:
     // vmovq xmm, r64 - move 64 bits from GP to XMM
     void vmovq_from_gpr(XmmReg dst, Reg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), src));
         buf_.emit8(0x0F);
         buf_.emit8(0x6E);
         buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), src));
@@ -1065,6 +1085,7 @@ public:
     // vmovq r64, xmm - move 64 bits from XMM to GP
     void vmovq_to_gpr(Reg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(src)), dst));
         buf_.emit8(0x0F);
         buf_.emit8(0x7E);
         buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), dst));
@@ -1073,26 +1094,29 @@ public:
     // paddd xmm, xmm - packed add dword (32-bit x4)
     void paddd(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0xFE);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // psubd xmm, xmm - packed subtract dword (32-bit x4)
     void psubd(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0xFA);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // pmulld xmm, xmm - packed multiply low dword (32-bit x4, result is low 32 bits)
     void pmulld(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0x38);
         buf_.emit8(0x40);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // psrldq xmm, imm8 - shift right logical double quadword by imm8 bytes (extract high qword)
@@ -1107,9 +1131,76 @@ public:
     // punpcklqdq xmm, xmm - unpack low quadwords (interleave low halves)
     void punpcklqdq(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0x6C);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
+    }
+
+    // pshufd xmm, xmm, imm8 - packed shuffle dword lanes
+    void pshufd(XmmReg dst, XmmReg src, std::uint8_t imm) {
+        buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(0x0F);
+        buf_.emit8(0x70);
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
+        buf_.emit8(imm);
+    }
+
+    // pmuludq xmm, xmm - multiply low dword of each qword lane into qword (SSE2)
+    void pmuludq(XmmReg dst, XmmReg src) {
+        buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
+        buf_.emit8(0x0F);
+        buf_.emit8(0xF4);
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
+    }
+
+    // psrlq xmm, imm8 - shift qword lanes right logical
+    void psrlq(XmmReg dst, std::uint8_t imm) {
+        buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(2), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(0x0F);
+        buf_.emit8(0x73);
+        buf_.emit8(modrm(0b11, Reg(2), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(imm);
+    }
+
+    // psllq xmm, imm8 - shift qword lanes left
+    void psllq(XmmReg dst, std::uint8_t imm) {
+        buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(6), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(0x0F);
+        buf_.emit8(0x73);
+        buf_.emit8(modrm(0b11, Reg(6), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(imm);
+    }
+
+    // vpsrlq ymm, ymm, imm8 - shift qword lanes right logical (VEX.256)
+    void vpsrlq_imm(std::uint8_t dst, std::uint8_t src, std::uint8_t imm) {
+        // VPSRLQ ymm_dst, ymm_src, imm8: VEX.NDD.256.66.0F 73 /2
+        // reg = sub-opcode digit, vvvv = dest, rm = src
+        emit_vex3(0x01, 0x01, false, 2, dst, src);
+        buf_.emit8(0x73);
+        buf_.emit8(modrm(0b11, Reg(2), Reg(src)));
+        buf_.emit8(imm);
+    }
+
+    // vpsllq ymm, ymm, imm8 - shift qword lanes left (VEX.256)
+    void vpsllq_imm(std::uint8_t dst, std::uint8_t src, std::uint8_t imm) {
+        // VPSLLQ ymm_dst, ymm_src, imm8: VEX.NDD.256.66.0F 73 /6
+        emit_vex3(0x01, 0x01, false, 6, dst, src);
+        buf_.emit8(0x73);
+        buf_.emit8(modrm(0b11, Reg(6), Reg(src)));
+        buf_.emit8(imm);
+    }
+
+    // vpmuludq ymm, ymm, ymm - low-dword qword multiply (VEX.256)
+    void vpmuludq(std::uint8_t dst, std::uint8_t src1, std::uint8_t src2) {
+        // VPMULUDQ is 66 0F F4 (map 0F, not 0F38)
+        emit_vex3(0x01, 0x01, false, dst, src1, src2);
+        buf_.emit8(0xF4);
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // psrldq xmm, imm8 - shift right logical double quadword (for extracting high lanes)
@@ -1124,25 +1215,28 @@ public:
     // por xmm, xmm - bitwise OR
     void por(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0xEB);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // pxor xmm, xmm - bitwise XOR (also used to zero XMM reg)
     void pxor(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0xEF);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // pand xmm, xmm - bitwise AND
     void pand(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0xDB);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // pandn xmm, xmm - bitwise AND NOT (dst = ~dst & src)
@@ -1150,15 +1244,16 @@ public:
         buf_.emit8(0x66);
         buf_.emit8(0x0F);
         buf_.emit8(0xDF);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // movdqa xmm, xmm - move aligned double quadword (register to register)
     void movdqa(XmmReg dst, XmmReg src) {
         buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
         buf_.emit8(0x0F);
         buf_.emit8(0x6F);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(src)), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst)), Reg(static_cast<std::uint8_t>(src))));
     }
 
     // movdqu xmm, [mem] - move unaligned double quadword (load)
@@ -1396,35 +1491,35 @@ public:
         // EVEX.512.66.0F.W0 6F /r (register-register form)
         emit_evex(0x01, 0x01, false, dst, 0, src);
         buf_.emit8(0x6F);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src)));
     }
 
     void vpaddd_zmm(std::uint8_t dst, std::uint8_t src1, std::uint8_t src2) {
         // EVEX.512.66.0F.W0 FE /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xFE);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     void vpsubd_zmm(std::uint8_t dst, std::uint8_t src1, std::uint8_t src2) {
         // EVEX.512.66.0F.W0 FA /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xFA);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     void vpmulld_zmm(std::uint8_t dst, std::uint8_t src1, std::uint8_t src2) {
         // EVEX.512.66.0F38.W0 40 /r
         emit_evex(0x02, 0x01, false, dst, src1, src2);
         buf_.emit8(0x40);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     void vpbroadcastd_zmm(std::uint8_t zmm_dst, Reg src) {
         // EVEX.512.66.0F38.W0 7C /r
         emit_evex(0x02, 0x01, false, zmm_dst, 0, static_cast<std::uint8_t>(src));
         buf_.emit8(0x7C);
-        buf_.emit8(modrm(0b11, Reg(zmm_dst & 7), src));
+        buf_.emit8(modrm(0b11, Reg(zmm_dst ), src));
     }
 
     // vmovdqu ymm, [base+offset] (256-bit unaligned load)
@@ -1448,7 +1543,7 @@ public:
         // VEX.256.66.0F.WIG FE /r
         emit_vex3(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xFE);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpaddq ymm, ymm, ymm (packed 64-bit integer add)
@@ -1456,7 +1551,7 @@ public:
         // VEX.256.66.0F.WIG D4 /r
         emit_vex3(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xD4);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpsubd ymm, ymm, ymm (packed 32-bit integer subtract)
@@ -1464,7 +1559,7 @@ public:
         // VEX.256.66.0F.WIG FA /r
         emit_vex3(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xFA);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpsubq ymm, ymm, ymm (packed 64-bit integer subtract)
@@ -1472,7 +1567,7 @@ public:
         // VEX.256.66.0F.WIG FB /r
         emit_vex3(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xFB);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpmulld ymm, ymm, ymm (packed 32-bit integer multiply low)
@@ -1480,7 +1575,7 @@ public:
         // VEX.256.66.0F38.WIG 40 /r
         emit_vex3(0x02, 0x01, false, dst, src1, src2);
         buf_.emit8(0x40);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpbroadcastd ymm, r32 (broadcast 32-bit value to all 8 lanes)
@@ -1489,12 +1584,12 @@ public:
         // step 1: vmovd xmm, src (VEX.128.66.0F.W0 6E /r)
         emit_vex3(0x01, 0x01, false, ymm_dst, 0, static_cast<std::uint8_t>(src), false);
         buf_.emit8(0x6E);
-        buf_.emit8(modrm(0b11, Reg(ymm_dst & 7), src));
+        buf_.emit8(modrm(0b11, Reg(ymm_dst), src));
 
         // step 2: vpbroadcastd ymm, xmm (VEX.256.66.0F38.W0 58 /r)
         emit_vex3(0x02, 0x01, false, ymm_dst, 0, ymm_dst);
         buf_.emit8(0x58);
-        buf_.emit8(modrm(0b11, Reg(ymm_dst & 7), Reg(ymm_dst & 7)));
+        buf_.emit8(modrm(0b11, Reg(ymm_dst), Reg(ymm_dst)));
     }
 
     // vpbroadcastq ymm, r64 (broadcast 64-bit value to all 4 lanes)
@@ -1503,12 +1598,12 @@ public:
         // step 1: vmovq xmm, src (VEX.128.66.0F.W1 6E /r)
         emit_vex3(0x01, 0x01, true, ymm_dst, 0, static_cast<std::uint8_t>(src), false);
         buf_.emit8(0x6E);
-        buf_.emit8(modrm(0b11, Reg(ymm_dst & 7), src));
+        buf_.emit8(modrm(0b11, Reg(ymm_dst), src));
 
         // step 2: vpbroadcastq ymm, xmm (VEX.256.66.0F38.W0 59 /r)
         emit_vex3(0x02, 0x01, false, ymm_dst, 0, ymm_dst);
         buf_.emit8(0x59);
-        buf_.emit8(modrm(0b11, Reg(ymm_dst & 7), Reg(ymm_dst & 7)));
+        buf_.emit8(modrm(0b11, Reg(ymm_dst), Reg(ymm_dst)));
     }
 
     // ========================================================================
@@ -1536,7 +1631,7 @@ public:
         // VEX.256.66.0F EB /r
         emit_vex3(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xEB);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpand ymm, ymm, ymm (bitwise AND)
@@ -1544,7 +1639,7 @@ public:
         // VEX.256.66.0F DB /r
         emit_vex3(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xDB);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpxor ymm, ymm, ymm (bitwise XOR)
@@ -1552,7 +1647,7 @@ public:
         // VEX.256.66.0F EF /r
         emit_vex3(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xEF);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpcmpgtq ymm, ymm, ymm (packed compare greater than quadword)
@@ -1560,14 +1655,14 @@ public:
         // VEX.256.66.0F38.W1 37 /r
         emit_vex3(0x02, 0x01, true, dst, src1, src2);
         buf_.emit8(0x37);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpcmpgtq ymm, ymm, [mem] (packed compare greater than from memory)
     void vpcmpgtq_mem(std::uint8_t dst, std::uint8_t src, Reg base, std::int32_t offset) {
         emit_vex3(0x02, 0x01, true, dst, src, static_cast<std::uint8_t>(base));
         buf_.emit8(0x37);
-        emit_mem_operand(Reg(dst & 7), base, offset);
+        emit_mem_operand(Reg(dst), base, offset);
     }
 
     // vpmadd52 ymm, ymm, ymm (unsigned multiply-add of 64-bit -> 128-bit accumulator)
@@ -1576,14 +1671,14 @@ public:
         // VEX.256.66.0F38.W0 B5 /r
         emit_vex3(0x02, 0x01, false, dst, src1, src2);
         buf_.emit8(0xB5);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpmadd52 with memory operand
     void vpmadd52_mem(std::uint8_t dst, std::uint8_t src, Reg base, std::int32_t offset) {
         emit_vex3(0x02, 0x01, false, dst, src, static_cast<std::uint8_t>(base));
         buf_.emit8(0xB5);
-        emit_mem_operand(Reg(dst & 7), base, offset);
+        emit_mem_operand(Reg(dst), base, offset);
     }
 
     // vextracti128 ymm, [base+offset], imm8 (extract 128 bits from ymm to memory)
@@ -1609,7 +1704,7 @@ public:
         // VEX.256.66.0F3A.W0 38 /r /ib
         emit_vex3(0x03, 0x01, false, ymm_dst, ymm_src, xmm_src);
         buf_.emit8(0x38);
-        buf_.emit8(modrm(0b11, Reg(xmm_src & 7), Reg(ymm_dst & 7)));
+        buf_.emit8(modrm(0b11, Reg(xmm_src ), Reg(ymm_dst)));
         buf_.emit8(imm8 & 0x1);
     }
 
@@ -1618,7 +1713,7 @@ public:
         // VEX.256.66.0F D7 /r
         emit_vex3(0x01, 0x01, false, ymm_src, 0, static_cast<std::uint8_t>(dst));
         buf_.emit8(0xD7);
-        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst) & 7), Reg(ymm_src & 7)));
+        buf_.emit8(modrm(0b11, Reg(static_cast<std::uint8_t>(dst) ), Reg(ymm_src )));
     }
 
     // vxorps ymm, ymm, ymm (AVX xor single precision - clears semantics)
@@ -1626,7 +1721,7 @@ public:
         // VEX.256.0F 57 /r
         emit_vex3(0x01, 0x00, false, dst, src1, src2);
         buf_.emit8(0x57);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vxorpd ymm, ymm, ymm (AVX xor double precision - clears semantics)
@@ -1634,7 +1729,7 @@ public:
         // VEX.256.66.0F 57 /r
         emit_vex3(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0x57);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // ========================================================================
@@ -1662,14 +1757,14 @@ public:
         // EVEX.512.66.0F38.W0 B5 /r
         emit_evex(0x02, 0x01, false, dst, src1, src2);
         buf_.emit8(0xB5);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpmadd52 with memory operand
     void vpmadd52_zmm_mem(std::uint8_t dst, std::uint8_t src, Reg base, std::int32_t offset) {
         emit_evex(0x02, 0x01, false, dst, src, static_cast<std::uint8_t>(base));
         buf_.emit8(0xB5);
-        emit_mem_operand(Reg(dst & 7), base, offset);
+        emit_mem_operand(Reg(dst), base, offset);
     }
 
     // vpor zmm, zmm, zmm (bitwise OR)
@@ -1677,7 +1772,7 @@ public:
         // EVEX.512.66.0F EB /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xEB);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpand zmm, zmm, zmm (bitwise AND)
@@ -1685,7 +1780,7 @@ public:
         // EVEX.512.66.0F DB /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xDB);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpxor zmm, zmm, zmm (bitwise XOR)
@@ -1693,7 +1788,7 @@ public:
         // EVEX.512.66.0F EF /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0xEF);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpcmpgtq zmm, zmm, zmm (packed compare greater than quadword)
@@ -1701,7 +1796,7 @@ public:
         // EVEX.512.66.0F38.W1 37 /r
         emit_evex(0x02, 0x01, true, dst, src1, src2);
         buf_.emit8(0x37);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpmovmskb r64, zmm (move mask bits to integer register)
@@ -1717,7 +1812,7 @@ public:
         // EVEX.512.0F 57 /r
         emit_evex(0x01, 0x00, false, dst, src1, src2);
         buf_.emit8(0x57);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vxorpd zmm, zmm, zmm (AVX-512 xor double precision)
@@ -1725,7 +1820,7 @@ public:
         // EVEX.512.66.0F 57 /r
         emit_evex(0x01, 0x01, false, dst, src1, src2);
         buf_.emit8(0x57);
-        buf_.emit8(modrm(0b11, Reg(dst & 7), Reg(src2 & 7)));
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src2)));
     }
 
     // vpcmpd k, zmm, zmm, imm8 (packed compare dword -> mask)

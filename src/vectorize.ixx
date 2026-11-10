@@ -10,7 +10,7 @@ export namespace sable::vectorize {
 enum class Element { i32, i64, f32, f64 };
 enum class Op { load, constant, add, sub, mul, bit_and, bit_or, bit_xor };
 enum class Result { map, sum };
-enum class Width { avx2, avx512 };
+enum class Width { avx2, avx512, sse2 };
 using Value = std::uint16_t;
 
 struct Node {
@@ -30,7 +30,7 @@ struct Loop {
 
 // target cpu capabilities
 struct Target {
-    bool avx2 = false, avx512f = false, avx512dq = false;
+    bool avx2 = false, avx512f = false, avx512dq = false, sse2 = true;
     Width preferred = Width::avx2;
     unsigned unroll = 2;
 };
@@ -158,8 +158,66 @@ inline void scalar_binary(E& e, Element type, Op op) {
     }
 }
 
+// packed 64-bit multiply via pmuludq partial products (wrapping semantics, high half dropped)
+// uses vector scratch 6 and 7, which the register allocator never assigns to data lanes
+inline void i64_mul_expand(E& e, Width width, unsigned dst, unsigned lhs, unsigned rhs) {
+    if (width == Width::avx512) {
+        e.emit_evex(0x02, 0x01, true, dst, lhs, rhs);
+        e.buffer().emit8(0x40);
+        e.buffer().emit8(e.modrm(3, R(dst), R(rhs)));
+        return;
+    }
+    if (width == Width::avx2) {
+        auto r = [&](unsigned g) { return static_cast<std::uint8_t>(g); };
+        e.vpsrlq_imm(6, r(lhs), 32);        // t6 = lhs >> 32 per lane
+        e.vpsrlq_imm(7, r(rhs), 32);        // t7 = rhs >> 32 per lane
+        e.vpmuludq(6, 6, r(rhs));           // t6 = a_hi * b_lo
+        e.vpmuludq(7, 7, r(lhs));           // t7 = b_hi * a_lo
+        e.vpaddq(6, 6, 7);
+        e.vpsllq_imm(6, 6, 32);
+        e.vpmuludq(r(dst), r(lhs), r(rhs)); // a_lo * b_lo
+        e.vpaddq(r(dst), r(dst), 6);
+        return;
+    }
+    auto xr = [&](unsigned g) { return static_cast<x64::XmmReg>(g & 15); };
+    // t7 = (lhs>>32) * rhs << 32 ; t6 = (rhs>>32) * lhs << 32 ; t6 = t7 + t6
+    // dst = lhs_lo * rhs_lo is computed into t7 first so dst lanes survive
+    e.movdqa(xr(7), xr(lhs));
+    e.psrlq(xr(7), 32);
+    e.pmuludq(xr(7), xr(rhs));  // a_hi * b_lo (low lanes)
+    e.psllq(xr(7), 32);
+    e.movdqa(xr(6), xr(rhs));
+    e.psrlq(xr(6), 32);
+    e.pmuludq(xr(6), xr(lhs));  // b_hi * a_lo (low lanes)
+    e.psllq(xr(6), 32);
+    e.paddq(xr(7), xr(6));      // combined cross terms
+    e.movdqa(xr(6), xr(lhs));
+    e.pmuludq(xr(6), xr(rhs));  // a_lo * b_lo (low lanes)
+    e.movdqa(xr(dst), xr(6));   // dst = lo*lo (high lanes undefined here)
+    e.paddq(xr(dst), xr(7));
+}
+
 inline void vector_binary(E& e, Element type, Width width, Op op,
                           unsigned dst, unsigned lhs, unsigned rhs) {
+    if (width == Width::sse2) {
+        if (type == Element::i64 && op == Op::mul) {
+            i64_mul_expand(e, width, dst, lhs, rhs);
+            return;
+        }
+        auto d = static_cast<x64::XmmReg>(dst & 15);
+        auto l = static_cast<x64::XmmReg>(lhs & 15);
+        auto r = static_cast<x64::XmmReg>(rhs & 15);
+        switch (op) {
+        case Op::add: if (type == Element::i32) e.paddd(d, r); else e.paddq(d, r); break;
+        case Op::sub: if (type == Element::i32) e.psubd(d, r); else e.psubq(d, r); break;
+        case Op::mul: if (type != Element::i32) return; e.pmulld(d, r); break;
+        case Op::bit_and: e.pand(d, r); break;
+        case Op::bit_or: e.por(d, r); break;
+        case Op::bit_xor: e.pxor(d, r); break;
+        default: break;
+        }
+        return;
+    }
     unsigned map = 1, pp = 1, opcode = 0;
     bool w = false;
     if (floating(type)) {
@@ -168,6 +226,10 @@ inline void vector_binary(E& e, Element type, Width width, Op op,
         opcode = op == Op::add ? 0x58 : op == Op::sub ? 0x5c : 0x59;
     } else {
         bool q = type == Element::i64;
+        if (q && op == Op::mul) {
+            i64_mul_expand(e, width, dst, lhs, rhs);
+            return;
+        }
         switch (op) {
         case Op::add: opcode = q ? 0xd4 : 0xfe; w = q && width == Width::avx512; break;
         case Op::sub: opcode = q ? 0xfb : 0xfa; w = q && width == Width::avx512; break;
@@ -199,20 +261,32 @@ class Kernel {
     void load_vector(unsigned reg) {
         e.prefetch_t0(R::R11, 256);
         if (width == Width::avx512) e.vmovdqu32_zmm_load(reg, R::R11);
-        else e.vmovdqu_load(reg, R::R11, 0);
+        else if (width == Width::avx2) e.vmovdqu_load(reg, R::R11, 0);
+        else e.movdqu128_load(static_cast<x64::XmmReg>(reg & 15), R::R11);
     }
     void store_vector(unsigned reg, R base, std::int32_t offset = 0) {
         if (width == Width::avx512) e.vmovdqu32_zmm_store(base, offset, reg);
-        else e.vmovdqu_store(base, offset, reg);
+        else if (width == Width::avx2) e.vmovdqu_store(base, offset, reg);
+        else e.movdqu128_store(base, offset, static_cast<x64::XmmReg>(reg & 15));
     }
     void broadcast_constant(unsigned reg, std::uint64_t bits) {
         e.mov_imm64(R::RAX, bits);
         if (width == Width::avx512) {
             if (size == 4) e.vpbroadcastd_zmm(reg, R::RAX);
             else e.vpbroadcastq_zmm(x64::ZmmReg(reg), R::RAX);
-        } else {
+        } else if (width == Width::avx2) {
             if (size == 4) e.vpbroadcastd(reg, R::RAX);
             else e.vpbroadcastq(reg, R::RAX);
+        } else {
+            auto x = static_cast<x64::XmmReg>(reg & 15);
+            if (size == 4) {
+                e.buffer().emit8(0x66); e.buffer().emit8(0x0F); e.buffer().emit8(0x6E);
+                e.buffer().emit8(e.modrm(3, static_cast<R>(x), R::RAX));
+                e.pshufd(x, x, 0);
+            } else {
+                e.vmovq_from_gpr(x, R::RAX);
+                e.punpcklqdq(x, x);
+            }
         }
     }
     void vector_body(unsigned accumulator) {
@@ -259,7 +333,7 @@ class Kernel {
 public:
     Kernel(E& emitter, const Loop& l, const Plan& plan, Width w)
         : e(emitter), loop(l), p(plan), width(w), size(bytes(l.element)),
-          lanes((w == Width::avx512 ? 64 : 32) / size), vector_bytes(lanes * size),
+          lanes((w == Width::avx512 ? 64 : w == Width::avx2 ? 32 : 16) / size), vector_bytes(lanes * size),
           frame(static_cast<std::int32_t>((l.nodes.size() * 8 + 128 + 15) & ~std::size_t(15))) {}
 
     void emit(unsigned unroll) {
@@ -332,7 +406,9 @@ public:
         if (loop.result == Result::map) {
             e.sfence();
         }
-        e.buffer().emit8(0xc5); e.buffer().emit8(0xf8); e.buffer().emit8(0x77);
+        if (width != Width::sse2) {
+            e.buffer().emit8(0xc5); e.buffer().emit8(0xf8); e.buffer().emit8(0x77);
+        }
         e.add_imm(R::RSP, frame); e.ret();
     }
 };
@@ -342,16 +418,13 @@ public:
 // emits vector loop kernel directly into output emitter
 [[nodiscard]] inline Report compile(const Loop& loop, const Target& target, x64::Emitter& output) {
     Report report;
-    if (!target.avx2) { report.reason = "avx2 execution support required"; return report; }
-    report.width = target.preferred == Width::avx512 && target.avx512f ? Width::avx512 : Width::avx2;
+    if (!target.sse2) { report.reason = "sse2 execution support required"; return report; }
+    report.width = Width::sse2;
+    if (target.preferred == Width::avx512 && target.avx512f) report.width = Width::avx512;
+    else if (target.avx2) report.width = Width::avx2;
     auto p = detail::plan(loop, loop.result == Result::sum ? 4 : 6, report.reason);
     if (!p) return report;
-    for (const auto& s : p->steps)
-        if (loop.element == Element::i64 && s.node.op == Op::mul &&
-            (report.width != Width::avx512 || !target.avx512dq)) {
-            report.reason = "packed i64 multiply requires avx512dq"; return report;
-        }
-    report.lanes = (report.width == Width::avx512 ? 64 : 32) / detail::bytes(loop.element);
+    report.lanes = (report.width == Width::avx512 ? 64 : report.width == Width::avx2 ? 32 : 16) / detail::bytes(loop.element);
     report.unroll = p->steps.size() > 24 ? 1 : std::clamp(target.unroll, 1u, 4u);
     report.peak_registers = p->peak + (loop.result == Result::sum ? 2 : 0);
     report.live_nodes = p->steps.size();
