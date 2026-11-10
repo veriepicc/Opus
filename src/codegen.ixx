@@ -7682,9 +7682,21 @@ private:
     ) {
         const ast::Expr* ret_expr = ret.value.get();
         x64::Reg return_reg = x64::Reg::RAX;
+        std::uint64_t multistate_ret_mask = 0;
 
         if (ret_expr) {
             auto* ident = std::get_if<ast::IdentExpr>(&ret_expr->kind);
+            if (!ident) {
+                if (auto* bin = std::get_if<ast::BinaryExpr>(&ret_expr->kind); bin && bin->op == ast::BinaryExpr::Op::BitAnd) {
+                    if (auto* lhs = std::get_if<ast::IdentExpr>(&bin->lhs->kind)) {
+                        std::int64_t imm = 0;
+                        if (try_get_i64_immediate(*bin->rhs, imm) && imm > 0 && imm <= 0xFF) {
+                            multistate_ret_mask = static_cast<std::uint64_t>(imm);
+                            ident = lhs;
+                        }
+                    }
+                }
+            }
             if (!ident || !current_scope_) {
                 return false;
             }
@@ -7723,8 +7735,13 @@ private:
         emit_.patch_jump(exit_patch);
         if (!ret_expr) {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-        } else if (return_reg != x64::Reg::RAX) {
-            emit_.mov(x64::Reg::RAX, return_reg);
+        } else {
+            if (return_reg != x64::Reg::RAX) {
+                emit_.mov(x64::Reg::RAX, return_reg);
+            }
+            if (multistate_ret_mask) {
+                emit_.and_imm(x64::Reg::RAX, static_cast<std::int32_t>(multistate_ret_mask));
+            }
         }
         emit_current_epilogue();
         return true;
@@ -7787,8 +7804,20 @@ private:
     ) {
         const ast::Expr* ret_expr = ret.value.get();
         x64::Reg return_reg = x64::Reg::RAX;
+        std::uint64_t bound_ret_mask = 0;
         if (ret_expr) {
             auto* ident = std::get_if<ast::IdentExpr>(&ret_expr->kind);
+            if (!ident) {
+                if (auto* bin = std::get_if<ast::BinaryExpr>(&ret_expr->kind); bin && bin->op == ast::BinaryExpr::Op::BitAnd) {
+                    if (auto* lhs = std::get_if<ast::IdentExpr>(&bin->lhs->kind)) {
+                        std::int64_t imm = 0;
+                        if (try_get_i64_immediate(*bin->rhs, imm) && imm > 0 && imm <= 0xFF) {
+                            bound_ret_mask = static_cast<std::uint64_t>(imm);
+                            ident = lhs;
+                        }
+                    }
+                }
+            }
             if (!ident || !current_scope_) {
                 return false;
             }
@@ -7861,8 +7890,13 @@ private:
 
         if (!ret_expr) {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-        } else if (return_reg != x64::Reg::RAX) {
-            emit_.mov(x64::Reg::RAX, return_reg);
+        } else {
+            if (return_reg != x64::Reg::RAX) {
+                emit_.mov(x64::Reg::RAX, return_reg);
+            }
+            if (bound_ret_mask) {
+                emit_.and_imm(x64::Reg::RAX, static_cast<std::int32_t>(bound_ret_mask));
+            }
         }
         emit_current_epilogue();
         return true;
@@ -8251,8 +8285,20 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     ) {
         const ast::Expr* ret_expr = ret.value.get();
         x64::Reg return_reg = x64::Reg::RAX;
+        std::uint64_t ret_mask = 0;
         if (ret_expr) {
             auto* ident = std::get_if<ast::IdentExpr>(&ret_expr->kind);
+            if (!ident) {
+                if (auto* bin = std::get_if<ast::BinaryExpr>(&ret_expr->kind); bin && bin->op == ast::BinaryExpr::Op::BitAnd) {
+                    if (auto* lhs = std::get_if<ast::IdentExpr>(&bin->lhs->kind)) {
+                        std::int64_t imm = 0;
+                        if (try_get_i64_immediate(*bin->rhs, imm) && imm > 0 && imm <= 0xFF) {
+                            ret_mask = static_cast<std::uint64_t>(imm);
+                            ident = lhs;
+                        }
+                    }
+                }
+            }
             if (!ident || !current_scope_) {
                 return false;
             }
@@ -8319,6 +8365,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
                 emit_.add(x64::Reg::RAX, plan.induction->term_reg);
                 emit_.patch_jump(exit_patch);
+                if (ret_mask) {
+                    emit_.and_imm(x64::Reg::RAX, static_cast<std::int32_t>(ret_mask));
+                }
                 emit_current_epilogue();
                 return true;
             }
@@ -8376,8 +8425,13 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         if (!ret_expr) {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
-        } else if (return_reg != x64::Reg::RAX) {
-            emit_.mov(x64::Reg::RAX, return_reg);
+        } else {
+            if (return_reg != x64::Reg::RAX) {
+                emit_.mov(x64::Reg::RAX, return_reg);
+            }
+            if (ret_mask) {
+                emit_.and_imm(x64::Reg::RAX, static_cast<std::int32_t>(ret_mask));
+            }
         }
         emit_current_epilogue();
         return true;

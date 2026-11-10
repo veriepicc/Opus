@@ -1,0 +1,140 @@
+name: Dev Benchmarks
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'src/**'
+      - 'benchmarks/**'
+      - 'tests/benchmark_*.sb'
+      - '.github/workflows/bench.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build compiler / Windows Server 2022 / x64
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build Release x64
+        run: ./tools/ci-build.ps1
+      - name: Upload compiler
+        uses: actions/upload-artifact@v4
+        with:
+          name: sable-windows-x64-bench
+          path: bin/Release/sable.exe
+          if-no-files-found: error
+
+  benchmarks:
+    name: Benchmarks / ${{ matrix.name }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            id: win-2025
+            name: Windows Server 2025 / x64
+            use_msvc: true
+          - os: windows-2022
+            id: win-2022
+            name: Windows Server 2022 / x64
+            use_msvc: true
+          - os: windows-11-arm
+            id: win-arm64
+            name: Windows 11 on Arm / ARM64 (Prism x64)
+            use_msvc: false
+          - os: ubuntu-24.04
+            id: ubuntu-wine
+            name: Ubuntu 24.04 / Wine x64
+            use_msvc: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Setup MSVC environment
+        if: matrix.use_msvc
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Wine and MinGW on Linux
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends wine wine64 xvfb gcc-mingw-w64-x86-64
+          mkdir -p "$HOME/.wine"
+          wineserver -p
+          WINEDEBUG=-all wineboot --init
+          sleep 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: sable-windows-x64-bench
+          path: bin/Release/
+      - name: Measure toolchains
+        run: python benchmarks/run.py --iterations 5 --warmup 2
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ matrix.id }}
+          path: |
+            benchmark-results.json
+            benchmark-summary.md
+            BENCHMARKS.md
+
+  publish:
+    name: Publish dev benchmarks to ci-results-dev
+    needs: [build, benchmarks]
+    if: always() && !cancelled() && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: ci-results-dev
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          path: ci-results
+      - name: Publish generated reports
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          RESULTS_DIR: ${{ runner.temp }}/ci-results-dev-site
+        run: |
+          if [ "$(git ls-remote origin refs/heads/dev | cut -f1)" != "$SOURCE_SHA" ]; then
+            echo 'A newer commit is on dev; leaving its results untouched.'
+            exit 0
+          fi
+          python tools/update-ci-status.py ci-results --output "$RESULTS_DIR" --run-url "$RUN_URL" --commit "$SOURCE_SHA" --build-result "$BUILD_RESULT"
+          parent=()
+          if [ -n "$(git ls-remote origin refs/heads/ci-results-dev)" ]; then
+            git fetch origin refs/heads/ci-results-dev:refs/remotes/origin/ci-results-dev
+            parent=(-p "$(git rev-parse origin/ci-results-dev)")
+          fi
+          export GIT_INDEX_FILE="$RUNNER_TEMP/ci-results-dev.index"
+          export GIT_DIR="$(git rev-parse --absolute-git-dir)"
+          export GIT_WORK_TREE="$RESULTS_DIR"
+          cd "$RESULTS_DIR"
+          git read-tree --empty
+          git add README.md BENCHMARKS.md build.svg tests.svg benchmarks.svg
+          tree=$(git write-tree)
+          commit=$(printf 'bench: dev reports for %s\n' "$SOURCE_SHA" | git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit-tree "$tree" "${parent[@]}")
+          git push origin "$commit:refs/heads/ci-results-dev"
