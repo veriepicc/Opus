@@ -5747,7 +5747,7 @@ private:
             }
             if (all_bound && try_make_while_alternating_branch_reduction_plan(while_stmt, ret_stmt, alternating_plan) &&
                 try_speculative_codegen([&] {
-                    return generate_while_alternating_branch_reduced_return(alternating_plan, &init_map);
+                    return generate_while_alternating_branch_reduced_return(alternating_plan, &init_map, try_extract_return_mask(ret_stmt));
                 })) {
                 consumed = return_index;
                 return true;
@@ -5779,7 +5779,7 @@ private:
                 }
 
                 if (all_bound && try_speculative_codegen([&] {
-                    return generate_while_multistate_reduced_return(reduced_plan, &init_map);
+                    return generate_while_multistate_reduced_return(reduced_plan, &init_map, try_extract_return_mask(ret_stmt));
                 })) {
                     consumed = return_index;
                     return true;
@@ -5918,7 +5918,7 @@ private:
                         WhileAlternatingBranchReductionPlan alternating_plan;
                         if (try_make_while_alternating_branch_reduction_plan(stmts[i]->as<ast::WhileStmt>(), stmts[next_live]->as<ast::ReturnStmt>(), alternating_plan) &&
                             try_speculative_codegen([&] {
-                                return generate_while_alternating_branch_reduced_return(alternating_plan);
+                                return generate_while_alternating_branch_reduced_return(alternating_plan, nullptr, try_extract_return_mask(stmts[next_live]->as<ast::ReturnStmt>()));
                             })) {
                             i = next_live;
                             continue;
@@ -5929,7 +5929,7 @@ private:
                             WhileMultiStateReductionPlan reduced_plan;
                             if (try_make_while_multistate_reduction_plan(multi_plan, stmts[next_live]->as<ast::ReturnStmt>(), reduced_plan) &&
                                 try_speculative_codegen([&] {
-                                    return generate_while_multistate_reduced_return(reduced_plan);
+                                    return generate_while_multistate_reduced_return(reduced_plan, nullptr, try_extract_return_mask(stmts[next_live]->as<ast::ReturnStmt>()));
                                 })) {
                                 i = next_live;
                                 continue;
@@ -6199,9 +6199,21 @@ private:
         return true;
     }
 
+    // mask of 'sym & imm' on a return statement (0 = none or not matched)
+    [[nodiscard]] std::uint64_t try_extract_return_mask(const ast::ReturnStmt& ret) const {
+        if (!ret.value) return 0;
+        auto* bin = std::get_if<ast::BinaryExpr>(&ret.value->kind);
+        if (!bin || bin->op != ast::BinaryExpr::Op::BitAnd) return 0;
+        if (!bin->lhs->is<ast::IdentExpr>()) return 0;
+        std::int64_t imm = 0;
+        if (!try_get_i64_immediate(*bin->rhs, imm) || imm <= 0 || imm > 0xFF) return 0;
+        return static_cast<std::uint64_t>(imm);
+    }
+
     [[nodiscard]] bool generate_while_multistate_reduced_return(
         const WhileMultiStateReductionPlan& plan,
-        const std::unordered_map<const Symbol*, const ast::Expr*>* init_map = nullptr
+        const std::unordered_map<const Symbol*, const ast::Expr*>* init_map = nullptr,
+        std::uint64_t ret_mask = 0
     ) {
         auto emit_closed_form_counted_accumulation = [&](x64::Reg term_reg, std::int64_t term_step) -> bool {
             emit_.mov(x64::Reg::R8, x64::Reg::RCX);
@@ -6264,13 +6276,17 @@ private:
         if (!emit_closed_form_counted_accumulation(x64::Reg::RDX, plan.term_step)) {
             return false;
         }
+        if (ret_mask) {
+            emit_.and_imm(x64::Reg::RAX, static_cast<std::int32_t>(ret_mask));
+        }
         emit_current_epilogue();
         return true;
     }
 
     [[nodiscard]] bool generate_while_alternating_branch_reduced_return(
         const WhileAlternatingBranchReductionPlan& plan,
-        const std::unordered_map<const Symbol*, const ast::Expr*>* init_map = nullptr
+        const std::unordered_map<const Symbol*, const ast::Expr*>* init_map = nullptr,
+        std::uint64_t ret_mask = 0
     ) {
         auto init_symbol_reg = [&](Symbol* sym, x64::Reg reg) -> bool {
             if (init_map) {
@@ -6335,6 +6351,9 @@ private:
         emit_series_sum(x64::Reg::RDX, x64::Reg::R8, plan.even_step);
         emit_series_sum(x64::Reg::R11, x64::Reg::R9, plan.odd_step);
         emit_.patch_jump(exit_patch);
+        if (ret_mask) {
+            emit_.and_imm(x64::Reg::RAX, static_cast<std::int32_t>(ret_mask));
+        }
         emit_current_epilogue();
         return true;
     }
@@ -7083,6 +7102,19 @@ private:
         }
 
         auto* ident = std::get_if<ast::IdentExpr>(&ret_expr->kind);
+        std::uint64_t ret_mask = 0;
+        if (!ident) {
+            // accept 'sym & imm' (exit-code masking keeps the closed form alive)
+            if (auto* bin = std::get_if<ast::BinaryExpr>(&ret_expr->kind); bin && bin->op == ast::BinaryExpr::Op::BitAnd) {
+                if (auto* lhs = std::get_if<ast::IdentExpr>(&bin->lhs->kind)) {
+                    std::int64_t imm = 0;
+                    if (try_get_i64_immediate(*bin->rhs, imm) && imm > 0 && imm <= 0xFF) {
+                        ret_mask = static_cast<std::uint64_t>(imm);
+                        ident = lhs;
+                    }
+                }
+            }
+        }
         if (!ident) {
             return false;
         }
@@ -7169,7 +7201,21 @@ private:
             return false;
         }
 
-        auto* ret_ident = ret.value ? std::get_if<ast::IdentExpr>(&ret.value->kind) : nullptr;
+        // accept 'sym' and 'sym & imm' (exit-code masking keeps the closed form alive)
+        const ast::Expr* ret_expr = ret.value.get();
+        auto* ret_ident = ret_expr ? std::get_if<ast::IdentExpr>(&ret_expr->kind) : nullptr;
+        std::uint64_t ret_mask = 0;
+        if (!ret_ident && ret_expr) {
+            if (auto* bin = std::get_if<ast::BinaryExpr>(&ret_expr->kind); bin && bin->op == Op::BitAnd) {
+                if (auto* lhs = std::get_if<ast::IdentExpr>(&bin->lhs->kind)) {
+                    std::int64_t imm = 0;
+                    if (try_get_i64_immediate(*bin->rhs, imm) && imm > 0 && imm <= 0xFF) {
+                        ret_mask = static_cast<std::uint64_t>(imm);
+                        ret_ident = lhs;
+                    }
+                }
+            }
+        }
         if (!ret_ident) {
             return false;
         }
