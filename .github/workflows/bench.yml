@@ -83,16 +83,21 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($t in 'diag_pfor_only', 'diag_for_only', 'benchmark_math_vec') {
-            ./bin/Release/sable.exe --quiet "tests/$t.sb"
-            ./tests/$t.exe
-            Write-Host "${t}: exit $LASTEXITCODE"
-            Remove-Item "tests/$t.exe" -ErrorAction SilentlyContinue
+          $ErrorActionPreference = 'Continue'
+          foreach ($t in @('diag_pfor_only', 'diag_for_only', 'benchmark_math_vec')) {
+            & ./bin/Release/sable.exe --quiet "tests/$t.sb"
+            if (Test-Path "tests/$t.exe") {
+              & "./tests/$t.exe"
+              Write-Host "${t}: exit $LASTEXITCODE"
+              Remove-Item "tests/$t.exe" -ErrorAction SilentlyContinue
+            } else {
+              Write-Host "${t}: compile failed"
+            }
           }
-          foreach ($w in '0', '1', '2') {
+          foreach ($w in @('0', '1', '2')) {
             $env:SABLE_FORCE_WIDTH = $w
-            ./bin/Release/sable.exe --quiet tests/benchmark_math_vec.sb
-            ./tests/benchmark_math_vec.exe
+            & ./bin/Release/sable.exe --quiet tests/benchmark_math_vec.sb
+            & ./tests/benchmark_math_vec.exe
             Write-Host "width ${w}: exit $LASTEXITCODE"
             Remove-Item Env:\SABLE_FORCE_WIDTH
           }
