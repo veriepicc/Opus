@@ -9,6 +9,8 @@ import mem
 // 6. PreInc/PreDec/PostInc/PostDec out of sync with register_bindings_
 // 7. while-loop mut locals bound to volatile R11 across function calls
 // 8. IndexExpr store through immutable `let` pointer binding
+// 9. 64-bit immediate fallback clobbering its own operand when dst==R11
+//    (imul/add/and/or/xor with immediates that do not fit imm32)
 
 view Box {
     a: int @ 0
@@ -128,6 +130,29 @@ function int test_memcpy_nonvolatile_preservation(ptr dst, ptr src) {
     return sum
 }
 
+function int test_64bit_imm_operands() {
+    // 2654435761 overflows imm32: the compiler must not clobber the operand
+    // register while materializing the 64-bit constant (hft mix() regression).
+    let salt: i64 = 0x1122334455667788
+    let m: i64 = salt * 2654435761
+    if m != 0x33445566188fed08 { return -1 }
+
+    // x + 2^32 (imm32 overflow)
+    let base: i64 = 123456789
+    if base + 4294967296 != 4418424085 { return -2 }
+
+    // 64-bit and/or/xor with immediates outside imm32
+    let v: i64 = 0x1FFFFFFFF
+    if (v & 0x100000000) != 0x100000000 { return -3 }
+    if (v | 0x100000000) != 0x1FFFFFFFF { return -4 }
+    if (v ^ 0x100000000) != 0xFFFFFFFF { return -5 }
+
+    // two independent products sharing the scratch path (fits signed i64)
+    let a: i64 = 0xDEADBEEF
+    if a * 0x1234567 != 71314180129111337 { return -6 }
+    return 0
+}
+
 function int main() {
     // 1 & 2: view RCX preservation + pure cmp rhs
     let raw = malloc(24)
@@ -195,6 +220,11 @@ function int main() {
     // 7: while-loop var across mem.read8 calls
     if test_while_call_loop_counter("axbxcx") != 5 {
         return 10
+    }
+
+    // 9: 64-bit immediates must not clobber their own operand register
+    if test_64bit_imm_operands() != 0 {
+        return 11
     }
 
     return 0

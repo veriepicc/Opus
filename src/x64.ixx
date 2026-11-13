@@ -576,10 +576,21 @@ public:
             return;
         }
         
-        // fallback to standard imul
+        // fallback to standard imul. the 64-bit constant needs a temp register and
+        // it must never be one of the operands: with dst==R11 the mov_imm64 wiped
+        // the live value and salt*K compiled as K*K (hft checksum regression).
         if (dst != src) mov(dst, src);
-        mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
-        imul(dst, Reg::R11);
+        if (dst != Reg::R11) {
+            mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
+            imul(dst, Reg::R11);
+        } else {
+            // dst IS the R11 scratch: round-trip R10 through the stack so any
+            // registerized R10 value survives
+            push(Reg::R10);
+            mov_imm64(Reg::R10, static_cast<std::uint64_t>(imm));
+            imul(dst, Reg::R10);
+            pop(Reg::R10);
+        }
     }
 
     // smart divide - uses shift for power of 2, idiv otherwise
@@ -633,9 +644,17 @@ public:
             return;
         }
         
-        // large immediate → load to temp reg and add
-        mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
-        add(dst, Reg::R11);
+        // large immediate → load to temp reg and add (never clobber dst: with
+        // dst==R11 the load turned x + BIG into BIG + BIG)
+        if (dst != Reg::R11) {
+            mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
+            add(dst, Reg::R11);
+        } else {
+            push(Reg::R10);
+            mov_imm64(Reg::R10, static_cast<std::uint64_t>(imm));
+            add(dst, Reg::R10);
+            pop(Reg::R10);
+        }
     }
 
     // smart move - keep mov semantics and prefer smaller immediates
@@ -743,9 +762,18 @@ public:
             return;
         }
         
-        // large immediate → load to temp and compare
-        mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
-        cmp(left, Reg::R11);
+        // large immediate → load to temp and compare. Comparing R11 against R11
+        // (after clobbering it with the immediate) would make the comparison
+        // trivially equal, so round-trip R10 when left is already the scratch.
+        if (left == Reg::R11) {
+            push(Reg::R10);
+            mov_imm64(Reg::R10, static_cast<std::uint64_t>(imm));
+            cmp(left, Reg::R10);
+            pop(Reg::R10);
+        } else {
+            mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
+            cmp(left, Reg::R11);
+        }
     }
 
     // setcc - set byte based on condition code

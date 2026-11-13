@@ -81,6 +81,12 @@ fn test_fstrings() -> int {
     let empty = f""
     defer free(empty)
     if !text_eq(empty, "") { return 12 }
+
+    let neg = -42
+    let z = 0
+    let s3 = f"{z}:{neg}"
+    defer free(s3)
+    if !text_eq(s3, "0:-42") { return 13 }
     return 0
 }
 

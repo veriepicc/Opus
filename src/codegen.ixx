@@ -6906,12 +6906,16 @@ private:
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
         }
         if (has_active_defers_to_function_root()) {
-            emit_.push(x64::Reg::RAX);
+            // Keep RSP 16-byte aligned across any calls executed inside defer blocks.
+            emit_.sub_imm(x64::Reg::RSP, 16);
+            emit_.mov_store(x64::Reg::RSP, 0, x64::Reg::RAX);
             if (!emit_defers_down_to(function_root_scope_)) {
-                emit_.pop(x64::Reg::RAX);
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 0);
+                emit_.add_smart(x64::Reg::RSP, 16);
                 return false;
             }
-            emit_.pop(x64::Reg::RAX);
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 0);
+            emit_.add_smart(x64::Reg::RSP, 16);
         }
         warn_live_owned_locals_on_exit(ret.value.get());
         if (has_current_function_return_type_ && current_function_return_type_.is_float()) {
@@ -10773,6 +10777,19 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             case Op::Ge: emit_bool_result(x64::Emitter::CC_AE, dst); return;
             case Op::Eq:
                 // result = (ZF=1 AND PF=0). NaN compares set PF.
+                // dst may be R11 itself; stage the ZF predicate through R10 then,
+                // otherwise setcc into R11 followed by setcc into dst would
+                // overwrite the PF test and `and dst, r11` would self-AND.
+                if (dst == x64::Reg::R11) {
+                    emit_.push(x64::Reg::R10);
+                    emit_.setcc(0xB, x64::Reg::R10); // setnp r10b
+                    emit_.movzx_byte(x64::Reg::R10, x64::Reg::R10);
+                    emit_.setcc(x64::Emitter::CC_E, dst);
+                    emit_.movzx_byte(dst, dst);
+                    emit_.and_(dst, x64::Reg::R10);
+                    emit_.pop(x64::Reg::R10);
+                    return;
+                }
                 emit_.setcc(0xB, x64::Reg::R11); // setnp r11b
                 emit_.movzx_byte(x64::Reg::R11, x64::Reg::R11); // clear upper bits
                 emit_.setcc(x64::Emitter::CC_E, dst);
@@ -10781,6 +10798,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 return;
             case Op::Ne:
                 // result = (ZF=0 OR PF=1)
+                if (dst == x64::Reg::R11) {
+                    emit_.push(x64::Reg::R10);
+                    emit_.setcc(0xA, x64::Reg::R10); // setp r10b
+                    emit_.movzx_byte(x64::Reg::R10, x64::Reg::R10);
+                    emit_.setcc(x64::Emitter::CC_NE, dst);
+                    emit_.movzx_byte(dst, dst);
+                    emit_.or_(dst, x64::Reg::R10);
+                    emit_.pop(x64::Reg::R10);
+                    return;
+                }
                 emit_.setcc(0xA, x64::Reg::R11); // setp r11b
                 emit_.movzx_byte(x64::Reg::R11, x64::Reg::R11);
                 emit_.setcc(x64::Emitter::CC_NE, dst);
@@ -10815,11 +10842,26 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
     [[nodiscard]] bool emit_binary_into_with_rhs_imm(x64::Reg dst, ast::BinaryExpr::Op op, std::int64_t imm) {
         using Op = ast::BinaryExpr::Op;
+        // 64-bit immediates need a scratch register to hold the constant. When
+        // dst IS that scratch (R11) the constant load would clobber the live
+        // operand, so stash R10 on the stack and use it instead.
+        const bool dst_is_scratch = (dst == x64::Reg::R11);
+        auto load_imm_scratch = [&](std::int64_t value) -> x64::Reg {
+            if (!dst_is_scratch) {
+                emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(value));
+                return x64::Reg::R11;
+            }
+            emit_.push(x64::Reg::R10);
+            emit_.mov_imm64(x64::Reg::R10, static_cast<std::uint64_t>(value));
+            return x64::Reg::R10;  // caller must pop R10 after use
+        };
         // floats can't go through imm path - bail to the reg path
         if (binary_type_is_float()) {
             // load imm bits as the f64 (interpret as int) and dispatch via reg path
-            emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
-            return emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R11);
+            x64::Reg scratch = load_imm_scratch(imm);
+            bool ok = emit_binary_into_with_rhs_reg(dst, op, scratch);
+            if (dst_is_scratch) emit_.pop(x64::Reg::R10);
+            return ok;
         }
         const bool is_unsigned = binary_type_is_unsigned();
         switch (op) {
@@ -10846,7 +10888,17 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             case Op::Div:
             case Op::Mod:
                 // div/mod by immediate has no scalar shortcut; route through the reg
-                // path with the immediate in a stack-protected R11.
+                // path with the immediate in a stack-protected scratch. When dst is
+                // R11 the dividend would be overwritten by the constant load, so
+                // stage the divisor through R10 instead.
+                if (dst == x64::Reg::R11) {
+                    emit_.push(x64::Reg::R10);
+                    emit_.mov_imm64(x64::Reg::R10, static_cast<std::uint64_t>(imm));
+                    bool ok = emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R10);
+                    emit_.pop(x64::Reg::R10);
+                    if (!ok) return false;
+                    return true;
+                }
                 emit_.push(x64::Reg::R11);
                 emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
                 {
@@ -10867,8 +10919,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     imm <= (std::numeric_limits<std::int32_t>::max)()) {
                     emit_.and_imm(dst, static_cast<std::int32_t>(imm));
                 } else {
-                    emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
-                    emit_.and_(dst, x64::Reg::R11);
+                    x64::Reg scratch = load_imm_scratch(imm);
+                    emit_.and_(dst, scratch);
+                    if (dst_is_scratch) emit_.pop(x64::Reg::R10);
                 }
                 return true;
             case Op::BitOr:
@@ -10879,8 +10932,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     imm <= (std::numeric_limits<std::int32_t>::max)()) {
                     emit_.or_imm(dst, static_cast<std::int32_t>(imm));
                 } else {
-                    emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
-                    emit_.or_(dst, x64::Reg::R11);
+                    x64::Reg scratch = load_imm_scratch(imm);
+                    emit_.or_(dst, scratch);
+                    if (dst_is_scratch) emit_.pop(x64::Reg::R10);
                 }
                 return true;
             case Op::BitXor:
@@ -10895,8 +10949,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     imm <= (std::numeric_limits<std::int32_t>::max)()) {
                     emit_.xor_imm(dst, static_cast<std::int32_t>(imm));
                 } else {
-                    emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
-                    emit_.xor_(dst, x64::Reg::R11);
+                    x64::Reg scratch = load_imm_scratch(imm);
+                    emit_.xor_(dst, scratch);
+                    if (dst_is_scratch) emit_.pop(x64::Reg::R10);
                 }
                 return true;
             case Op::Shl:
@@ -11086,7 +11141,15 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     [[nodiscard]] bool emit_binary_into_with_rhs_mem(x64::Reg dst, ast::BinaryExpr::Op op, x64::Reg base, std::int32_t offset) {
         using Op = ast::BinaryExpr::Op;
         if (binary_type_is_float()) {
-            // float through reg path
+            // float through reg path. R11 cannot hold the loaded rhs when dst is
+            // R11 (the load would wipe the lhs), so stage it through R10.
+            if (dst == x64::Reg::R11) {
+                emit_.push(x64::Reg::R10);
+                emit_.mov_load(x64::Reg::R10, base, offset);
+                bool ok = emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R10);
+                emit_.pop(x64::Reg::R10);
+                return ok;
+            }
             emit_.mov_load(x64::Reg::R11, base, offset);
             return emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R11);
         }
@@ -11957,6 +12020,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         push_scope();
         auto& acc_sym = current_scope_->define("__fstr_acc", Type::make_primitive(PrimitiveType::Str), true);
         auto& part_sym = current_scope_->define("__fstr_part", Type::make_primitive(PrimitiveType::Str), true);
+        auto& tmp_sym = current_scope_->define("__fstr_tmp", Type::make_primitive(PrimitiveType::Str), true);
         bool acc_owned = false;
 
         for (std::size_t i = 0; i < fstr.parts.size(); ++i) {
@@ -12015,22 +12079,21 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     pop_scope();
                     return false;
                 }
-                emit_.push(x64::Reg::RAX);
+                // Save concatenated string in a frame local so RSP stays 16-byte aligned across free().
+                emit_.mov_store(x64::Reg::RBP, tmp_sym.stack_offset, x64::Reg::RAX);
                 if (acc_owned) {
                     if (!emit_call1("free", make_ident_expr("__fstr_acc"))) {
-                        emit_.pop(x64::Reg::RAX);
                         pop_scope();
                         return false;
                     }
                 }
                 if (part_owned) {
                     if (!emit_call1("free", make_ident_expr("__fstr_part"))) {
-                        emit_.pop(x64::Reg::RAX);
                         pop_scope();
                         return false;
                     }
                 }
-                emit_.pop(x64::Reg::RAX);
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, tmp_sym.stack_offset);
                 emit_.mov_store(x64::Reg::RBP, acc_sym.stack_offset, x64::Reg::RAX);
                 acc_owned = true;
             }
@@ -15093,9 +15156,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.sub_imm(x64::Reg::RAX, 16);
         emit_.push(x64::Reg::RAX);  // save alloc base (GetProcessHeap clobbers volatiles)
 
-        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.sub_imm(x64::Reg::RSP, 40);
         emit_iat_call_raw(pe::iat::GetProcessHeap);
-        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.add_smart(x64::Reg::RSP, 40);
 
         // HeapFree(heap, 0, alloc_ptr)
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
@@ -15421,7 +15484,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         if (!generate_expr(*call.args[0])) return false;
         // rax = value to convert
-        emit_.push(x64::Reg::RAX);  // save value
+        emit_.push(x64::Reg::RAX);  // [rsp+16] value
+        emit_.push(x64::Reg::RDI);  // [rsp+8]  preserve non-volatile RDI + 16-byte align RSP
 
         // heap alloc 24 bytes (enough for "-9223372036854775808\0")
         emit_.sub_imm(x64::Reg::RSP, 32);
@@ -15437,7 +15501,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // rax = buffer
 
         emit_.push(x64::Reg::RAX);  // save buffer
-        // stack: [value, buffer]
+        // stack: [value, saved_rdi, buffer]
 
         // rdi = buffer + 22 (write backwards, leave room for null terminator)
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D); emit_.buffer().emit8(0x78); emit_.buffer().emit8(0x16);  // lea rdi, [rax+22]
@@ -15446,7 +15510,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
 
         // load original value into r8
-        emit_.mov_load(x64::Reg::R8, x64::Reg::RSP, 8);  // r8 = value from stack
+        emit_.mov_load(x64::Reg::R8, x64::Reg::RSP, 16);  // r8 = value from stack
 
         // check sign, r9 = is_negative flag
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xC9);  // xor r9, r9
@@ -15525,14 +15589,24 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             emit_.buffer().data()[jz_nosign_pos + 1] = static_cast<std::uint8_t>(off);
         }
 
-        // rdi points one before first char, inc to get start of string
+        // rdi points one before first char, inc to get start of formatted string
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC7);  // inc rdi
 
-        // return pointer to start of string in rax
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xF8);  // mov rax, rdi
+        // Shift string to the HeapAlloc base pointer so free(int_to_string(n))
+        // always frees the real allocation base instead of an interior pointer.
+        emit_.pop(x64::Reg::RCX);   // rcx = buffer base
+        emit_.mov(x64::Reg::RAX, x64::Reg::RCX);  // return buffer base
+        std::size_t copy_loop = emit_.buffer().pos();
+        emit_.buffer().emit8(0x8A); emit_.buffer().emit8(0x17);  // mov dl, byte [rdi]
+        emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x11);  // mov byte [rcx], dl
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC7);  // inc rdi
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);  // inc rcx
+        emit_.buffer().emit8(0x84); emit_.buffer().emit8(0xD2);  // test dl, dl
+        emit_.buffer().emit8(0x75);  // jnz .copy_loop
+        std::int8_t copy_off = static_cast<std::int8_t>(copy_loop - emit_.buffer().pos() - 1);
+        emit_.buffer().emit8(static_cast<std::uint8_t>(copy_off));
 
-        // clean up stack: pop buffer (discard), pop value (discard)
-        emit_.pop(x64::Reg::RCX);   // discard buffer
+        emit_.pop(x64::Reg::RDI);   // restore non-volatile RDI
         emit_.pop(x64::Reg::RCX);   // discard value
 
         return true;
