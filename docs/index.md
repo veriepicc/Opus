@@ -47,7 +47,7 @@ Sable is built around a simple idea: the language should stay expressive while t
 - supports structs, views, classes, methods, enums, imports, and `sable.project`
 - supports typed FFI, `spawn`, `await`, `parallel for`, and atomic operations
 - ships a built-in crash debugger and healing runtime
-- ships an embedded stdlib with module-first surfaces like `mem`, `text`, `fmt`, `fs`, `json`, `path`, `process`, `rand`, `time`, `vec`, and `algo`
+- ships an embedded stdlib with modules like `mem`, `ascii`, `text`, `fmt`, `fs`, `json`, `http`, `path`, `process`, `rand`, `time`, `vec`, `algo`, `option`, `result`, and `owner`
 
 ## Practical notes
 

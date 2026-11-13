@@ -1,37 +1,62 @@
-// DONOTUSE: ffi_call0..7 are radioactive compat junk until typed abi control replaces them
+import mem
 
-struct HttpUrl {
-    secure: int,
-    port: int,
-    host: str,
-    path: str,
+// HTTP client helpers built on WinHTTP using typed function pointers and zero-copy views.
+
+enum HttpUrlOffset {
+    Secure = 0,
+    Port = 8,
+    Host = 16,
+    Path = 24,
 }
 
-struct HttpResponse {
-    status: int,
-    body: str,
+enum HttpResponseOffset {
+    Status = 0,
+    Body = 8,
 }
 
-struct HttpWideParts {
-    user_agent_w: ptr,
-    method_w: ptr,
-    host_w: ptr,
-    path_w: ptr,
+enum HttpWidePartsOffset {
+    UserAgentW = 0,
+    MethodW = 8,
+    HostW = 16,
+    PathW = 24,
 }
 
+view HttpUrl {
+    secure: int @ HttpUrlOffset.Secure
+    port: int @ HttpUrlOffset.Port
+    host: str @ HttpUrlOffset.Host
+    path: str @ HttpUrlOffset.Path
+}
+
+view HttpResponse {
+    status: int @ HttpResponseOffset.Status
+    body: str @ HttpResponseOffset.Body
+}
+
+view HttpWideParts {
+    user_agent_w: ptr @ HttpWidePartsOffset.UserAgentW
+    method_w: ptr @ HttpWidePartsOffset.MethodW
+    host_w: ptr @ HttpWidePartsOffset.HostW
+    path_w: ptr @ HttpWidePartsOffset.PathW
+}
+
+using WinHttpOpenFn = fn(ptr, int, ptr, ptr, int) -> ptr
+using WinHttpSetTimeoutsFn = fn(ptr, int, int, int, int) -> int
 using WinHttpConnectFn = fn(ptr, ptr, int, int) -> ptr
+using WinHttpOpenRequestFn = fn(ptr, ptr, ptr, ptr, ptr, ptr, int) -> ptr
+using WinHttpSendRequestFn = fn(ptr, ptr, int, ptr, int, int, int) -> int
+using WinHttpReceiveResponseFn = fn(ptr, ptr) -> int
+using WinHttpQueryHeadersFn = fn(ptr, int, ptr, ptr, ptr, ptr) -> int
+using WinHttpQueryDataAvailableFn = fn(ptr, ptr) -> int
+using WinHttpReadDataFn = fn(ptr, ptr, int, ptr) -> int
+using WinHttpCloseHandleFn = fn(ptr) -> int
 
 function str http_empty_text() {
     return string_substring("", 0, 0)
 }
 
 function ptr http_make_zero(int size) {
-    let block = malloc(size)
-    if block == 0 {
-        return 0
-    }
-    memset(block, 0, size)
-    return block
+    return mem.make_zero(size)
 }
 
 function bool http_is_digit(int ch) {
@@ -51,6 +76,9 @@ function bool http_is_empty(str text_value) {
 }
 
 function str http_clone(str text_value) {
+    if text_value == 0 {
+        return http_empty_text()
+    }
     return string_substring(text_value, 0, string_length(text_value))
 }
 
@@ -76,46 +104,44 @@ function int http_find(str text_value, str needle) {
         return -1
     }
 
+    let hay = text_value as ptr
+    let ndl = needle as ptr
+    let first = mem.read8(ndl)
+    let limit = text_len_val - needle_len
     var i = 0
-    while i <= text_len_val - needle_len {
-        var j = 0
-        var matched = true
-        while j < needle_len {
-            if char_at(text_value, i + j) != char_at(needle, j) {
-                matched = false
-                break
+    while i <= limit {
+        if mem.read8(hay + i) == first {
+            if needle_len == 1 or memcmp(hay + i + 1, ndl + 1, needle_len - 1) == 0 {
+                return i
             }
-            j++
-        }
-        if matched {
-            return i
         }
         i++
     }
-
     return -1
 }
 
 function int http_rfind_char(str text_value, int ch) {
-    var i = string_length(text_value)
-    while i > 0 {
-        i--
-        if char_at(text_value, i) == ch {
+    let p = text_value as ptr
+    let target = ch & 255
+    var i = string_length(text_value) - 1
+    while i >= 0 {
+        if mem.read8(p + i) == target {
             return i
         }
+        i--
     }
     return -1
 }
 
 function HttpUrl http_url_new() {
-    var parsed: HttpUrl = malloc(32)
+    let parsed = malloc(32) as HttpUrl
     if parsed == 0 {
-        return 0
+        return 0 as HttpUrl
     }
     parsed.secure = 1
     parsed.port = 443
-    parsed.host = 0
-    parsed.path = 0
+    parsed.host = 0 as str
+    parsed.path = 0 as str
     return parsed
 }
 
@@ -133,12 +159,12 @@ function void http_url_free(HttpUrl parsed) {
 }
 
 function HttpResponse http_response_new(int status, str body_text) {
-    var response: HttpResponse = malloc(16)
+    let response = malloc(16) as HttpResponse
     if response == 0 {
         if body_text != 0 {
             free(body_text)
         }
-        return 0
+        return 0 as HttpResponse
     }
     response.status = status
     response.body = body_text
@@ -146,9 +172,9 @@ function HttpResponse http_response_new(int status, str body_text) {
 }
 
 function HttpWideParts http_wide_parts_new() {
-    var parts: HttpWideParts = malloc(32)
+    let parts = malloc(32) as HttpWideParts
     if parts == 0 {
-        return 0
+        return 0 as HttpWideParts
     }
     parts.user_agent_w = 0
     parts.method_w = 0
@@ -199,37 +225,43 @@ function bool http_ok(HttpResponse response) {
 
 function int http_parse_port(str text_value) {
     let len = http_len(text_value)
-    if len <= 0 {
+    if len <= 0 or len > 5 {
         return -1
     }
 
+    let p = text_value as ptr
     var value = 0
     var i = 0
     while i < len {
-        let ch = char_at(text_value, i)
+        let ch = mem.read8(p + i)
         if !http_is_digit(ch) {
             return -1
         }
         value = value * 10 + (ch - 48)
         i++
     }
-
+    if value <= 0 or value > 65535 {
+        return -1
+    }
     return value
 }
 
 function ptr http_utf16z(str text_value) {
-    let len = http_len(text_value)
-    let out = http_make_zero((len + 1) * 2)
+    if text_value == 0 {
+        return 0
+    }
+    let len = string_length(text_value)
+    let out = mem.make_zero((len + 1) * 2)
     if out == 0 {
         return 0
     }
 
+    let p = text_value as ptr
     var i = 0
     while i < len {
-        mem_write_i16(out + i * 2, char_at(text_value, i))
+        mem.write16(out + i * 2, mem.read8(p + i))
         i++
     }
-
     return out
 }
 
@@ -237,42 +269,14 @@ function ptr http_url_host_utf16(HttpUrl parsed) {
     if parsed == 0 or parsed.host == 0 {
         return 0
     }
-
-    let host_text = parsed.host
-    let host_len = string_length(host_text)
-    let out = http_make_zero((host_len + 1) * 2)
-    if out == 0 {
-        return 0
-    }
-
-    var i = 0
-    while i < host_len {
-        mem_write_i16(out + i * 2, char_at(host_text, i))
-        i++
-    }
-
-    return out
+    return http_utf16z(parsed.host)
 }
 
 function ptr http_url_path_utf16(HttpUrl parsed) {
     if parsed == 0 or parsed.path == 0 {
         return 0
     }
-
-    let path_text = parsed.path
-    let path_len = string_length(path_text)
-    let out = http_make_zero((path_len + 1) * 2)
-    if out == 0 {
-        return 0
-    }
-
-    var i = 0
-    while i < path_len {
-        mem_write_i16(out + i * 2, char_at(path_text, i))
-        i++
-    }
-
-    return out
+    return http_utf16z(parsed.path)
 }
 
 function ptr http_open_session(ptr open_fn, ptr set_timeouts_fn) {
@@ -281,52 +285,24 @@ function ptr http_open_session(ptr open_fn, ptr set_timeouts_fn) {
         return 0
     }
 
-    let session = ffi_call5(open_fn, user_agent_w, 1, 0, 0, 0)
+    let winhttp_open = open_fn as WinHttpOpenFn
+    let session = winhttp_open(user_agent_w, 1, 0, 0, 0)
     free(user_agent_w)
-    if session != 0 {
-        ffi_call5(set_timeouts_fn, session, 3000, 3000, 3000, 3000)
+    if session != 0 and set_timeouts_fn != 0 {
+        let winhttp_set_timeouts = set_timeouts_fn as WinHttpSetTimeoutsFn
+        winhttp_set_timeouts(session, 5000, 5000, 5000, 5000)
     }
     return session
 }
 
-function ptr http_open_connection(ptr connect_fn, ptr session, HttpUrl parsed) {
-    let host_w = http_url_host_utf16(parsed)
-    if host_w == 0 {
-        return 0
-    }
-
-    return host_w
-}
-
-function ptr http_open_get_request(ptr open_request_fn, ptr connection, HttpUrl parsed) {
-    let method_w = http_utf16z("GET")
-    if method_w == 0 {
-        return 0
-    }
-
-    let path_w = http_url_path_utf16(parsed)
-    if path_w == 0 {
-        free(method_w)
-        return 0
-    }
-
-    var request_flags = 0
-    if parsed.secure != 0 {
-        request_flags = 8388608
-    }
-
-    let request = ffi_call7(open_request_fn, connection, method_w, path_w, 0, 0, 0, request_flags)
-    free(path_w)
-    free(method_w)
-    return request
-}
-
 function str http_bytes_to_text(ptr bytes, int len) {
-    let copy = http_make_zero(len + 1)
+    let copy = mem.make_zero(len + 1)
     if copy == 0 {
         return http_empty_text()
     }
-    memcpy(copy, bytes, len)
+    if len > 0 and bytes != 0 {
+        memcpy(copy, bytes, len)
+    }
     let out = make_string(copy)
     free(copy)
     return out
@@ -337,7 +313,8 @@ function str http_take_path(str url, int start_idx, int stop_idx) {
         return http_clone("/")
     }
 
-    let first = char_at(url, start_idx)
+    let p = url as ptr
+    let first = mem.read8(p + start_idx)
     if first == 47 {
         return http_slice(url, start_idx, stop_idx - start_idx)
     }
@@ -349,34 +326,23 @@ function str http_take_path(str url, int start_idx, int stop_idx) {
 }
 
 function HttpUrl http_parse_url(str url) {
+    if url == 0 {
+        return 0 as HttpUrl
+    }
     let parsed = http_url_new()
     if parsed == 0 {
-        return 0
+        return 0 as HttpUrl
     }
 
     let url_len = http_len(url)
+    let p = url as ptr
     var start = 0
 
-    if url_len >= 8 and
-       char_at(url, 0) == 104 and
-       char_at(url, 1) == 116 and
-       char_at(url, 2) == 116 and
-       char_at(url, 3) == 112 and
-       char_at(url, 4) == 115 and
-       char_at(url, 5) == 58 and
-       char_at(url, 6) == 47 and
-       char_at(url, 7) == 47 {
+    if url_len >= 8 and memcmp(p, "https://" as ptr, 8) == 0 {
         parsed.secure = 1
         parsed.port = 443
         start = 8
-    } else if url_len >= 7 and
-              char_at(url, 0) == 104 and
-              char_at(url, 1) == 116 and
-              char_at(url, 2) == 116 and
-              char_at(url, 3) == 112 and
-              char_at(url, 4) == 58 and
-              char_at(url, 5) == 47 and
-              char_at(url, 6) == 47 {
+    } else if url_len >= 7 and memcmp(p, "http://" as ptr, 7) == 0 {
         parsed.secure = 0
         parsed.port = 80
         start = 7
@@ -384,12 +350,13 @@ function HttpUrl http_parse_url(str url) {
 
     if start >= url_len {
         http_url_free(parsed)
-        return 0
+        return 0 as HttpUrl
     }
 
     var host_end = start
     while host_end < url_len {
-        if char_at(url, host_end) == 47 {
+        let ch = mem.read8(p + host_end)
+        if ch == 47 or ch == 63 {
             break
         }
         host_end++
@@ -397,55 +364,71 @@ function HttpUrl http_parse_url(str url) {
 
     if host_end <= start {
         http_url_free(parsed)
-        return 0
+        return 0 as HttpUrl
     }
 
-    parsed.host = string_substring(url, start, host_end - start)
+    // Optional host:port parsing
+    var host_stop = host_end
+    var colon_idx = start
+    while colon_idx < host_end {
+        if mem.read8(p + colon_idx) == 58 {
+            let port_str = string_substring(url, colon_idx + 1, host_end - colon_idx - 1)
+            let parsed_port = http_parse_port(port_str)
+            free(port_str)
+            if parsed_port <= 0 {
+                http_url_free(parsed)
+                return 0 as HttpUrl
+            }
+            parsed.port = parsed_port
+            host_stop = colon_idx
+            break
+        }
+        colon_idx++
+    }
+
+    if host_stop <= start {
+        http_url_free(parsed)
+        return 0 as HttpUrl
+    }
+
+    parsed.host = string_substring(url, start, host_stop - start)
     if parsed.host == 0 or string_length(parsed.host) == 0 {
         http_url_free(parsed)
-        return 0
+        return 0 as HttpUrl
     }
 
     parsed.path = http_take_path(url, host_end, url_len)
     if parsed.path == 0 {
         http_url_free(parsed)
-        return 0
+        return 0 as HttpUrl
     }
 
     return parsed
 }
 
 function void http_close_if(ptr close_fn, ptr handle_value) {
-    if handle_value != 0 {
-        ffi_call1(close_fn, handle_value)
+    if handle_value != 0 and close_fn != 0 {
+        let winhttp_close = close_fn as WinHttpCloseHandleFn
+        winhttp_close(handle_value)
     }
 }
 
 function int http_query_status(ptr request_handle, ptr query_headers) {
-    let status_ptr = http_make_zero(8)
-    let size_ptr = http_make_zero(8)
+    let status_ptr = mem.make_zero(8)
+    let size_ptr = mem.make_zero(8)
     if status_ptr == 0 or size_ptr == 0 {
-        if status_ptr != 0 {
-            free(status_ptr)
-        }
-        if size_ptr != 0 {
-            free(size_ptr)
-        }
+        if status_ptr != 0 { free(status_ptr) }
+        if size_ptr != 0 { free(size_ptr) }
         return 0
     }
 
-    mem_write_i32(size_ptr, 4)
+    mem.write32(size_ptr, 4)
     var status = 0
-    let ok = ffi_call6(
-        query_headers,
-        request_handle,
-        19 + 536870912,
-        0,
-        status_ptr,
-        size_ptr,
-        0)
+    let query_fn = query_headers as WinHttpQueryHeadersFn
+    // WINHTTP_QUERY_STATUS_CODE (19) | WINHTTP_QUERY_FLAG_NUMBER (0x20000000)
+    let ok = query_fn(request_handle, 19 + 536870912, 0, status_ptr, size_ptr, 0)
     if ok != 0 {
-        status = mem_read_i32(status_ptr)
+        status = mem.read32(status_ptr)
     }
 
     free(status_ptr)
@@ -454,76 +437,87 @@ function int http_query_status(ptr request_handle, ptr query_headers) {
 }
 
 function str http_read_body(ptr request_handle, ptr query_data_available, ptr read_data) {
-    let available_ptr = http_make_zero(8)
-    let read_count_ptr = http_make_zero(8)
-    let chunk_ptr = http_make_zero(4097)
-    if available_ptr == 0 or read_count_ptr == 0 or chunk_ptr == 0 {
-        if available_ptr != 0 {
-            free(available_ptr)
-        }
-        if read_count_ptr != 0 {
-            free(read_count_ptr)
-        }
-        if chunk_ptr != 0 {
-            free(chunk_ptr)
-        }
+    let available_ptr = mem.make_zero(8)
+    let read_count_ptr = mem.make_zero(8)
+    var cap = 4096
+    var total_len = 0
+    var buf = malloc(cap + 1)
+    if available_ptr == 0 or read_count_ptr == 0 or buf == 0 {
+        if available_ptr != 0 { free(available_ptr) }
+        if read_count_ptr != 0 { free(read_count_ptr) }
+        if buf != 0 { free(buf) }
         return http_empty_text()
     }
 
-    var body = http_empty_text()
+    let query_avail_fn = query_data_available as WinHttpQueryDataAvailableFn
+    let read_data_fn = read_data as WinHttpReadDataFn
+    var failed = false
+
     while true {
-        mem_write_i32(available_ptr, 0)
-        if ffi_call2(query_data_available, request_handle, available_ptr) == 0 {
-            free(body)
-            body = http_empty_text()
+        mem.write32(available_ptr, 0)
+        if query_avail_fn(request_handle, available_ptr) == 0 {
+            failed = true
             break
         }
 
-        let available = mem_read_i32(available_ptr)
+        let available = mem.read32(available_ptr)
         if available <= 0 {
             break
         }
 
-        var to_read = available
-        if to_read > 4096 {
-            to_read = 4096
+        if total_len + available + 1 > cap {
+            var new_cap = cap
+            while new_cap < total_len + available + 1 {
+                new_cap = new_cap * 2
+            }
+            let next_buf = malloc(new_cap + 1)
+            if next_buf == 0 {
+                failed = true
+                break
+            }
+            if total_len > 0 {
+                memcpy(next_buf, buf, total_len)
+            }
+            free(buf)
+            buf = next_buf
+            cap = new_cap
         }
 
-        mem_write_i32(read_count_ptr, 0)
-        if ffi_call4(read_data, request_handle, chunk_ptr, to_read, read_count_ptr) == 0 {
-            free(body)
-            body = http_empty_text()
+        mem.write32(read_count_ptr, 0)
+        if read_data_fn(request_handle, buf + total_len, available, read_count_ptr) == 0 {
+            failed = true
             break
         }
 
-        let chunk_len = mem_read_i32(read_count_ptr)
+        let chunk_len = mem.read32(read_count_ptr)
         if chunk_len <= 0 {
             break
         }
-
-        mem_write_i8(chunk_ptr + chunk_len, 0)
-        let chunk_text = http_bytes_to_text(chunk_ptr, chunk_len)
-        let next_body = string_append(body, chunk_text)
-        free(body)
-        free(chunk_text)
-        body = next_body
+        total_len = total_len + chunk_len
     }
 
     free(available_ptr)
     free(read_count_ptr)
-    free(chunk_ptr)
-    return body
+    if failed {
+        free(buf)
+        return http_empty_text()
+    }
+    mem.write8(buf + total_len, 0)
+    let out = make_string(buf)
+    free(buf)
+    return out
 }
 
-function int http_debug_fetch_stage(str url) {
+function HttpResponse http_fetch(str url) {
     let parsed = http_parse_url(url)
     if parsed == 0 {
-        return 901
+        return http_fail_response()
     }
 
     let module_handle = load_library("winhttp.dll")
     if module_handle == 0 {
-        return 902
+        http_url_free(parsed)
+        return http_fail_response()
     }
 
     let open_fn = get_proc(module_handle, "WinHttpOpen")
@@ -540,31 +534,39 @@ function int http_debug_fetch_stage(str url) {
     if open_fn == 0 or connect_fn == 0 or open_request_fn == 0 or send_request_fn == 0 or
        receive_response_fn == 0 or query_data_available_fn == 0 or query_headers_fn == 0 or read_data_fn == 0 or
        set_timeouts_fn == 0 or close_handle_fn == 0 {
-        return 903
+        http_url_free(parsed)
+        return http_fail_response()
     }
 
     let host_w = http_url_host_utf16(parsed)
-    if host_w == 0 {
-        return 904
-    }
-    return 905
-
-    let user_agent_w = http_utf16z("Sable/WinHTTP")
     let method_w = http_utf16z("GET")
     let path_w = http_url_path_utf16(parsed)
-    if user_agent_w == 0 or method_w == 0 or path_w == 0 {
-        return 906
+    if host_w == 0 or method_w == 0 or path_w == 0 {
+        if host_w != 0 { free(host_w) }
+        if method_w != 0 { free(method_w) }
+        if path_w != 0 { free(path_w) }
+        http_url_free(parsed)
+        return http_fail_response()
     }
 
-    let session = ffi_call5(open_fn, user_agent_w, 1, 0, 0, 0)
+    let session = http_open_session(open_fn, set_timeouts_fn)
     if session == 0 {
-        return 905
+        free(host_w)
+        free(method_w)
+        free(path_w)
+        http_url_free(parsed)
+        return http_fail_response()
     }
-    ffi_call5(set_timeouts_fn, session, 3000, 3000, 3000, 3000)
 
-    let connection = ffi_call4(connect_fn, session, host_w, parsed.port, 0)
+    let winhttp_connect = connect_fn as WinHttpConnectFn
+    let connection = winhttp_connect(session, host_w, parsed.port, 0)
+    free(host_w)
     if connection == 0 {
-        return 906
+        free(method_w)
+        free(path_w)
+        http_close_if(close_handle_fn, session)
+        http_url_free(parsed)
+        return http_fail_response()
     }
 
     var request_flags = 0
@@ -572,22 +574,44 @@ function int http_debug_fetch_stage(str url) {
         request_flags = 8388608
     }
 
-    let request = ffi_call7(open_request_fn, connection, method_w, path_w, 0, 0, 0, request_flags)
+    let winhttp_open_req = open_request_fn as WinHttpOpenRequestFn
+    let request = winhttp_open_req(connection, method_w, path_w, 0, 0, 0, request_flags)
+    free(method_w)
+    free(path_w)
+    http_url_free(parsed)
+
     if request == 0 {
-        return 907
-    }
-    if ffi_call7(send_request_fn, request, 0, 0, 0, 0, 0, 0) == 0 {
-        return 908
-    }
-    if ffi_call2(receive_response_fn, request, 0) == 0 {
-        return 909
+        http_close_if(close_handle_fn, connection)
+        http_close_if(close_handle_fn, session)
+        return http_fail_response()
     }
 
-    return http_query_status(request, query_headers_fn)
+    let winhttp_send = send_request_fn as WinHttpSendRequestFn
+    let winhttp_recv = receive_response_fn as WinHttpReceiveResponseFn
+    if winhttp_send(request, 0, 0, 0, 0, 0, 0) == 0 or winhttp_recv(request, 0) == 0 {
+        http_close_if(close_handle_fn, request)
+        http_close_if(close_handle_fn, connection)
+        http_close_if(close_handle_fn, session)
+        return http_fail_response()
+    }
+
+    let status = http_query_status(request, query_headers_fn)
+    let body = http_read_body(request, query_data_available_fn, read_data_fn)
+
+    http_close_if(close_handle_fn, request)
+    http_close_if(close_handle_fn, connection)
+    http_close_if(close_handle_fn, session)
+    return http_response_new(status, body)
 }
 
-function HttpResponse http_fetch(str url) {
-    return http_response_new(http_debug_fetch_stage(url), http_empty_text())
+function int http_debug_fetch_stage(str url) {
+    let response = http_fetch(url)
+    if response == 0 {
+        return 0
+    }
+    let status = response.status
+    http_response_free(response)
+    return status
 }
 
 function str http_get(str url) {
@@ -597,7 +621,10 @@ function str http_get(str url) {
     }
 
     let body_text = response.body
-    response.body = 0
+    response.body = 0 as str
     free(response)
+    if body_text == 0 {
+        return http_empty_text()
+    }
     return body_text
 }

@@ -36,7 +36,7 @@ std::expected<ProjectConfig, std::string> load_project(const std::filesystem::pa
     Lexer lexer(source, project_path.string());
     auto tokens = lexer.tokenize_all();
     
-    Parser parser(std::move(tokens), SyntaxMode::CStyle);
+    Parser parser(std::move(tokens));
     auto result = parser.parse_project_file();
     
     if (!result) {

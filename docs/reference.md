@@ -233,9 +233,37 @@ end while
 ### For
 
 ```c
-for i in values {
+for i in range(0, 10) {
     print_int(i)
 }
+
+for i in 0..10 {
+    print_int(i)
+}
+
+for x in [10, 20, 30] {
+    print_int(x)
+}
+
+for ch in "sable" {
+    print_int(ch)
+}
+```
+
+### Defer
+
+Block-scoped LIFO cleanup runs on scope exit, `break`, `continue`, and `return`:
+
+```c
+let buf = malloc(64)
+defer free(buf)
+```
+
+### F-strings
+
+```c
+let msg = f"count={n + 1}, ok={flag}"
+defer free(msg)
 ```
 
 ### Loop
@@ -299,16 +327,19 @@ Common primitive and friendly names:
 | Name | Meaning |
 |------|---------|
 | `bool` | boolean |
-| `int` / `integer` | 32-bit signed |
-| `long` / `isize` | 64-bit signed |
-| `uint` / `usize` | 64-bit or 32-bit friendly unsigned aliases as defined by the compiler |
-| `i8`, `i16`, `i32`, `i64`, `i128` | exact-width signed |
-| `u8`, `u16`, `u32`, `u64`, `u128` | exact-width unsigned |
-| `float` / `f32` | 32-bit float |
-| `double` / `real` / `f64` | 64-bit float |
+| `byte` | 8-bit signed |
+| `short` | 16-bit signed |
+| `int` / `integer` / `long` / `isize` | 64-bit signed |
+| `ubyte` | 8-bit unsigned |
+| `ushort` | 16-bit unsigned |
+| `uint` | 32-bit unsigned |
+| `ulong` / `usize` | 64-bit unsigned |
+| `float` | 32-bit float |
+| `double` / `real` | 64-bit float |
 | `str` / `string` | string |
 | `char` | character |
 | `ptr` / `address` / `pointer` | raw pointer |
+| `i8`..`i128`, `u8`..`u128`, `f32`, `f64` | exact-width / legacy numeric aliases |
 
 Function types:
 
@@ -326,7 +357,7 @@ let mp: *mut int = 0
 Array types:
 
 ```c
-let buf: [i32; 16]
+let buf: [int; 16]
 ```
 
 ## Structs

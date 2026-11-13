@@ -160,7 +160,18 @@ std::optional<std::string> find_closest_match(std::string_view input,
     
     for (const auto& candidate : candidates) {
         auto dist = edit_distance(input, candidate);
-        if (dist < best_dist) {
+        auto cand_len_diff = candidate.size() > input.size()
+            ? candidate.size() - input.size()
+            : input.size() - candidate.size();
+        auto best_len_diff = best.size() > input.size()
+            ? best.size() - input.size()
+            : input.size() - best.size();
+        if (dist < best_dist ||
+            (dist == best_dist &&
+             (cand_len_diff < best_len_diff ||
+              (cand_len_diff == best_len_diff &&
+               (candidate.size() < best.size() ||
+                (candidate.size() == best.size() && candidate < best)))))) {
             best_dist = dist;
             best = candidate;
         }

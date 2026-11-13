@@ -1,0 +1,201 @@
+import mem
+
+// Regression tests for compiler codegen bugs uncovered while rewriting stdlib:
+// 1. view field store & compound assign clobbering RCX-bound param 0
+// 2. emit_condition_false_jump pure-rhs evaluation clobbering R11 lhs_reg
+// 3. stack-struct reassignment copying only 8 bytes instead of total_size
+// 4. leaf IndexExpr read/write, mem_write, and compound assign clobbering RCX
+// 5. memcpy clobbering Win64 non-volatile RDI/RSI across loops
+// 6. PreInc/PreDec/PostInc/PostDec out of sync with register_bindings_
+// 7. while-loop mut locals bound to volatile R11 across function calls
+// 8. IndexExpr store through immutable `let` pointer binding
+
+view Box {
+    a: int @ 0
+    b: int @ 8
+    c: int @ 16
+}
+
+struct Triple {
+    x: int,
+    y: int,
+    z: int,
+}
+
+function Box mutate_view_rcx(Box v, int delta) {
+    v.a = 10
+    v.b = 20
+    v.c = 30
+    v.b += delta
+    v.c += 5
+    return v
+}
+
+function int check_pure_cmp_lhs_preservation(Box v, int used, int extra) {
+    if v.c < used + extra {
+        return 1
+    }
+    return 0
+}
+
+function Triple make_triple(int x, int y, int z) {
+    return Triple { x: x, y: y, z: z }
+}
+
+function Triple bump_triple(Triple t) {
+    t.x = t.x + 1
+    t.y = t.y + 2
+    t.z = t.z + 3
+    return t
+}
+
+function ptr leaf_write_index_return_rcx(ptr p, int idx, int val) {
+    let arr = p as *i64
+    arr[idx] = val
+    return p
+}
+
+function ptr leaf_read_index_return_rcx(ptr p, int idx) {
+    let arr = p as *i64
+    let v = arr[idx]
+    if v != 777 {
+        return 0
+    }
+    return p
+}
+
+function ptr leaf_mem_write_return_rcx(ptr p, int val) {
+    mem_write(p, val)
+    return p
+}
+
+function int test_while_call_loop_counter(str s) {
+    let n = string_length(s)
+    let p = s as ptr
+    var i = 0
+    var hits = 0
+    while i < n {
+        var j = i + 1
+        while j < n {
+            let c = mem.read8(p + j)
+            if c == 120 {
+                hits++
+                break
+            }
+            j++
+        }
+        i++
+    }
+    return hits
+}
+
+function int test_inc_dec_sync(ptr p, int lo, int hi) {
+    var arr = p as *i64
+    var i = lo + 1
+    while i <= hi {
+        let key = arr[i]
+        var j = i - 1
+        while j >= lo {
+            let cur = arr[j]
+            if cur <= key {
+                break
+            }
+            arr[j + 1] = cur
+            j--
+        }
+        arr[j + 1] = key
+        i++
+    }
+    var k = 0
+    let a = ++k
+    let b = k++
+    let c = --k
+    let d = k--
+    if a != 1 or b != 1 or c != 1 or d != 1 or k != 0 {
+        return -1
+    }
+    return arr[0] + arr[1] + arr[2]
+}
+
+function int test_memcpy_nonvolatile_preservation(ptr dst, ptr src) {
+    var sum = 0
+    var i = 0
+    while i < 50 {
+        memcpy(dst, src, 32)
+        sum += mem.read(dst)
+        i++
+    }
+    return sum
+}
+
+function int main() {
+    // 1 & 2: view RCX preservation + pure cmp rhs
+    let raw = malloc(24)
+    let b = raw as Box
+    let b2 = mutate_view_rcx(b, 7)
+    if b2 != b or b.a != 10 or b.b != 27 or b.c != 35 {
+        free(raw)
+        return 1
+    }
+    if check_pure_cmp_lhs_preservation(b, 10, 20) != 0 {
+        free(raw)
+        return 2
+    }
+    if check_pure_cmp_lhs_preservation(b, 20, 20) != 1 {
+        free(raw)
+        return 3
+    }
+    free(raw)
+
+    // 3: stack struct reassignment
+    var t = make_triple(1, 2, 3)
+    t = bump_triple(t)
+    t = bump_triple(t)
+    if t.x != 3 or t.y != 6 or t.z != 9 {
+        return 4
+    }
+
+    // 4 & 8: leaf IndexExpr/mem_write RCX preservation + immutable ptr index write
+    let buf = malloc(32)
+    let p1 = leaf_write_index_return_rcx(buf, 2, 777)
+    if p1 != buf {
+        free(buf)
+        return 5
+    }
+    if leaf_read_index_return_rcx(buf, 2) != buf {
+        free(buf)
+        return 6
+    }
+    if leaf_mem_write_return_rcx(buf, 123) != buf or mem.read(buf) != 123 {
+        free(buf)
+        return 7
+    }
+
+    // 5: memcpy non-volatile preservation
+    let src = malloc(32)
+    mem.write(src, 10)
+    if test_memcpy_nonvolatile_preservation(buf, src) != 500 {
+        free(src)
+        free(buf)
+        return 8
+    }
+    free(src)
+
+    // 6: inc/dec sync in registerized loops
+    var arr = buf as *i64
+    arr[0] = 30
+    arr[1] = 10
+    arr[2] = 20
+    if test_inc_dec_sync(buf, 0, 2) != 60 or arr[0] != 10 or arr[1] != 20 or arr[2] != 30 {
+        free(buf)
+        return 9
+    }
+    free(buf)
+
+    // 7: while-loop var across mem.read8 calls
+    if test_while_call_loop_counter("axbxcx") != 5 {
+        return 10
+    }
+
+    return 0
+}

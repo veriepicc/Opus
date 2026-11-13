@@ -1,10 +1,10 @@
 import mem
 
-// A growable vector layered over the builtin array storage.
-// The vector owns its backing array when created via vec_new or vec_copy.
-// vec_from_array adopts the passed array pointer and will free it in vec_free.
-// Mutating operations return an updated Vec instead of writing through *Vec because
-// plain by-value updates are more reliable in the current host compiler/runtime.
+// Growable vector layered over the builtin array storage.
+// Builtin array layout:
+//   data - 16 => logical length
+//   data -  8 => capacity
+//   data      => contiguous 8-byte cells
 
 struct Vec {
     data: ptr,
@@ -24,13 +24,14 @@ function Vec vec_new(int capacity) {
     }
 
     let store = array_new(capacity)
-    let vec = Vec {
+    if store != 0 {
+        mem.write(store - 16, 0)
+    }
+    return Vec {
         data: store,
         size: 0,
         cap: capacity,
     }
-    vec_sync_len(vec)
-    return vec
 }
 
 function Vec vec_from_array(ptr data) {
@@ -38,11 +39,6 @@ function Vec vec_from_array(ptr data) {
         return vec_new(4)
     }
 
-    // Builtin array layout per the shipped docs:
-    //   data - 16 => logical length
-    //   data -  8 => capacity
-    //   data      => first 8-byte cell
-    // This wrapper is only valid for pointers returned by the builtin array layer.
     let used = array_len(data)
     var capacity = mem.read(data - 8)
     if capacity < used {
@@ -51,13 +47,12 @@ function Vec vec_from_array(ptr data) {
     if capacity < 4 {
         capacity = 4
     }
-    let vec = Vec {
+    mem.write(data - 16, used)
+    return Vec {
         data: data,
         size: used,
         cap: capacity,
     }
-    vec_sync_len(vec)
-    return vec
 }
 
 function Vec vec_from_array_copy(ptr data) {
@@ -67,8 +62,8 @@ function Vec vec_from_array_copy(ptr data) {
 
     let used = array_len(data)
     var out = vec_new(used)
-    if used > 0 {
-        mem_copy_cells(out.data, data, used)
+    if used > 0 && out.data != 0 {
+        mem.copy_cells(out.data, data, used)
         mem.write(out.data - 16, used)
         out.size = used
     }
@@ -92,26 +87,28 @@ function bool vec_is_empty(Vec vec) {
 }
 
 function i64 vec_get(Vec vec, int idx) {
-    let used = vec.size
-    if idx < 0 || idx >= used {
+    if idx < 0 || idx >= vec.size || vec.data == 0 {
         return 0
     }
-    return array_get(vec.data, idx)
+    let arr = vec.data as *i64
+    return arr[idx]
 }
 
 function i64 vec_first(Vec vec) {
-    if vec.size <= 0 {
+    if vec.size <= 0 || vec.data == 0 {
         return 0
     }
-    return array_get(vec.data, 0)
+    let arr = vec.data as *i64
+    return arr[0]
 }
 
 function i64 vec_last(Vec vec) {
     let used = vec.size
-    if used <= 0 {
+    if used <= 0 || vec.data == 0 {
         return 0
     }
-    return array_get(vec.data, used - 1)
+    let arr = vec.data as *i64
+    return arr[used - 1]
 }
 
 function i64 vec_peek_last(Vec vec) {
@@ -131,20 +128,22 @@ function Vec vec_reserve(Vec vec, int min_capacity) {
     var previous = 0
     while current < min_capacity {
         previous = current
-        current = current + current / 2
+        current = current + (current >> 1)
         if current <= previous {
             current = previous + 1
         }
     }
 
     let next_data = array_new(current)
+    if next_data == 0 {
+        return vec
+    }
     let used = vec.size
     let old_data = vec.data
     if old_data != 0 && used > 0 {
-        // Vec stores fixed 8-byte cells, so a bulk copy is safe here.
-        mem_copy_cells(next_data, old_data, used)
-        mem.write(next_data - 16, used)
+        mem.copy_cells(next_data, old_data, used)
     }
+    mem.write(next_data - 16, used)
 
     if old_data != 0 {
         array_free(old_data)
@@ -152,7 +151,6 @@ function Vec vec_reserve(Vec vec, int min_capacity) {
 
     vec.data = next_data
     vec.cap = current
-    vec_sync_len(vec)
     return vec
 }
 
@@ -160,25 +158,25 @@ function Vec vec_push(Vec vec, i64 item) {
     let used = vec.size
     if used >= vec.cap {
         vec = vec_reserve(vec, used + 1)
+        if vec.cap <= used {
+            return vec
+        }
     }
 
-    let data = vec.data
-    array_set(data, used, item)
+    var arr = vec.data as *i64
+    arr[used] = item
     vec.size = used + 1
-    vec_sync_len(vec)
+    mem.write(vec.data - 16, used + 1)
     return vec
 }
 
 function i64 vec_pop_value(Vec vec) {
     let used = vec.size
-    if used <= 0 {
+    if used <= 0 || vec.data == 0 {
         return 0
     }
-
-    let idx = used - 1
-    let data = vec.data
-    let item = array_get(data, idx)
-    return item
+    let arr = vec.data as *i64
+    return arr[used - 1]
 }
 
 function Vec vec_drop_last(Vec vec) {
@@ -196,13 +194,11 @@ function Vec vec_pop(Vec vec) {
 }
 
 function Vec vec_set(Vec vec, int idx, i64 item) {
-    let used = vec.size
-    if idx < 0 || idx >= used {
+    if idx < 0 || idx >= vec.size || vec.data == 0 {
         return vec
     }
-    let data = vec.data
-    array_set(data, idx, item)
-    vec_sync_len(vec)
+    var arr = vec.data as *i64
+    arr[idx] = item
     return vec
 }
 
@@ -214,8 +210,12 @@ function Vec vec_clear(Vec vec) {
 
 function i64 vec_index_of(Vec vec, i64 target) {
     let used = vec.size
+    if used <= 0 || vec.data == 0 {
+        return -1
+    }
+    let arr = vec.data as *i64
     for i in range(0, used) {
-        if array_get(vec.data, i) == target {
+        if arr[i] == target {
             return i
         }
     }
@@ -228,13 +228,16 @@ function bool vec_contains(Vec vec, i64 target) {
 
 function Vec vec_append(Vec vec, Vec other) {
     let other_used = other.size
-    if other_used <= 0 {
+    if other_used <= 0 || other.data == 0 {
         return vec
     }
 
     let used = vec.size
     vec = vec_reserve(vec, used + other_used)
-    mem_copy_cells(vec.data + used * 8, other.data, other_used)
+    if vec.cap < used + other_used {
+        return vec
+    }
+    mem.copy_cells(vec.data + used * 8, other.data, other_used)
     vec.size = used + other_used
     vec_sync_len(vec)
     return vec
@@ -242,16 +245,13 @@ function Vec vec_append(Vec vec, Vec other) {
 
 function Vec vec_remove_at(Vec vec, int idx) {
     let used = vec.size
-    if idx < 0 || idx >= used {
+    if idx < 0 || idx >= used || vec.data == 0 {
         return vec
     }
 
     let stop = used - 1
-    // Shift left one element at a time because this overlaps in-place and the
-    // current stdlib only exposes copy helpers that behave like memcpy, not memmove.
-    for i in range(idx, stop) {
-        let next_item = array_get(vec.data, i + 1)
-        array_set(vec.data, i, next_item)
+    if idx < stop {
+        mem.move_cells(vec.data + idx * 8, vec.data + (idx + 1) * 8, stop - idx)
     }
     vec.size = stop
     vec_sync_len(vec)
@@ -260,14 +260,14 @@ function Vec vec_remove_at(Vec vec, int idx) {
 
 function Vec vec_swap_remove(Vec vec, int idx) {
     let used = vec.size
-    if idx < 0 || idx >= used {
+    if idx < 0 || idx >= used || vec.data == 0 {
         return vec
     }
 
     let last_idx = used - 1
     if idx < last_idx {
-        let last_item = array_get(vec.data, last_idx)
-        array_set(vec.data, idx, last_item)
+        var arr = vec.data as *i64
+        arr[idx] = arr[last_idx]
     }
     vec.size = last_idx
     vec_sync_len(vec)
@@ -286,25 +286,27 @@ function Vec vec_shrink_to_fit(Vec vec) {
 
     let old_data = vec.data
     let next_data = array_new(target)
-    if old_data != 0 && used > 0 {
-        mem_copy_cells(next_data, old_data, used)
-        mem.write(next_data - 16, used)
+    if next_data == 0 {
+        return vec
     }
+    if old_data != 0 && used > 0 {
+        mem.copy_cells(next_data, old_data, used)
+    }
+    mem.write(next_data - 16, used)
     if old_data != 0 {
         array_free(old_data)
     }
 
     vec.data = next_data
     vec.cap = target
-    vec_sync_len(vec)
     return vec
 }
 
 function Vec vec_copy(Vec vec) {
     let used = vec.size
     var copy = vec_new(vec.cap)
-    if used > 0 {
-        mem_copy_cells(copy.data, vec.data, used)
+    if used > 0 && vec.data != 0 && copy.data != 0 {
+        mem.copy_cells(copy.data, vec.data, used)
         mem.write(copy.data - 16, used)
         copy.size = used
     }
@@ -314,8 +316,10 @@ function Vec vec_copy(Vec vec) {
 function ptr vec_to_array_copy(Vec vec) {
     let used = vec.size
     let out = array_new(used)
-    if used > 0 {
-        mem_copy_cells(out, vec.data, used)
+    if used > 0 && vec.data != 0 && out != 0 {
+        mem.copy_cells(out, vec.data, used)
+    }
+    if out != 0 {
         mem.write(out - 16, used)
     }
     return out
@@ -330,4 +334,3 @@ function Vec vec_free(Vec vec) {
     vec.cap = 0
     return vec
 }
-

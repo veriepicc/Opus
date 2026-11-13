@@ -1,20 +1,20 @@
 # SIMD Support
 
-Sable has AVX2 (256-bit) and AVX-512 (512-bit) SIMD intrinsics for high-performance numeric code.
+Sable automatically vectorizes `parallel for` loops into AVX2 / AVX-512 instructions across a persistent worker pool, and also exposes low-level AVX2 (256-bit) and AVX-512 (512-bit) intrinsics.
+
+For normal numeric array loops, prefer `parallel for` over manual intrinsics.
 
 ## Feature Detection
 
 ```c
-import simd
-
 function int main() {
-    if simd.has_avx2() {
+    if simd_has_avx2() != 0 {
         print("AVX2 available\n")
     }
-    if simd.has_avx512f() {
+    if simd_has_avx512f() != 0 {
         print("AVX-512 F available\n")
     }
-    if simd.has_avx512dq() {
+    if simd_has_avx512dq() != 0 {
         print("AVX-512 DQ (vpmadd52) available\n")
     }
     return 0
@@ -23,13 +23,13 @@ function int main() {
 
 ## Explicit SIMD Intrinsics
 
-The `simd` module provides raw intrinsics:
+The compiler exposes low-level SIMD builtins directly:
 
 | Intrinsic | Width | Operation |
 |-----------|-------|-----------|
-| `simd_i32x8_add` | 128-bit (4x i32) | packed add |
-| `simd_i32x8_sub` | 128-bit (4x i32) | packed subtract |
-| `simd_i32x8_mul` | 128-bit (4x i32) | packed multiply |
+| `simd_i32x8_add` | 256-bit (8x i32) | packed add |
+| `simd_i32x8_sub` | 256-bit (8x i32) | packed subtract |
+| `simd_i32x8_mul` | 256-bit (8x i32) | packed multiply |
 | `simd_i64x4_add` | 256-bit (4x i64) | packed add |
 | `simd_i64x4_sub` | 256-bit (4x i64) | packed subtract |
 | `simd_i32x16_add` | 512-bit (16x i32) | packed add |
@@ -40,21 +40,17 @@ The `simd` module provides raw intrinsics:
 | `simd_i64x8_mul_avx2` | 256-bit (4x i64) | vpmadd52 |
 | `simd_i64x4_add_avx512` | 512-bit (8x i64) | packed add |
 
-## Friendly Names
-
-The stdlib also provides friendly names:
+## Direct Builtin Calls
 
 ```c
-import simd
-
 function int main() {
     let dst = malloc(64)
     let a = malloc(64)
     let b = malloc(64)
 
-    longx4_add(dst, a, b)      // 256-bit (4x i64)
-    longx8_add(dst, a, b)      // 512-bit (8x i64)
-    intx16_add(dst, a, b)      // 512-bit (16x i32)
+    simd_i64x4_add(dst, a, b)
+    simd_i64x8_add(dst, a, b)
+    simd_i32x16_add(dst, a, b)
 
     free(dst)
     free(a)
@@ -66,10 +62,8 @@ function int main() {
 ## Auto-Selecting Variants
 
 ```c
-import simd
-
 function void i64x8_mul_auto(ptr dst, ptr a, ptr b) {
-    if simd.has_avx512dq() {
+    if simd_has_avx512dq() != 0 {
         simd_i64x8_mul_avx512(dst, a, b)
     } else {
         simd_i64x8_mul_avx2(dst, a, b)
@@ -82,14 +76,12 @@ function void i64x8_mul_auto(ptr dst, ptr a, ptr b) {
 For high-frequency trading, `vpmadd52` is the gold standard:
 
 ```c
-import simd
-
 function int main() {
     let dst = malloc(64)
     let a = malloc(64)
     let b = malloc(64)
 
-    if simd.has_avx512dq() {
+    if simd_has_avx512dq() != 0 {
         simd_i64x8_mul_avx512(dst, a, b)  // vpmadd52 on AVX-512
     } else {
         simd_i64x8_mul_avx2(dst, a, b)   // vpmadd52 on AVX2
@@ -110,7 +102,7 @@ function int main() {
 | AVX-512F | Skylake-X (2017) | 512-bit, better throughput |
 | AVX-512DQ | Cascade Lake (2019) | vpmadd52, HFT workloads |
 
-Check at runtime with `simd.has_avx2()`, `simd.has_avx512f()`, `simd.has_avx512dq()`.
+Check at runtime with `simd_has_avx2()`, `simd_has_avx512f()`, `simd_has_avx512dq()`.
 
 ## Compatibility
 

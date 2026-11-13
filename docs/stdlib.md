@@ -14,20 +14,24 @@ import fmt
 
 | Module | What it is for |
 |-------|-----------------|
-| `mem` | typed memory reads/writes and raw helpers |
-| `text` | string and text helpers |
-| `fmt` | formatting helpers |
+| `mem` | typed memory reads/writes, `mem.move`, `mem.move_cells`, `mem.make_zero` |
+| `ascii` | ASCII classification, case conversion, hex nibble/byte helpers |
+| `text` | O(N) string scanning, slicing, trimming, joining, repeating, padding |
+| `fmt` | single-pass formatting (`fmt_bool`, `fmt_int`, `fmt_pair`, `fmt_csv3`, `fmt_hex_byte`) |
 | `fs` | file read/write helpers |
-| `json` | JSON parsing and helpers |
-| `path` | path manipulation |
-| `process` | process helpers |
-| `rand` | RNG helpers |
-| `time` | timing helpers |
-| `vec` | growable vectors |
-| `algo` | algorithm helpers |
-| `ascii` | ASCII helpers |
-| `simd` | SIMD helpers |
-| `http` | current HTTP surface |
+| `json` | zero-copy `view`-backed JSON DOM parser, `json_stringify`, and fast lookups |
+| `http` | WinHTTP `http_fetch`, `http_get`, `http_ok`, and `http_parse_url` |
+| `path` | path joining, stem, extension, basename/dirname helpers |
+| `process` | process ID, handle, dynamic DLL loading, message box, exit |
+| `rand` | SplitMix64 + Xorshift64* PRNG (`rand_seed`, `rand_next`, `rand_range`) |
+| `time` | millisecond tick and sleep helpers |
+| `vec` | growable `int` vector (`vec_new`, `vec_push`, `vec_append`, `vec_remove_at`) |
+| `algo` | median-of-3 quicksort, binary search, reductions, array transforms |
+| `option` | `view`-backed optional wrappers (`OptI64`, `OptStr`, `OptPtr`) |
+| `result` | `view`-backed result/error wrappers (`ResI64`, `ResStr`, `ResPtr`) |
+| `owner` | manual ownership structs (`OwnedPtr`, `OwnedStr`, `OwnedBlock`) |
+| `cpp_vector` | `view`-backed interop helper for C++-style vector buffers |
+| `prelude` | convenience bundle importing core modules |
 
 ## `mem`
 
@@ -101,32 +105,57 @@ function int main() {
 
 ## `fs` and `json`
 
+`json` provides both quick single-field lookups (`json_get_int`, `json_get_bool`, `json_get_string`) and a full `view`-backed DOM (`json_parse`, `json_object_get`, `json_array_get`, `json_stringify`, `json_free`) with UTF-16 surrogate pair decoding.
+
 ```c
 import fs
 import json
 
 function int main() {
-    let path = "tests/tmp_doc_example.json"
+    let file_path = "tests/tmp_doc_example.json"
     let src = "{\"name\":\"sable\",\"fast\":true}"
-    if !fs_write_ok(path, src) {
+    if !fs_write_ok(file_path, src) {
         return 1
     }
 
-    let text = fs_read_text(path)
-    if text == 0 {
+    let content = fs_read_text(file_path)
+    if content == 0 {
         return 2
     }
-    if !json_get_bool(text, "fast", false) {
-        free(text)
+    if !json_get_bool(content, "fast", false) {
+        free(content)
         return 3
     }
 
-    free(text)
+    let doc = json_parse(content)
+    let out = json_stringify(doc)
+    json_free(doc)
+    free(out)
+    free(content)
+    return 0
+}
+```
+
+## `http`
+
+`http` wraps WinHTTP with typed function pointers and `view` overlays (`HttpUrl`, `HttpResponse`):
+
+```c
+import http
+
+function int main() {
+    let resp = http_fetch("http://127.0.0.1:8080/status")
+    if http_ok(resp) {
+        println(resp.body)
+    }
+    http_response_free(resp)
     return 0
 }
 ```
 
 ## `vec` and `algo`
+
+`algo` includes median-of-3 quicksort (`algo_sort_i64`), overflow-safe binary search (`algo_binary_search_i64`), and reductions over `vec_data(items)`.
 
 ```c
 import vec
@@ -134,11 +163,12 @@ import algo
 
 function int main() {
     var items = vec_new(4)
+    items = vec_push(items, 13)
     items = vec_push(items, 7)
     items = vec_push(items, 11)
-    items = vec_push(items, 13)
 
-    if !algo_contains_i64(items.data, items.size, 11) {
+    algo_sort_i64(vec_data(items), vec_len(items))
+    if algo_binary_search_i64(vec_data(items), vec_len(items), 11) < 0 {
         vec_free(items)
         return 1
     }
@@ -147,6 +177,10 @@ function int main() {
     return 0
 }
 ```
+
+## `option`, `result`, and `owner`
+
+`option` and `result` provide `view`-backed nullable-safe wrappers (`opt_i64_some`, `opt_i64_unwrap_or`, `res_i64_ok`, `res_i64_err`), and `owner` provides explicit manual ownership structs (`OwnedPtr`, `OwnedStr`, `OwnedBlock`).
 
 ## `time` and `rand`
 
@@ -172,6 +206,6 @@ function int main() {
 
 ## Notes
 
-- The standard library examples in the docs are aligned with the current parser and tests.
-- `test_stdlib_expanded.sb` is a good reality check for what is currently expected to work together.
-- For raw builtins vs module helpers, the docs prefer the module surface whenever both exist.
+- Functions returning heap strings (`text_*`, `fmt_*`, `path_*`, `fs_read_text`, `json_string`, `json_stringify`, `http_get`) transfer ownership to the caller; call `free(...)` when done.
+- `test_stdlib_regression.sb` and `test_stdlib_expanded.sb` exercise the standard library surface across modules.
+- For raw builtins vs module helpers, prefer the module surface whenever both exist.

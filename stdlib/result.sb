@@ -1,37 +1,49 @@
-// Result wrappers with a small error record.
-// These are intentionally specialized instead of generic.
+// Result wrappers with a small error record backed by zero-copy views.
 
-struct ResI64 {
-    ok: i64,
-    item: i64,
-    error_code: i64,
-    error: str,
+enum ResOffset {
+    Ok = 0,
+    Item = 8,
+    ErrorCode = 16,
+    Error = 24,
 }
 
-struct ResPtr {
-    ok: i64,
-    item: ptr,
-    error_code: i64,
-    error: str,
+enum ResVoidOffset {
+    Ok = 0,
+    ErrorCode = 8,
+    Error = 16,
 }
 
-struct ResStr {
-    ok: i64,
-    item: str,
-    error_code: i64,
-    error: str,
+view ResI64 {
+    ok: i64 @ ResOffset.Ok
+    item: i64 @ ResOffset.Item
+    error_code: i64 @ ResOffset.ErrorCode
+    error: str @ ResOffset.Error
 }
 
-struct ResVoid {
-    ok: i64,
-    error_code: i64,
-    error: str,
+view ResPtr {
+    ok: i64 @ ResOffset.Ok
+    item: ptr @ ResOffset.Item
+    error_code: i64 @ ResOffset.ErrorCode
+    error: str @ ResOffset.Error
+}
+
+view ResStr {
+    ok: i64 @ ResOffset.Ok
+    item: str @ ResOffset.Item
+    error_code: i64 @ ResOffset.ErrorCode
+    error: str @ ResOffset.Error
+}
+
+view ResVoid {
+    ok: i64 @ ResVoidOffset.Ok
+    error_code: i64 @ ResVoidOffset.ErrorCode
+    error: str @ ResVoidOffset.Error
 }
 
 function ResI64 res_i64_ok(i64 item) {
-    var result: ResI64 = malloc(32)
+    let result = malloc(32) as ResI64
     if result == 0 {
-        return 0
+        return 0 as ResI64
     }
     result.ok = 1
     result.item = item
@@ -41,9 +53,9 @@ function ResI64 res_i64_ok(i64 item) {
 }
 
 function ResI64 res_i64_err(i64 code, str message) {
-    var result: ResI64 = malloc(32)
+    let result = malloc(32) as ResI64
     if result == 0 {
-        return 0
+        return 0 as ResI64
     }
     result.ok = 0
     result.item = 0
@@ -53,32 +65,44 @@ function ResI64 res_i64_err(i64 code, str message) {
 }
 
 function bool res_i64_is_ok(ResI64 result) {
+    if result == 0 {
+        return false
+    }
     return result.ok != 0
 }
 
 function bool res_i64_is_err(ResI64 result) {
+    if result == 0 {
+        return true
+    }
     return result.ok == 0
 }
 
 function i64 res_i64_unwrap(ResI64 result) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return 0
 }
 
 function i64 res_i64_unwrap_or(ResI64 result, i64 fallback) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return fallback
 }
 
 function i64 res_i64_error_code(ResI64 result) {
+    if result == 0 {
+        return 0
+    }
     return result.error_code
 }
 
 function str res_i64_error(ResI64 result) {
+    if result == 0 {
+        return ""
+    }
     return result.error
 }
 
@@ -89,9 +113,9 @@ function void res_i64_free(ResI64 result) {
 }
 
 function ResPtr res_ptr_ok(ptr item_ptr) {
-    var result: ResPtr = malloc(32)
+    let result = malloc(32) as ResPtr
     if result == 0 {
-        return 0
+        return 0 as ResPtr
     }
     result.ok = 1
     result.item = item_ptr
@@ -101,9 +125,9 @@ function ResPtr res_ptr_ok(ptr item_ptr) {
 }
 
 function ResPtr res_ptr_err(i64 code, str message) {
-    var result: ResPtr = malloc(32)
+    let result = malloc(32) as ResPtr
     if result == 0 {
-        return 0
+        return 0 as ResPtr
     }
     result.ok = 0
     result.item = 0
@@ -113,28 +137,44 @@ function ResPtr res_ptr_err(i64 code, str message) {
 }
 
 function bool res_ptr_is_ok(ResPtr result) {
+    if result == 0 {
+        return false
+    }
     return result.ok != 0
 }
 
+function bool res_ptr_is_err(ResPtr result) {
+    if result == 0 {
+        return true
+    }
+    return result.ok == 0
+}
+
 function ptr res_ptr_unwrap(ResPtr result) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return 0
 }
 
 function ptr res_ptr_unwrap_or(ResPtr result, ptr fallback) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return fallback
 }
 
 function i64 res_ptr_error_code(ResPtr result) {
+    if result == 0 {
+        return 0
+    }
     return result.error_code
 }
 
 function str res_ptr_error(ResPtr result) {
+    if result == 0 {
+        return ""
+    }
     return result.error
 }
 
@@ -145,9 +185,9 @@ function void res_ptr_free(ResPtr result) {
 }
 
 function ResStr res_str_ok(str text_value) {
-    var result: ResStr = malloc(32)
+    let result = malloc(32) as ResStr
     if result == 0 {
-        return 0
+        return 0 as ResStr
     }
     result.ok = 1
     result.item = text_value
@@ -157,9 +197,9 @@ function ResStr res_str_ok(str text_value) {
 }
 
 function ResStr res_str_err(i64 code, str message) {
-    var result: ResStr = malloc(32)
+    let result = malloc(32) as ResStr
     if result == 0 {
-        return 0
+        return 0 as ResStr
     }
     result.ok = 0
     result.item = ""
@@ -169,28 +209,44 @@ function ResStr res_str_err(i64 code, str message) {
 }
 
 function bool res_str_is_ok(ResStr result) {
+    if result == 0 {
+        return false
+    }
     return result.ok != 0
 }
 
+function bool res_str_is_err(ResStr result) {
+    if result == 0 {
+        return true
+    }
+    return result.ok == 0
+}
+
 function str res_str_unwrap(ResStr result) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return ""
 }
 
 function str res_str_unwrap_or(ResStr result, str fallback) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return fallback
 }
 
 function i64 res_str_error_code(ResStr result) {
+    if result == 0 {
+        return 0
+    }
     return result.error_code
 }
 
 function str res_str_error(ResStr result) {
+    if result == 0 {
+        return ""
+    }
     return result.error
 }
 
@@ -201,9 +257,9 @@ function void res_str_free(ResStr result) {
 }
 
 function ResVoid res_void_ok() {
-    var result: ResVoid = malloc(24)
+    let result = malloc(24) as ResVoid
     if result == 0 {
-        return 0
+        return 0 as ResVoid
     }
     result.ok = 1
     result.error_code = 0
@@ -212,9 +268,9 @@ function ResVoid res_void_ok() {
 }
 
 function ResVoid res_void_err(i64 code, str message) {
-    var result: ResVoid = malloc(24)
+    let result = malloc(24) as ResVoid
     if result == 0 {
-        return 0
+        return 0 as ResVoid
     }
     result.ok = 0
     result.error_code = code
@@ -223,18 +279,30 @@ function ResVoid res_void_err(i64 code, str message) {
 }
 
 function bool res_void_is_ok(ResVoid result) {
+    if result == 0 {
+        return false
+    }
     return result.ok != 0
 }
 
 function bool res_void_is_err(ResVoid result) {
+    if result == 0 {
+        return true
+    }
     return result.ok == 0
 }
 
 function i64 res_void_error_code(ResVoid result) {
+    if result == 0 {
+        return 0
+    }
     return result.error_code
 }
 
 function str res_void_error(ResVoid result) {
+    if result == 0 {
+        return ""
+    }
     return result.error
 }
 

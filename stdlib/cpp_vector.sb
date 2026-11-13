@@ -7,34 +7,36 @@ using CppVectorPushBackI64Fn = fn(ptr, i64) -> void
 
 // MSVC std::vector-style layout view for 8-byte cells:
 // [first ptr][last ptr][end ptr]
-// This is useful for host interop when C++ exposes a vector object or bridge API.
 
-struct CppVector {
-    first: ptr,
-    last: ptr,
-    finish: ptr,
+enum CppVectorOffset {
+    First = 0,
+    Last = 8,
+    Finish = 16,
+}
+
+view CppVector {
+    first: ptr @ CppVectorOffset.First
+    last: ptr @ CppVectorOffset.Last
+    finish: ptr @ CppVectorOffset.Finish
 }
 
 function CppVector cpp_vector_from_range(ptr first, ptr last, ptr finish) {
-    var view: CppVector = malloc(24)
-    if view == 0 {
-        return 0
+    let view_obj = malloc(24) as CppVector
+    if view_obj == 0 {
+        return 0 as CppVector
     }
-    view.first = first
-    view.last = last
-    view.finish = finish
-    return view
+    view_obj.first = first
+    view_obj.last = last
+    view_obj.finish = finish
+    return view_obj
 }
 
 function CppVector cpp_vector_read(ptr object_addr) {
-    var view: CppVector = malloc(24)
-    if view == 0 {
-        return 0
+    if object_addr == 0 {
+        return cpp_vector_from_range(0, 0, 0)
     }
-    view.first = mem.read(object_addr)
-    view.last = mem.read(object_addr + 8)
-    view.finish = mem.read(object_addr + 16)
-    return view
+    let raw = object_addr as CppVector
+    return cpp_vector_from_range(raw.first, raw.last, raw.finish)
 }
 
 function CppVector cpp_vector_from_array(ptr data) {
@@ -42,8 +44,6 @@ function CppVector cpp_vector_from_array(ptr data) {
         return cpp_vector_from_range(0, 0, 0)
     }
 
-    // This mirrors the builtin array header described in the docs:
-    // length at data - 16, capacity at data - 8, cells at data.
     let used = array_len(data)
     var capacity = mem.read(data - 8)
     if capacity < used {
@@ -54,75 +54,83 @@ function CppVector cpp_vector_from_array(ptr data) {
     return cpp_vector_from_range(data, last, finish)
 }
 
-function ptr cpp_vector_data(CppVector view) {
-    return view.first
+function ptr cpp_vector_data(CppVector view_obj) {
+    if view_obj == 0 {
+        return 0
+    }
+    return view_obj.first
 }
 
-function int cpp_vector_size(CppVector view) {
-    let first = view.first
-    let last = view.last
+function int cpp_vector_size(CppVector view_obj) {
+    if view_obj == 0 {
+        return 0
+    }
+    let first = view_obj.first
+    let last = view_obj.last
     if first == 0 || last < first {
         return 0
     }
     return (last - first) / 8
 }
 
-function int cpp_vector_capacity(CppVector view) {
-    let first = view.first
-    let finish = view.finish
+function int cpp_vector_capacity(CppVector view_obj) {
+    if view_obj == 0 {
+        return 0
+    }
+    let first = view_obj.first
+    let finish = view_obj.finish
     if first == 0 || finish < first {
         return 0
     }
     return (finish - first) / 8
 }
 
-function bool cpp_vector_is_empty(CppVector view) {
-    return cpp_vector_size(view) == 0
+function bool cpp_vector_is_empty(CppVector view_obj) {
+    return cpp_vector_size(view_obj) == 0
 }
 
-function i64 cpp_vector_at_i64(CppVector view, int idx) {
-    let count = cpp_vector_size(view)
+function i64 cpp_vector_at_i64(CppVector view_obj, int idx) {
+    let count = cpp_vector_size(view_obj)
     if idx < 0 || idx >= count {
         return 0
     }
-
-    let addr = view.first + idx * 8
-    return mem.read(addr)
+    let arr = view_obj.first as *i64
+    return arr[idx]
 }
 
-function i64 cpp_vector_front_i64(CppVector view) {
-    return cpp_vector_at_i64(view, 0)
+function i64 cpp_vector_front_i64(CppVector view_obj) {
+    return cpp_vector_at_i64(view_obj, 0)
 }
 
-function i64 cpp_vector_back_i64(CppVector view) {
-    let count = cpp_vector_size(view)
+function i64 cpp_vector_back_i64(CppVector view_obj) {
+    let count = cpp_vector_size(view_obj)
     if count <= 0 {
         return 0
     }
-    return cpp_vector_at_i64(view, count - 1)
+    return cpp_vector_at_i64(view_obj, count - 1)
 }
 
-function Vec cpp_vector_copy_view_i64(CppVector view) {
-    let count = cpp_vector_size(view)
+function Vec cpp_vector_copy_view_i64(CppVector view_obj) {
+    let count = cpp_vector_size(view_obj)
     var out = vec_new(count)
-    if count > 0 && view.first != 0 {
-        mem_copy_cells(vec_data(out), view.first, count)
+    if count > 0 && view_obj.first != 0 && out.data != 0 {
+        mem.copy_cells(out.data, view_obj.first, count)
         out.size = count
-        mem.write(vec_data(out) - 16, count)
+        mem.write(out.data - 16, count)
     }
     return out
 }
 
 function Vec cpp_vector_copy_i64(ptr object_addr) {
-    let view = cpp_vector_read(object_addr)
-    let out = cpp_vector_copy_view_i64(view)
-    cpp_vector_free(view)
+    let view_obj = cpp_vector_read(object_addr)
+    let out = cpp_vector_copy_view_i64(view_obj)
+    cpp_vector_free(view_obj)
     return out
 }
 
-function void cpp_vector_free(CppVector view) {
-    if view != 0 {
-        free(view)
+function void cpp_vector_free(CppVector view_obj) {
+    if view_obj != 0 {
+        free(view_obj)
     }
 }
 
@@ -140,4 +148,3 @@ function void cpp_vector_call_push_back_i64(ptr method_addr, ptr this_vec, i64 i
     let method = method_addr as CppVectorPushBackI64Fn
     method(this_vec, item)
 }
-

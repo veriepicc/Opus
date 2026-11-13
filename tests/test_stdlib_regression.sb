@@ -1,0 +1,239 @@
+import mem
+import ascii
+import text
+import fmt
+import path
+import fs
+import vec
+import algo
+import rand
+import option
+import result
+import cpp_vector
+import json
+import http
+
+function int test_mem() {
+    let b = mem.make_zero(64)
+    if b == 0 { return 1 }
+    var i = 0
+    while i < 16 {
+        mem.write8(b + i, 65 + i)
+        i++
+    }
+    mem.move(b + 4, b, 16)
+    if mem.read8(b + 4) != 65 or mem.read8(b + 19) != 80 {
+        free(b)
+        return 2
+    }
+    mem.move(b + 2, b + 4, 16)
+    if mem.read8(b + 2) != 65 or mem.read8(b + 17) != 80 {
+        free(b)
+        return 3
+    }
+    mem.textz(b, "hello")
+    if mem.compare(b, "hello" as ptr, 6) != 0 {
+        free(b)
+        return 4
+    }
+    free(b)
+    return 0
+}
+
+function int test_text_fmt_path() {
+    let big = text_repeat("abcd", 2500)
+    if text_len(big) != 10000 { free(big); return 10 }
+    if !text_starts_with(big, "abcdabcd") { free(big); return 11 }
+    if !text_ends_with(big, "abcdabcd") { free(big); return 12 }
+    if text_find(big, "cdab") != 2 { free(big); return 13 }
+    if text_count_char(big, 97) != 2500 { free(big); return 14 }
+    if text_rfind_char(big, 100) != 9999 { free(big); return 15 }
+    free(big)
+
+    let tr = text_trim(" \t\r\n sable \n ")
+    if !text_eq(tr, "sable") { free(tr); return 16 }
+    free(tr)
+
+    let j4 = text_join4("a", "-", "b", "!")
+    if !text_eq(j4, "a-b!") { free(j4); return 17 }
+    free(j4)
+
+    let pl = text_pad_left("7", 4, "0")
+    if !text_eq(pl, "0007") { free(pl); return 18 }
+    free(pl)
+
+    let pr = text_pad_right("7", 4, ".")
+    if !text_eq(pr, "7...") { free(pr); return 19 }
+    free(pr)
+
+    let csv = fmt_csv3("x", "y", "z")
+    if !text_eq(csv, "x,y,z") { free(csv); return 20 }
+    free(csv)
+
+    let hb = fmt_hex_byte(0x5E)
+    if !text_eq(hb, "0x5E") { free(hb); return 21 }
+    free(hb)
+
+    let pj = path_join2("a\\b", "c.sb")
+    if !text_eq(pj, "a\\b/c.sb") { free(pj); return 22 }
+    free(pj)
+
+    let px = path_ext("dir.v1/noext")
+    if !text_eq(px, "") { free(px); return 23 }
+    free(px)
+
+    let ps = path_stem("dir.v1/file.tar.gz")
+    if !text_eq(ps, "file.tar") { free(ps); return 24 }
+    free(ps)
+    return 0
+}
+
+function int test_vec_algo_rand() {
+    var v = vec_new(4)
+    rand_seed(42)
+    var expected_sum = 0
+    for i in range(0, 5000) {
+        let r = rand_range(-100000, 100000)
+        v = vec_push(v, r)
+        expected_sum += r
+    }
+    if vec_len(v) != 5000 { vec_free(v); return 30 }
+    if array_len(vec_data(v)) != 5000 { vec_free(v); return 31 }
+
+    algo_sort_i64(vec_data(v), vec_len(v))
+    if algo_sum_i64(vec_data(v), vec_len(v)) != expected_sum { vec_free(v); return 32 }
+
+    let arr = vec_data(v) as *i64
+    var prev = arr[0]
+    for i in range(1, 5000) {
+        if arr[i] < prev { vec_free(v); return 33 }
+        prev = arr[i]
+    }
+
+    let mid_val = arr[2500]
+    let found = algo_binary_search_i64(vec_data(v), vec_len(v), mid_val)
+    if found < 0 or arr[found] != mid_val { vec_free(v); return 34 }
+
+    algo_reverse_i64(vec_data(v), vec_len(v))
+    if arr[0] < arr[4999] { vec_free(v); return 35 }
+    algo_sort_i64(vec_data(v), vec_len(v))
+    if arr[0] > arr[4999] { vec_free(v); return 36 }
+
+    var other = vec_new(4)
+    other = vec_push(other, 1)
+    other = vec_push(other, 2)
+    other = vec_push(other, 3)
+    var base = vec_new(4)
+    base = vec_push(base, 7)
+    base = vec_push(base, 9)
+    base = vec_push(base, 11)
+    base = vec_append(base, other)
+    if vec_len(base) != 6 or vec_get(base, 5) != 3 {
+        vec_free(base); vec_free(other); vec_free(v); return 37
+    }
+    base = vec_set(base, 1, 25)
+    if vec_get(base, 1) != 25 {
+        vec_free(base); vec_free(other); vec_free(v); return 38
+    }
+    base = vec_remove_at(base, 0)
+    if vec_len(base) != 5 or vec_first(base) != 25 {
+        vec_free(base); vec_free(other); vec_free(v); return 39
+    }
+    base = vec_free(base)
+    other = vec_free(other)
+    v = vec_free(v)
+    return 0
+}
+
+function int test_opt_res_cpp() {
+    if opt_i64_is_some(0 as OptI64) { return 40 }
+    if !opt_i64_is_none(0 as OptI64) { return 41 }
+    if opt_i64_unwrap_or(0 as OptI64, 99) != 99 { return 42 }
+
+    let o = opt_str_some("ok")
+    if !opt_str_is_some(o) or !text_eq(opt_str_unwrap(o), "ok") { opt_str_free(o); return 43 }
+    opt_str_free(o)
+
+    if res_i64_is_ok(0 as ResI64) { return 44 }
+    let r = res_i64_err(7, "bad")
+    if !res_i64_is_err(r) or res_i64_error_code(r) != 7 { res_i64_free(r); return 45 }
+    res_i64_free(r)
+
+    let cells = array_new(3)
+    array_set(cells, 0, 11)
+    array_set(cells, 1, 22)
+    array_set(cells, 2, 33)
+    let cv = cpp_vector_from_array(cells)
+    if cpp_vector_size(cv) != 3 or cpp_vector_back_i64(cv) != 33 {
+        cpp_vector_free(cv); array_free(cells); return 46
+    }
+    var copied = cpp_vector_copy_view_i64(cv)
+    if vec_len(copied) != 3 or vec_get(copied, 1) != 22 {
+        vec_free(copied); cpp_vector_free(cv); array_free(cells); return 47
+    }
+    vec_free(copied)
+    cpp_vector_free(cv)
+    array_free(cells)
+    return 0
+}
+
+function int test_json_http() {
+    let tricky = "{\"msg\":\"\\\"count\\\":999\",\"count\":42,\"esc\":\"\\u0042\",\"sur\":\"\\uD83D\\uDE00\",\"nums\":[10,-20,30],\"flag\":false}"
+    if json_get_int(tricky, "count", -1) != 42 { return 50 }
+    if json_get_bool(tricky, "flag", true) { return 51 }
+
+    let root = json_parse(tricky)
+    if root == 0 { return 52 }
+    let esc = json_string(json_object_get(root, "esc"))
+    if !text_eq(esc, "B") { free(esc); json_free(root); return 53 }
+    free(esc)
+
+    let sur = json_string(json_object_get(root, "sur"))
+    let sp = sur as ptr
+    if string_length(sur) != 4 or mem.read8(sp) != 0xF0 or mem.read8(sp + 1) != 0x9F or mem.read8(sp + 2) != 0x98 or mem.read8(sp + 3) != 0x80 {
+        free(sur); json_free(root); return 54
+    }
+    free(sur)
+
+    let s1 = json_stringify(root)
+    let root2 = json_parse(s1)
+    if root2 == 0 { free(s1); json_free(root); return 55 }
+    let s2 = json_stringify(root2)
+    if !text_eq(s1, s2) { free(s1); free(s2); json_free(root); json_free(root2); return 56 }
+    free(s1); free(s2); json_free(root); json_free(root2)
+
+    let file_src = fs_read_text("tests/test_json_file_input.json")
+    if file_src == 0 { return 57 }
+    let file_dom = json_parse(file_src)
+    if file_dom == 0 { free(file_src); return 58 }
+    let fid = json_string(json_object_get(file_dom, "_id"))
+    if !text_eq(fid, "69cff3e530c00f17bab6c9c0") {
+        free(fid); json_free(file_dom); free(file_src); return 59
+    }
+    free(fid); json_free(file_dom); free(file_src)
+
+    let u = http_parse_url("http://localhost:8080/api/v1?x=1")
+    if u == 0 { return 60 }
+    if u.secure != 0 or u.port != 8080 or !text_eq(u.host, "localhost") or !text_eq(u.path, "/api/v1?x=1") {
+        http_url_free(u); return 61
+    }
+    http_url_free(u)
+
+    let bad = http_parse_url("http://bad:99999/test")
+    if bad != 0 { http_url_free(bad); return 62 }
+    return 0
+}
+
+function int main() {
+    let r1 = test_mem()
+    if r1 != 0 { return r1 }
+    let r2 = test_text_fmt_path()
+    if r2 != 0 { return r2 }
+    let r3 = test_vec_algo_rand()
+    if r3 != 0 { return r3 }
+    let r4 = test_opt_res_cpp()
+    if r4 != 0 { return r4 }
+    let r5 = test_json_http()
+    if r5 != 0 { return r5 }
+    return 0
+}

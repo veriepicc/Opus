@@ -102,6 +102,7 @@ struct Symbol {
 struct Scope {
     std::unordered_map<std::string, Symbol> symbols;
     std::unordered_map<std::string, std::vector<const ast::Expr*>> inline_bindings;
+    std::vector<const ast::Stmt*> defers;
     Scope* parent = nullptr;
     std::int32_t next_offset = -8;  // Start at RBP-8
 
@@ -989,6 +990,9 @@ private:
     // auto-parallelization flag
     bool auto_parallel_ = false;
     int while_loop_depth_ = 0;
+    Scope* function_root_scope_ = nullptr;
+    std::vector<Scope*> loop_defer_roots_;
+    std::size_t in_defer_depth_ = 0;
 
     // type-context stack for binary ops. lhs type drives signed/unsigned/float dispatch.
     std::vector<Type> binary_op_type_stack_;
@@ -2532,7 +2536,10 @@ private:
                 if (!std::filesystem::exists(candidate)) {
                     continue;
                 }
-                if (std::find(matches.begin(), matches.end(), candidate) == matches.end()) {
+                if (std::find_if(matches.begin(), matches.end(), [&](const auto& existing) {
+                        std::error_code eq_ec;
+                        return existing == candidate || std::filesystem::equivalent(existing, candidate, eq_ec);
+                    }) == matches.end()) {
                     matches.push_back(std::move(candidate));
                 }
                 break;
@@ -2815,7 +2822,7 @@ private:
                 }
             }
 
-            Parser parser(std::move(tokens), SyntaxMode::CStyle);
+            Parser parser(std::move(tokens));
             auto mod_result = parser.parse_module(canonical);
             if (!mod_result) {
                 abandon_import();
@@ -2957,7 +2964,7 @@ private:
                 }
             }
 
-            Parser parser(std::move(tokens), SyntaxMode::CStyle);
+            Parser parser(std::move(tokens));
             auto mod_result = parser.parse_module(canonical);
             if (!mod_result) {
                 abandon_import();
@@ -3790,17 +3797,12 @@ private:
             [&](const ast::IndexExpr& e) { return expr_contains_call(*e.base) || expr_contains_call(*e.index); },
             [&](const ast::FieldExpr& e) { return expr_contains_call(*e.base); },
             [&](const ast::CastExpr& e) { return expr_contains_call(*e.expr); },
-            [&](const ast::ArrayExpr& e) {
-                for (const auto& elem : e.elements) {
-                    if (expr_contains_call(*elem)) return true;
-                }
-                return false;
+            [&](const ast::FStringExpr&) { return true; },
+            [&](const ast::ArrayExpr&) {
+                return true;
             },
-            [&](const ast::StructExpr& e) {
-                for (const auto& [_, value] : e.fields) {
-                    if (expr_contains_call(*value)) return true;
-                }
-                return false;
+            [&](const ast::StructExpr&) {
+                return true;
             },
             [&](const ast::CallExpr&) { return true; },
             [&](const auto&) { return true; },
@@ -3810,7 +3812,14 @@ private:
     [[nodiscard]] static bool stmt_contains_call(const ast::Stmt& stmt) {
         return std::visit(overloaded{
             [&](const ast::LetStmt& s) {
-                return s.init && expr_contains_call(*s.init);
+                if (!s.init) return false;
+                if (s.init->is<ast::StructExpr>()) {
+                    for (const auto& [_, value] : s.init->as<ast::StructExpr>().fields) {
+                        if (expr_contains_call(*value)) return true;
+                    }
+                    return false;
+                }
+                return expr_contains_call(*s.init);
             },
             [&](const ast::ExprStmt& s) {
                 return expr_contains_call(*s.expr);
@@ -3897,6 +3906,9 @@ private:
                 }
                 return false;
             },
+            [&](const ast::DeferStmt& s) {
+                return s.stmt && stmt_contains_call(*s.stmt);
+            },
             [&](const ast::ParallelForStmt& s) {
                 if (expr_contains_call(*s.start) || expr_contains_call(*s.end)) {
                     return true;
@@ -3927,17 +3939,12 @@ private:
             },
             [&](const ast::FieldExpr& e) { return expr_contains_non_inlined_call(*e.base); },
             [&](const ast::CastExpr& e) { return expr_contains_non_inlined_call(*e.expr); },
-            [&](const ast::ArrayExpr& e) {
-                for (const auto& elem : e.elements) {
-                    if (expr_contains_non_inlined_call(*elem)) return true;
-                }
-                return false;
+            [&](const ast::FStringExpr&) { return true; },
+            [&](const ast::ArrayExpr&) {
+                return true;
             },
-            [&](const ast::StructExpr& e) {
-                for (const auto& [_, value] : e.fields) {
-                    if (expr_contains_non_inlined_call(*value)) return true;
-                }
-                return false;
+            [&](const ast::StructExpr&) {
+                return true;
             },
             [&](const ast::CallExpr& e) {
                 if (!is_inline_safe_direct_call_expr(expr)) {
@@ -3955,7 +3962,14 @@ private:
     [[nodiscard]] bool stmt_contains_non_inlined_call(const ast::Stmt& stmt) const {
         return std::visit(overloaded{
             [&](const ast::LetStmt& s) {
-                return s.init && expr_contains_non_inlined_call(*s.init);
+                if (!s.init) return false;
+                if (s.init->is<ast::StructExpr>()) {
+                    for (const auto& [_, value] : s.init->as<ast::StructExpr>().fields) {
+                        if (expr_contains_non_inlined_call(*value)) return true;
+                    }
+                    return false;
+                }
+                return expr_contains_non_inlined_call(*s.init);
             },
             [&](const ast::ExprStmt& s) {
                 return expr_contains_non_inlined_call(*s.expr);
@@ -4016,6 +4030,9 @@ private:
                     if (stmt_contains_non_inlined_call(*inner)) return true;
                 }
                 return false;
+            },
+            [&](const ast::DeferStmt& s) {
+                return s.stmt && stmt_contains_non_inlined_call(*s.stmt);
             },
             [&](const ast::ParallelForStmt& s) {
                 if (expr_contains_non_inlined_call(*s.start) || expr_contains_non_inlined_call(*s.end)) {
@@ -4162,9 +4179,8 @@ private:
             used_regs.insert(x64::ARG_REGS[i]);
         }
 
-        constexpr std::array<x64::Reg, 6> local_candidates = {
+        constexpr std::array<x64::Reg, 5> local_candidates = {
             x64::Reg::R10,
-            x64::Reg::R11,
             x64::Reg::R9,
             x64::Reg::R8,
             x64::Reg::RDX,
@@ -4273,6 +4289,11 @@ private:
                 [&](const ast::CastExpr& e) {
                     scan_expr(*e.expr, weight);
                 },
+                [&](const ast::FStringExpr& e) {
+                    for (const auto& part : e.parts) {
+                        if (part.is_expr && part.expr) scan_expr(*part.expr, weight);
+                    }
+                },
                 [&](const ast::ArrayExpr& e) {
                     for (const auto& elem : e.elements) {
                         scan_expr(*elem, weight);
@@ -4359,6 +4380,9 @@ private:
                         scan_stmt(*inner, weight);
                     }
                 },
+                [&](const ast::DeferStmt& s) {
+                    if (s.stmt) scan_stmt(*s.stmt, weight);
+                },
                 [&](const auto&) {},
             }, stmt.kind);
         };
@@ -4422,6 +4446,7 @@ private:
             },
             [&](const ast::FieldExpr& e) { return expr_has_only_local_side_effects(*e.base, locals); },
             [&](const ast::CastExpr& e) { return expr_has_only_local_side_effects(*e.expr, locals); },
+            [&](const ast::FStringExpr&) { return false; },
             [&](const ast::ArrayExpr& e) {
                 for (const auto& elem : e.elements) {
                     if (!expr_has_only_local_side_effects(*elem, locals)) return false;
@@ -4532,6 +4557,7 @@ private:
             },
             [&](const ast::FieldExpr& e) { return expr_is_single_use_inline_safe(*e.base); },
             [&](const ast::CastExpr& e) { return expr_is_single_use_inline_safe(*e.expr); },
+            [&](const ast::FStringExpr&) { return false; },
             [&](const ast::ArrayExpr& e) {
                 for (const auto& elem : e.elements) {
                     if (!expr_is_single_use_inline_safe(*elem)) return false;
@@ -4606,7 +4632,11 @@ private:
         bool use_saved_local_plan = !use_leaf_plan && try_make_function_saved_local_plan(fn, saved_local_plan);
 
         std::size_t scope_mark = scopes_.size();
+        Scope* prev_fn_root = function_root_scope_;
+        auto prev_loop_defer_roots = std::move(loop_defer_roots_);
+        loop_defer_roots_.clear();
         push_scope();
+        function_root_scope_ = current_scope_;
 
         register_bindings_.clear();
         pending_named_register_bindings_.clear();
@@ -4735,12 +4765,25 @@ private:
                 bound_stack_elision_names_.pop_back();
             }
             pop_scope();
+            function_root_scope_ = prev_fn_root;
+            loop_defer_roots_ = std::move(prev_loop_defer_roots);
             return false;
+        }
+
+        if (!suite_guarantees_return(body)) {
+            if (!emit_defers_for_scope(current_scope_)) {
+                pop_scope();
+                function_root_scope_ = prev_fn_root;
+                loop_defer_roots_ = std::move(prev_loop_defer_roots);
+                return false;
+            }
         }
 
         if (!patch_scope_frame(frame_patch, scope_mark, current_function_saved_regs_.size())) {
             has_current_function_return_type_ = false;
             pop_scope();
+            function_root_scope_ = prev_fn_root;
+            loop_defer_roots_ = std::move(prev_loop_defer_roots);
             current_function_saved_regs_.clear();
             return false;
         }
@@ -4771,6 +4814,8 @@ private:
         has_current_function_return_type_ = false;
 
         pop_scope();
+        function_root_scope_ = prev_fn_root;
+        loop_defer_roots_ = std::move(prev_loop_defer_roots);
         return true;
     }
 
@@ -4892,6 +4937,7 @@ private:
             [&](const ast::IndexExpr& e) { return expr_is_side_effect_free(*e.base) && expr_is_side_effect_free(*e.index); },
             [&](const ast::FieldExpr& e) { return expr_is_side_effect_free(*e.base); },
             [&](const ast::CastExpr& e) { return expr_is_side_effect_free(*e.expr); },
+            [&](const ast::FStringExpr&) { return false; },
             [&](const ast::ArrayExpr& e) {
                 for (const auto& elem : e.elements) {
                     if (!expr_is_side_effect_free(*elem)) return false;
@@ -5003,6 +5049,13 @@ private:
             [&](const ast::CastExpr& e) -> std::size_t {
                 return count_ident_uses_in_expr(name, *e.expr);
             },
+            [&](const ast::FStringExpr& e) -> std::size_t {
+                std::size_t total = 0;
+                for (const auto& part : e.parts) {
+                    if (part.is_expr && part.expr) total += count_ident_uses_in_expr(name, *part.expr);
+                }
+                return total;
+            },
             [&](const ast::ArrayExpr& e) -> std::size_t {
                 std::size_t total = 0;
                 for (const auto& elem : e.elements) total += count_ident_uses_in_expr(name, *elem);
@@ -5104,6 +5157,9 @@ private:
                 for (const auto& inner : s.block.stmts) total += count_ident_uses_in_stmt(name, *inner);
                 return total;
             },
+            [&](const ast::DeferStmt& s) -> std::size_t {
+                return s.stmt ? count_ident_uses_in_stmt(name, *s.stmt) : 0u;
+            },
             [&](const ast::ParallelForStmt& s) -> std::size_t {
                 std::size_t total = count_ident_uses_in_expr(name, *s.start) + count_ident_uses_in_expr(name, *s.end);
                 for (const auto& inner : s.body) total += count_ident_uses_in_stmt(name, *inner);
@@ -5159,6 +5215,15 @@ private:
             },
             [&](const ast::CastExpr& e) -> bool {
                 return expr_uses_ident_in_call_arg_context(name, *e.expr, in_call_arg);
+            },
+            [&](const ast::FStringExpr& e) -> bool {
+                for (const auto& part : e.parts) {
+                    if (part.is_expr && part.expr &&
+                        expr_uses_ident_in_call_arg_context(name, *part.expr, true)) {
+                        return true;
+                    }
+                }
+                return false;
             },
             [&](const ast::ArrayExpr& e) -> bool {
                 for (const auto& elem : e.elements) {
@@ -5325,6 +5390,9 @@ private:
                     }
                 }
                 return false;
+            },
+            [&](const ast::DeferStmt& s) -> bool {
+                return s.stmt && stmt_uses_ident_in_call_arg_context(name, *s.stmt);
             },
             [&](const ast::ParallelForStmt& s) -> bool {
                 if (expr_uses_ident_in_call_arg_context(name, *s.start) ||
@@ -5615,6 +5683,9 @@ private:
                 if (auto* ptr = std::get_if<PointerType>(&base->kind)) {
                     return ptr->pointee->clone();
                 }
+                if (is_str_type(*base)) {
+                    return Type::make_primitive(PrimitiveType::U8);
+                }
                 if (is_pointer_like_type(*base)) {
                     return Type::make_primitive(PrimitiveType::I64);
                 }
@@ -5627,6 +5698,9 @@ private:
                 auto resolved = canonicalize_type(e.target_type);
                 if (resolved) return resolved;
                 return e.target_type.clone();
+            },
+            [&](const ast::FStringExpr&) -> std::optional<Type> {
+                return Type::make_primitive(PrimitiveType::Str);
             },
             [&](const ast::ArrayExpr&) -> std::optional<Type> {
                 return Type::make_primitive(PrimitiveType::Ptr);
@@ -5990,8 +6064,8 @@ private:
             std::size_t size = struct_it->second.total_size > 0 ? struct_it->second.total_size : 8;
             for (std::size_t offset = 0; offset < size; offset += 8) {
                 auto chunk = static_cast<std::int32_t>(offset);
-                emit_.mov_load(x64::Reg::RCX, x64::Reg::RAX, chunk);
-                emit_.mov_store(x64::Reg::RBP, sym.stack_offset + chunk, x64::Reg::RCX);
+                emit_.mov_load(x64::Reg::R11, x64::Reg::RAX, chunk);
+                emit_.mov_store(x64::Reg::RBP, sym.stack_offset + chunk, x64::Reg::R11);
             }
             if (auto bound = lookup_bound_reg(&sym)) {
                 emit_.lea(*bound, x64::Reg::RBP, sym.stack_offset);
@@ -6546,8 +6620,8 @@ private:
                     std::size_t remaining_uses = count_ident_uses_in_range(let.name, stmts, i + 1);
                     if (remaining_uses >= 2) {
                         std::size_t min_free_regs = lives_across_any_call ? 4 : 2;
-                        if (available_scratch_reg_count() > min_free_regs) {
-                            auto reg = pick_scratch_reg();
+                        if (available_scratch_reg_count({x64::Reg::R11}) > min_free_regs) {
+                            auto reg = pick_scratch_reg({x64::Reg::R11});
                             if (!reg) {
                                 continue;
                             }
@@ -6640,11 +6714,23 @@ private:
             [&](const ast::ParallelForStmt& s) { return generate_parallel_for(s); },
             [&](const ast::BreakStmt&)         { return generate_break(); },
             [&](const ast::ContinueStmt&)      { return generate_continue(); },
+            [&](const ast::DeferStmt& d) -> bool {
+                if (current_scope_ && d.stmt) {
+                    current_scope_->defers.push_back(d.stmt.get());
+                }
+                return true;
+            },
             [&](const ast::BlockStmt& block) -> bool {
                 push_scope();
                 if (!generate_stmt_list(block.block.stmts)) {
                     pop_scope();
                     return false;
+                }
+                if (!suite_guarantees_return(block.block.stmts)) {
+                    if (!emit_defers_for_scope(current_scope_)) {
+                        pop_scope();
+                        return false;
+                    }
                 }
                 pop_scope();
                 return true;
@@ -6686,6 +6772,12 @@ private:
                 pop_scope();
                 return false;
             }
+            if (!suite_guarantees_return(branch.body)) {
+                if (!emit_defers_for_scope(current_scope_)) {
+                    pop_scope();
+                    return false;
+                }
+            }
             pop_scope();
             done_patches.push_back(emit_.jmp_rel32_placeholder());
 
@@ -6699,6 +6791,12 @@ private:
                 pop_scope();
                 return false;
             }
+            if (!suite_guarantees_return(*switch_stmt.else_block)) {
+                if (!emit_defers_for_scope(current_scope_)) {
+                    pop_scope();
+                    return false;
+                }
+            }
             pop_scope();
         }
 
@@ -6709,17 +6807,6 @@ private:
     }
 
     [[nodiscard]] bool generate_let(const ast::LetStmt& let) {
-        if (while_loop_depth_ > 0 && let.is_mut && let.init) {
-            auto init_type = infer_expr_type(*let.init);
-            bool is_simple_int = init_type && init_type->is_integer();
-            bool is_struct_val = init_type && get_struct_name(*init_type).has_value();
-            if (is_simple_int && !is_struct_val && available_scratch_reg_count({x64::Reg::RAX}) > 4) {
-                auto free_reg = pick_scratch_reg({x64::Reg::RAX});
-                if (free_reg) {
-                    pending_named_register_bindings_[let.name] = *free_reg;
-                }
-            }
-        }
         Symbol* sym = define_let_symbol(let);
         if (!sym) {
             return false;
@@ -6731,14 +6818,102 @@ private:
         return true;
     }
 
+    [[nodiscard]] static bool stmt_guarantees_return(const ast::Stmt& stmt) {
+        return std::visit(overloaded{
+            [&](const ast::ReturnStmt&) -> bool {
+                return true;
+            },
+            [&](const ast::BlockStmt& s) -> bool {
+                return !s.block.stmts.empty() && stmt_guarantees_return(*s.block.stmts.back());
+            },
+            [&](const ast::IfStmt& s) -> bool {
+                return !s.then_block.empty() &&
+                       s.has_else() &&
+                       stmt_guarantees_return(*s.then_block.back()) &&
+                       !s.else_block->empty() &&
+                       stmt_guarantees_return(*s.else_block->back());
+            },
+            [&](const ast::SwitchStmt& s) -> bool {
+                if (s.cases.empty() || !s.has_else()) {
+                    return false;
+                }
+                for (const auto& branch : s.cases) {
+                    if (branch.body.empty() || !stmt_guarantees_return(*branch.body.back())) {
+                        return false;
+                    }
+                }
+                return !s.else_block->empty() && stmt_guarantees_return(*s.else_block->back());
+            },
+            [&](const auto&) -> bool {
+                return false;
+            }
+        }, stmt.kind);
+    }
+
+    [[nodiscard]] static bool suite_guarantees_return(const ast::StmtSuite& suite) {
+        return !suite.empty() && stmt_guarantees_return(*suite.back());
+    }
+
+    [[nodiscard]] bool has_active_defers_to_function_root() const {
+        for (Scope* s = current_scope_; s != nullptr; s = s->parent) {
+            if (!s->defers.empty()) {
+                return true;
+            }
+            if (s == function_root_scope_) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool emit_defers_for_scope(Scope* scope) {
+        if (!scope || scope->defers.empty()) {
+            return true;
+        }
+        auto items = scope->defers;
+        ++in_defer_depth_;
+        for (auto it = items.rbegin(); it != items.rend(); ++it) {
+            if (!generate_stmt(**it)) {
+                --in_defer_depth_;
+                return false;
+            }
+        }
+        --in_defer_depth_;
+        return true;
+    }
+
+    [[nodiscard]] bool emit_defers_down_to(Scope* stop_inclusive) {
+        for (Scope* s = current_scope_; s != nullptr; s = s->parent) {
+            if (!emit_defers_for_scope(s)) {
+                return false;
+            }
+            if (s == stop_inclusive) {
+                break;
+            }
+        }
+        return true;
+    }
+
     [[nodiscard]] bool generate_return(const ast::ReturnStmt& ret) {
+        if (in_defer_depth_ > 0) {
+            error("return inside defer is not allowed");
+            return false;
+        }
         current_function_return_seen_ = true;
-        warn_live_owned_locals_on_exit(ret.value.get());
         if (ret.value) {
             if (!generate_expr(*ret.value)) return false;
         } else {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
         }
+        if (has_active_defers_to_function_root()) {
+            emit_.push(x64::Reg::RAX);
+            if (!emit_defers_down_to(function_root_scope_)) {
+                emit_.pop(x64::Reg::RAX);
+                return false;
+            }
+            emit_.pop(x64::Reg::RAX);
+        }
+        warn_live_owned_locals_on_exit(ret.value.get());
         if (has_current_function_return_type_ && current_function_return_type_.is_float()) {
             emit_return_float_rax_to_xmm0(current_function_return_type_);
         }
@@ -7016,7 +7191,8 @@ private:
             return expr_obviously_produces_owned_value(*cast->expr);
         }
 
-        if (std::holds_alternative<ast::ArrayExpr>(expr.kind)) {
+        if (std::holds_alternative<ast::ArrayExpr>(expr.kind) ||
+            std::holds_alternative<ast::FStringExpr>(expr.kind)) {
             return true;
         }
 
@@ -9268,42 +9444,6 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             return true;
         };
 
-        auto stmt_guarantees_return = [&](const ast::Stmt& stmt, const auto& self) -> bool {
-            return std::visit(overloaded{
-                [&](const ast::ReturnStmt&) -> bool {
-                    return true;
-                },
-                [&](const ast::BlockStmt& s) -> bool {
-                    return !s.block.stmts.empty() && self(*s.block.stmts.back(), self);
-                },
-                [&](const ast::IfStmt& s) -> bool {
-                    return !s.then_block.empty() &&
-                           s.has_else() &&
-                           self(*s.then_block.back(), self) &&
-                           !s.else_block->empty() &&
-                           self(*s.else_block->back(), self);
-                },
-                [&](const ast::SwitchStmt& s) -> bool {
-                    if (s.cases.empty() || !s.has_else()) {
-                        return false;
-                    }
-                    for (const auto& branch : s.cases) {
-                        if (branch.body.empty() || !self(*branch.body.back(), self)) {
-                            return false;
-                        }
-                    }
-                    return !s.else_block->empty() && self(*s.else_block->back(), self);
-                },
-                [&](const auto&) -> bool {
-                    return false;
-                }
-            }, stmt.kind);
-        };
-
-        auto suite_guarantees_return = [&](const ast::StmtSuite& suite) -> bool {
-            return !suite.empty() && stmt_guarantees_return(*suite.back(), stmt_guarantees_return);
-        };
-
         auto merge_owned_states = [](const std::vector<std::unordered_map<const Symbol*, OwnedLocalState>>& states) {
             std::unordered_map<const Symbol*, OwnedLocalState> merged;
             if (states.empty()) {
@@ -9410,8 +9550,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             pop_scope();
             return false;
         }
-        pop_scope();
         bool then_returns = suite_guarantees_return(if_stmt.then_block);
+        if (!then_returns) {
+            if (!emit_defers_for_scope(current_scope_)) {
+                pop_scope();
+                return false;
+            }
+        }
+        pop_scope();
         auto then_state = owned_locals_;
 
         std::vector<std::unordered_map<const Symbol*, OwnedLocalState>> continuing_states;
@@ -9429,8 +9575,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 pop_scope();
                 return false;
             }
-            pop_scope();
             bool else_returns = suite_guarantees_return(*if_stmt.else_block);
+            if (!else_returns) {
+                if (!emit_defers_for_scope(current_scope_)) {
+                    pop_scope();
+                    return false;
+                }
+            }
+            pop_scope();
             if (!else_returns) {
                 continuing_states.push_back(owned_locals_);
             }
@@ -9759,6 +9911,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         Symbol* dst_sym = current_scope_->lookup(lhs_base_ident->name);
         if (!dst_sym) return false;
+        if (typed_element_stride(dst_sym->type) != 8 ||
+            std::holds_alternative<PointerType>(dst_sym->type.kind) ||
+            std::holds_alternative<ArrayType>(dst_sym->type.kind) ||
+            is_str_type(dst_sym->type)) {
+            return false;
+        }
 
         // Trip count: start must be 0
         if (call.args.size() == 2) {
@@ -9896,18 +10054,182 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         return true;
     }
 
-    [[nodiscard]] bool generate_for(const ast::ForStmt& for_stmt) {
-        // evaluate range bounds as full expressions
-        if (!for_stmt.iterable->is<ast::CallExpr>()) {
-            error("for-in requires a range() call");
+    [[nodiscard]] std::uint8_t typed_element_stride(const Type& elem_type) {
+        auto resolved = canonicalize_type(elem_type);
+        const Type& final_type = resolved ? *resolved : elem_type;
+        if (is_bool_type(final_type)) {
+            return 1;
+        }
+        if (auto* prim = std::get_if<PrimitiveType>(&final_type.kind)) {
+            switch (*prim) {
+                case PrimitiveType::I8:
+                case PrimitiveType::U8:
+                    return 1;
+                case PrimitiveType::I16:
+                case PrimitiveType::U16:
+                    return 2;
+                case PrimitiveType::I32:
+                case PrimitiveType::U32:
+                case PrimitiveType::F32:
+                case PrimitiveType::Char:
+                    return 4;
+                default:
+                    return 8;
+            }
+        }
+        return 8;
+    }
+
+    [[nodiscard]] bool generate_for_iterable_loop(const ast::ForStmt& for_stmt) {
+        auto iter_type = infer_expr_type(*for_stmt.iterable);
+        if (!iter_type) {
+            error("cannot determine iterable type for for-in loop");
             return false;
+        }
+        auto resolved_iter = canonicalize_type(*iter_type);
+        const Type& final_iter = resolved_iter ? *resolved_iter : *iter_type;
+
+        bool is_str_iter = is_str_type(final_iter);
+        const auto* fixed_arr = std::get_if<ArrayType>(&final_iter.kind);
+        bool is_dyn_arr =
+            (std::holds_alternative<PrimitiveType>(final_iter.kind) &&
+             std::get<PrimitiveType>(final_iter.kind) == PrimitiveType::Ptr) ||
+            std::holds_alternative<ast::ArrayExpr>(for_stmt.iterable->kind);
+
+        if (!is_str_iter && !fixed_arr && !is_dyn_arr) {
+            error("for-in expects range(), string, or array");
+            return false;
+        }
+
+        bool free_temp_array = std::holds_alternative<ast::ArrayExpr>(for_stmt.iterable->kind);
+
+        push_scope();
+        break_patches_.push_back({});
+        continue_patches_.push_back({});
+        loop_defer_roots_.push_back(current_scope_);
+
+        auto& src_sym = current_scope_->define("__for_src", Type::make_primitive(PrimitiveType::Ptr), false);
+        if (!generate_expr(*for_stmt.iterable)) {
+            loop_defer_roots_.pop_back();
+            pop_scope();
+            return false;
+        }
+        emit_.mov_store(x64::Reg::RBP, src_sym.stack_offset, x64::Reg::RAX);
+
+        auto& end_sym = current_scope_->define("__for_end", Type::make_primitive(PrimitiveType::I64), false);
+        if (fixed_arr && fixed_arr->size) {
+            emit_.mov_smart(x64::Reg::RAX, static_cast<std::int64_t>(*fixed_arr->size));
+        } else if (is_str_iter) {
+            emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+            std::size_t null_str = emit_.jcc_rel32(x64::Emitter::CC_E);
+            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+            emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+            emit_inline_strlen();
+            std::size_t done_len = emit_.jmp_rel32_placeholder();
+            emit_.patch_jump(null_str);
+            emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+            emit_.patch_jump(done_len);
+        } else {
+            emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+            std::size_t null_arr = emit_.jcc_rel32(x64::Emitter::CC_E);
+            if (is_native_image_output()) {
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, -16);
+            } else {
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);
+            }
+            std::size_t done_len = emit_.jmp_rel32_placeholder();
+            emit_.patch_jump(null_arr);
+            emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+            emit_.patch_jump(done_len);
+        }
+        emit_.mov_store(x64::Reg::RBP, end_sym.stack_offset, x64::Reg::RAX);
+
+        auto& idx_sym = current_scope_->define("__for_idx", Type::make_primitive(PrimitiveType::I64), true);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, idx_sym.stack_offset, x64::Reg::RAX);
+
+        Type elem_type = is_str_iter
+            ? Type::make_primitive(PrimitiveType::U8)
+            : (fixed_arr ? fixed_arr->element->clone() : Type::make_primitive(PrimitiveType::I64));
+        std::uint8_t stride = is_str_iter ? 1 : typed_element_stride(elem_type);
+        auto& var_sym = current_scope_->define(for_stmt.name, elem_type.clone(), false);
+
+        std::size_t loop_start = emit_.buffer().pos();
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, end_sym.stack_offset);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
+        std::size_t jge_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        emit_.mov_load(x64::Reg::R11, x64::Reg::RBP, src_sym.stack_offset);
+        emit_.lea_scaled(x64::Reg::RAX, x64::Reg::R11, x64::Reg::RAX, stride);
+        if (!is_str_iter && !fixed_arr && !is_native_image_output()) {
+            emit_.add_smart(x64::Reg::RAX, 8);
+        }
+        if (is_str_iter || fixed_arr) {
+            if (!emit_load_typed_from_address_in_rax(elem_type)) {
+                loop_defer_roots_.pop_back();
+                pop_scope();
+                return false;
+            }
+        } else {
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);
+        }
+        emit_.mov_store(x64::Reg::RBP, var_sym.stack_offset, x64::Reg::RAX);
+
+        if (!generate_stmt_list(for_stmt.body)) {
+            loop_defer_roots_.pop_back();
+            pop_scope();
+            return false;
+        }
+        if (!suite_guarantees_return(for_stmt.body)) {
+            if (!emit_defers_for_scope(current_scope_)) {
+                loop_defer_roots_.pop_back();
+                pop_scope();
+                return false;
+            }
+        }
+
+        std::size_t increment_pos = emit_.buffer().pos();
+        patch_jumps_to(continue_patches_.back(), increment_pos);
+        continue_patches_.pop_back();
+
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
+        emit_.add_smart(x64::Reg::RAX, 1);
+        emit_.mov_store(x64::Reg::RBP, idx_sym.stack_offset, x64::Reg::RAX);
+        emit_jmp_rel32_to(loop_start);
+
+        emit_.patch_jump(jge_patch);
+        for (std::size_t patch : break_patches_.back()) {
+            emit_.patch_jump(patch);
+        }
+        break_patches_.pop_back();
+        loop_defer_roots_.pop_back();
+
+        if (free_temp_array) {
+            auto free_arg = std::make_unique<ast::Expr>();
+            free_arg->kind = ast::IdentExpr{.name = "__for_src"};
+            auto free_callee = std::make_unique<ast::Expr>();
+            free_callee->kind = ast::IdentExpr{.name = "array_free"};
+            ast::CallExpr free_call;
+            free_call.callee = std::move(free_callee);
+            free_call.args.push_back(std::move(free_arg));
+            if (!generate_call(free_call)) {
+                pop_scope();
+                return false;
+            }
+        }
+
+        pop_scope();
+        return true;
+    }
+
+    [[nodiscard]] bool generate_for(const ast::ForStmt& for_stmt) {
+        if (!for_stmt.iterable->is<ast::CallExpr>() ||
+            !for_stmt.iterable->as<ast::CallExpr>().callee->is<ast::IdentExpr>() ||
+            for_stmt.iterable->as<ast::CallExpr>().callee->as<ast::IdentExpr>().name != "range") {
+            return generate_for_iterable_loop(for_stmt);
         }
         const auto& call = for_stmt.iterable->as<ast::CallExpr>();
-        if (!call.callee->is<ast::IdentExpr>() || 
-            call.callee->as<ast::IdentExpr>().name != "range") {
-            error("for-in requires a range() call");
-            return false;
-        }
         
         if (call.args.size() > 2) {
             error("range() accepts 1 or 2 arguments");
@@ -9923,12 +10245,13 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         push_scope();
         break_patches_.push_back({});
         continue_patches_.push_back({});
+        loop_defer_roots_.push_back(current_scope_);
         
         // evaluate start
         auto& start_sym = current_scope_->define("__for_start",
             Type::make_primitive(PrimitiveType::I64), true);
         if (call.args.size() >= 2) {
-            if (!generate_expr(*call.args[0])) { pop_scope(); return false; }
+            if (!generate_expr(*call.args[0])) { loop_defer_roots_.pop_back(); pop_scope(); return false; }
         } else {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
         }
@@ -9938,9 +10261,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         auto& end_sym = current_scope_->define("__for_end",
             Type::make_primitive(PrimitiveType::I64), true);
         if (call.args.size() >= 2) {
-            if (!generate_expr(*call.args[1])) { pop_scope(); return false; }
+            if (!generate_expr(*call.args[1])) { loop_defer_roots_.pop_back(); pop_scope(); return false; }
         } else if (call.args.size() == 1) {
-            if (!generate_expr(*call.args[0])) { pop_scope(); return false; }
+            if (!generate_expr(*call.args[0])) { loop_defer_roots_.pop_back(); pop_scope(); return false; }
         } else {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
         }
@@ -9962,8 +10285,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         
         // body
         if (!generate_stmt_list(for_stmt.body)) {
+            loop_defer_roots_.pop_back();
             pop_scope();
             return false;
+        }
+        if (!suite_guarantees_return(for_stmt.body)) {
+            if (!emit_defers_for_scope(current_scope_)) {
+                loop_defer_roots_.pop_back();
+                pop_scope();
+                return false;
+            }
         }
         
         // increment - continue jumps here (skip body, do increment, loop back)
@@ -9986,6 +10317,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             emit_.patch_jump(patch);
         }
         break_patches_.pop_back();
+        loop_defer_roots_.pop_back();
         
         pop_scope();
         return true;
@@ -9999,9 +10331,18 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     }
 
     [[nodiscard]] bool generate_break() {
+        if (in_defer_depth_ > 0) {
+            error("break inside defer is not allowed");
+            return false;
+        }
         if (break_patches_.empty()) {
             error("break outside of loop");
             return false;
+        }
+        if (!loop_defer_roots_.empty()) {
+            if (!emit_defers_down_to(loop_defer_roots_.back())) {
+                return false;
+            }
         }
         std::size_t patch = emit_.jmp_rel32_placeholder();
         break_patches_.back().push_back(patch);
@@ -10009,9 +10350,18 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     }
 
     [[nodiscard]] bool generate_continue() {
+        if (in_defer_depth_ > 0) {
+            error("continue inside defer is not allowed");
+            return false;
+        }
         if (continue_patches_.empty()) {
             error("continue outside of loop");
             return false;
+        }
+        if (!loop_defer_roots_.empty()) {
+            if (!emit_defers_down_to(loop_defer_roots_.back())) {
+                return false;
+            }
         }
         std::size_t patch = emit_.jmp_rel32_placeholder();
         continue_patches_.back().push_back(patch);
@@ -10244,8 +10594,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
                 if (bin->rhs->is<ast::IdentExpr>()) {
                     if (can_generate_pure_expr(*bin->lhs)) {
-                        auto lhs_reg = pick_scratch_reg();
+                        auto lhs_reg = pick_scratch_reg({x64::Reg::R11});
+                        if (!lhs_reg) lhs_reg = pick_scratch_reg();
                         if (!lhs_reg) return false;
+                        ScopedScratchReg hold_lhs(*this, *lhs_reg);
                         auto rhs_reg = pick_scratch_reg({*lhs_reg});
                         if (!rhs_reg) return false;
                         if (!generate_pure_expr_into(*bin->lhs, *lhs_reg)) return false;
@@ -10281,8 +10633,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 }
 
                 if (can_generate_pure_expr(*bin->lhs) && can_generate_pure_expr(*bin->rhs)) {
-                    auto lhs_reg = pick_scratch_reg();
+                    auto lhs_reg = pick_scratch_reg({x64::Reg::R11});
+                    if (!lhs_reg) lhs_reg = pick_scratch_reg();
                     if (!lhs_reg) return false;
+                    ScopedScratchReg hold_lhs(*this, *lhs_reg);
                     auto rhs_reg = pick_scratch_reg({*lhs_reg});
                     if (!rhs_reg) return false;
                     if (!generate_pure_expr_into(*bin->lhs, *lhs_reg)) return false;
@@ -11267,6 +11621,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 }
                 return emit_coerce_rax_to_type(e.target_type, e.expr.get());
             },
+            [&](const ast::FStringExpr& e) { return generate_fstring(e); },
             [&](const ast::ArrayExpr& e)   { return generate_array_literal(e); },
             [&](const ast::StructExpr& e)  { return generate_struct_literal(e); },
             [&](const ast::IfExpr& e)      { return generate_if_expr(e); },
@@ -11554,27 +11909,184 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         return true;
     }
 
-    [[nodiscard]] bool generate_index(const ast::IndexExpr& idx) {
-        // Generate base address -> RAX
-        if (!generate_expr(*idx.base)) return false;
-        emit_.push(x64::Reg::RAX);  // Save base
-        
-        // Generate index -> RAX
-        if (!generate_expr(*idx.index)) return false;
-        
-        // Calculate offset: index * 8 (assuming 64-bit elements)
-        // Pop base into RCX
-        emit_.pop(x64::Reg::RCX);
-        
-        // Add: base + (index * 8)
-        emit_.lea_scaled(x64::Reg::RAX, x64::Reg::RCX, x64::Reg::RAX, 8);
-        if (!is_native_image_output()) {
-            emit_.add_smart(x64::Reg::RAX, 8); // host fallback arrays store length at arr[0]
+    [[nodiscard]] bool generate_fstring(const ast::FStringExpr& fstr) {
+        auto make_ident_expr = [](std::string name) {
+            auto e = std::make_unique<ast::Expr>();
+            e->kind = ast::IdentExpr{.name = std::move(name)};
+            return e;
+        };
+        auto make_str_lit_expr = [](std::string val) {
+            auto e = std::make_unique<ast::Expr>();
+            e->kind = ast::LiteralExpr{.value = std::move(val), .type = Type::make_primitive(PrimitiveType::Str)};
+            return e;
+        };
+        auto make_int_lit_expr = [](std::int64_t val) {
+            auto e = std::make_unique<ast::Expr>();
+            e->kind = ast::LiteralExpr{.value = val, .type = Type::make_primitive(PrimitiveType::I64)};
+            return e;
+        };
+        auto emit_call1 = [&](std::string fn, ast::ExprPtr arg0) -> bool {
+            ast::CallExpr c;
+            c.callee = make_ident_expr(std::move(fn));
+            c.args.push_back(std::move(arg0));
+            return generate_call(c);
+        };
+        auto emit_call2 = [&](std::string fn, ast::ExprPtr arg0, ast::ExprPtr arg1) -> bool {
+            ast::CallExpr c;
+            c.callee = make_ident_expr(std::move(fn));
+            c.args.push_back(std::move(arg0));
+            c.args.push_back(std::move(arg1));
+            return generate_call(c);
+        };
+        auto emit_heap_clone_lit = [&](const std::string& text) -> bool {
+            ast::CallExpr c;
+            c.callee = make_ident_expr("string_substring");
+            c.args.push_back(make_str_lit_expr(text));
+            c.args.push_back(make_int_lit_expr(0));
+            c.args.push_back(make_int_lit_expr(static_cast<std::int64_t>(text.size())));
+            return generate_call(c);
+        };
+
+        if (fstr.parts.empty()) {
+            return emit_heap_clone_lit("");
         }
-        
-        // Dereference: load value at that address
+        if (fstr.parts.size() == 1 && !fstr.parts[0].is_expr) {
+            return emit_heap_clone_lit(fstr.parts[0].text);
+        }
+
+        push_scope();
+        auto& acc_sym = current_scope_->define("__fstr_acc", Type::make_primitive(PrimitiveType::Str), true);
+        auto& part_sym = current_scope_->define("__fstr_part", Type::make_primitive(PrimitiveType::Str), true);
+        bool acc_owned = false;
+
+        for (std::size_t i = 0; i < fstr.parts.size(); ++i) {
+            const auto& part = fstr.parts[i];
+            bool part_owned = false;
+
+            if (!part.is_expr) {
+                if (!generate_literal(ast::LiteralExpr{.value = part.text, .type = Type::make_primitive(PrimitiveType::Str)})) {
+                    pop_scope();
+                    return false;
+                }
+            } else {
+                auto part_type = infer_expr_type(*part.expr);
+                if (part_type && is_str_type(*part_type)) {
+                    if (!generate_expr(*part.expr)) {
+                        pop_scope();
+                        return false;
+                    }
+                    part_owned = expr_obviously_produces_owned_value(*part.expr);
+                } else if (part_type && is_bool_type(*part_type)) {
+                    if (!generate_expr(*part.expr)) {
+                        pop_scope();
+                        return false;
+                    }
+                    emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+                    std::size_t false_jmp = emit_.jcc_rel32(x64::Emitter::CC_E);
+                    if (!generate_literal(ast::LiteralExpr{.value = std::string("true"), .type = Type::make_primitive(PrimitiveType::Str)})) { pop_scope(); return false; }
+                    std::size_t done_jmp = emit_.jmp_rel32_placeholder();
+                    emit_.patch_jump(false_jmp);
+                    if (!generate_literal(ast::LiteralExpr{.value = std::string("false"), .type = Type::make_primitive(PrimitiveType::Str)})) { pop_scope(); return false; }
+                    emit_.patch_jump(done_jmp);
+                } else if (part_type && part_type->is_float()) {
+                    pop_scope();
+                    error("f-string float interpolation requires an explicit int cast");
+                    return false;
+                } else {
+                    if (!generate_expr(*part.expr)) {
+                        pop_scope();
+                        return false;
+                    }
+                    emit_.mov_store(x64::Reg::RBP, part_sym.stack_offset, x64::Reg::RAX);
+                    if (!emit_call1("int_to_string", make_ident_expr("__fstr_part"))) {
+                        pop_scope();
+                        return false;
+                    }
+                    part_owned = true;
+                }
+            }
+
+            if (i == 0) {
+                emit_.mov_store(x64::Reg::RBP, acc_sym.stack_offset, x64::Reg::RAX);
+                acc_owned = part_owned;
+            } else {
+                emit_.mov_store(x64::Reg::RBP, part_sym.stack_offset, x64::Reg::RAX);
+                if (!emit_call2("string_append", make_ident_expr("__fstr_acc"), make_ident_expr("__fstr_part"))) {
+                    pop_scope();
+                    return false;
+                }
+                emit_.push(x64::Reg::RAX);
+                if (acc_owned) {
+                    if (!emit_call1("free", make_ident_expr("__fstr_acc"))) {
+                        emit_.pop(x64::Reg::RAX);
+                        pop_scope();
+                        return false;
+                    }
+                }
+                if (part_owned) {
+                    if (!emit_call1("free", make_ident_expr("__fstr_part"))) {
+                        emit_.pop(x64::Reg::RAX);
+                        pop_scope();
+                        return false;
+                    }
+                }
+                emit_.pop(x64::Reg::RAX);
+                emit_.mov_store(x64::Reg::RBP, acc_sym.stack_offset, x64::Reg::RAX);
+                acc_owned = true;
+            }
+        }
+
+        if (!acc_owned) {
+            if (!emit_call2("string_append", make_ident_expr("__fstr_acc"), make_str_lit_expr(""))) {
+                pop_scope();
+                return false;
+            }
+        } else {
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, acc_sym.stack_offset);
+        }
+
+        pop_scope();
+        return true;
+    }
+
+    [[nodiscard]] bool generate_index(const ast::IndexExpr& idx) {
+        auto base_type = infer_expr_type(*idx.base);
+        std::optional<Type> elem_type;
+        std::uint8_t stride = 8;
+        bool is_typed_raw = false;
+        if (base_type) {
+            auto resolved = canonicalize_type(*base_type);
+            const Type& final_base = resolved ? *resolved : *base_type;
+            if (auto* ptr = std::get_if<PointerType>(&final_base.kind)) {
+                elem_type = ptr->pointee->clone();
+                stride = typed_element_stride(*elem_type);
+                is_typed_raw = true;
+            } else if (auto* arr = std::get_if<ArrayType>(&final_base.kind)) {
+                elem_type = arr->element->clone();
+                stride = typed_element_stride(*elem_type);
+                is_typed_raw = true;
+            } else if (is_str_type(final_base)) {
+                elem_type = Type::make_primitive(PrimitiveType::U8);
+                stride = 1;
+                is_typed_raw = true;
+            }
+        }
+
+        if (!generate_expr(*idx.base)) return false;
+        emit_.push(x64::Reg::RAX);
+
+        if (!generate_expr(*idx.index)) return false;
+
+        emit_.pop(x64::Reg::R11);
+        emit_.lea_scaled(x64::Reg::RAX, x64::Reg::R11, x64::Reg::RAX, stride);
+        if (!is_typed_raw && !is_native_image_output()) {
+            emit_.add_smart(x64::Reg::RAX, 8);
+        }
+
+        if (is_typed_raw && elem_type) {
+            return emit_load_typed_from_address_in_rax(*elem_type);
+        }
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);
-        
         return true;
     }
 
@@ -12044,6 +12556,33 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 if (!checked_view_offset(struct_it->first, field.field, *offset_opt, offset)) {
                     return false;
                 }
+                bool save_rcx = reg_is_bound(x64::Reg::RCX);
+                if (save_rcx) {
+                    if (base_sym) {
+                        emit_.pop(x64::Reg::RAX);
+                        emit_.push(x64::Reg::RCX);
+                        if (auto bound = lookup_bound_reg(base_sym)) {
+                            emit_.mov(x64::Reg::RCX, *bound);
+                        } else {
+                            emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, base_sym->stack_offset);
+                        }
+                    } else {
+                        emit_.push(x64::Reg::RAX);
+                        emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 8);
+                        emit_.mov_store(x64::Reg::RSP, 8, x64::Reg::RCX);
+                        emit_.pop(x64::Reg::RCX);
+                    }
+                    if (offset != 0) {
+                        emit_.add_smart(x64::Reg::RCX, offset);
+                    }
+                    if (!emit_coerce_rax_to_type(*field_type, bin.rhs.get())) {
+                        emit_.pop(x64::Reg::RCX);
+                        return false;
+                    }
+                    bool ok = emit_store_typed_to_address_in_rcx(*field_type);
+                    emit_.pop(x64::Reg::RCX);
+                    return ok;
+                }
                 if (base_sym) {
                     if (auto bound = lookup_bound_reg(base_sym)) {
                         emit_.mov(x64::Reg::RCX, *bound);
@@ -12105,9 +12644,34 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     error_undefined_name("variable", var_name, collect_value_name_candidates());
                     return false;
                 }
-                if (!sym->is_mut) {
+                bool is_ptr_sym =
+                    std::holds_alternative<PointerType>(sym->type.kind) ||
+                    (std::holds_alternative<PrimitiveType>(sym->type.kind) &&
+                     std::get<PrimitiveType>(sym->type.kind) == PrimitiveType::Ptr);
+                if (!sym->is_mut && !is_ptr_sym) {
                     error(describe_rebinding_target("variable", var_name));
                     return false;
+                }
+            }
+            auto base_type = infer_expr_type(*idx.base);
+            std::optional<Type> elem_type;
+            std::uint8_t stride = 8;
+            bool is_typed_raw = false;
+            if (base_type) {
+                auto resolved = canonicalize_type(*base_type);
+                const Type& final_base = resolved ? *resolved : *base_type;
+                if (is_str_type(final_base)) {
+                    error("cannot assign into immutable string index");
+                    return false;
+                }
+                if (auto* ptr = std::get_if<PointerType>(&final_base.kind)) {
+                    elem_type = ptr->pointee->clone();
+                    stride = typed_element_stride(*elem_type);
+                    is_typed_raw = true;
+                } else if (auto* arr = std::get_if<ArrayType>(&final_base.kind)) {
+                    elem_type = arr->element->clone();
+                    stride = typed_element_stride(*elem_type);
+                    is_typed_raw = true;
                 }
             }
             // value is already in RAX; save it while we compute the element address
@@ -12115,14 +12679,22 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             if (!generate_expr(*idx.base)) return false;
             emit_.push(x64::Reg::RAX);
             if (!generate_expr(*idx.index)) return false;
-            emit_.pop(x64::Reg::RCX);
-            emit_.lea_scaled(x64::Reg::RAX, x64::Reg::RCX, x64::Reg::RAX, 8);
-            if (!is_native_image_output()) {
+            emit_.pop(x64::Reg::R11);
+            emit_.lea_scaled(x64::Reg::RAX, x64::Reg::R11, x64::Reg::RAX, stride);
+            if (!is_typed_raw && !is_native_image_output()) {
                 emit_.add_smart(x64::Reg::RAX, 8); // host fallback arrays store length at arr[0]
             }
-            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+            emit_.mov(x64::Reg::R11, x64::Reg::RAX);
             emit_.pop(x64::Reg::RAX);
-            emit_.mov_store(x64::Reg::RCX, 0, x64::Reg::RAX);
+            if (is_typed_raw && elem_type && stride < 8) {
+                bool save_rcx = reg_is_bound(x64::Reg::RCX);
+                if (save_rcx) emit_.push(x64::Reg::RCX);
+                emit_.mov(x64::Reg::RCX, x64::Reg::R11);
+                bool ok = emit_store_typed_to_address_in_rcx(*elem_type);
+                if (save_rcx) emit_.pop(x64::Reg::RCX);
+                return ok;
+            }
+            emit_.mov_store(x64::Reg::R11, 0, x64::Reg::RAX);
             return true;
         }
 
@@ -12140,6 +12712,25 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             if (!sym->is_mut) {
                 error(describe_rebinding_target("variable", ident.name));
                 return false;
+            }
+            if (auto struct_it_local = stack_struct_locals_.find(sym); struct_it_local != stack_struct_locals_.end()) {
+                auto struct_it = structs_.find(struct_it_local->second);
+                if (struct_it == structs_.end()) {
+                    error_unknown_type("struct/class", struct_it_local->second);
+                    return false;
+                }
+                std::size_t size = struct_it->second.total_size > 0 ? struct_it->second.total_size : 8;
+                auto tmp_reg = pick_scratch_reg({x64::Reg::RAX}).value_or(x64::Reg::R11);
+                for (std::size_t offset = 0; offset < size; offset += 8) {
+                    auto chunk = static_cast<std::int32_t>(offset);
+                    emit_.mov_load(tmp_reg, x64::Reg::RAX, chunk);
+                    emit_.mov_store(x64::Reg::RBP, sym->stack_offset + chunk, tmp_reg);
+                }
+                if (auto bound = lookup_bound_reg(sym)) {
+                    emit_.lea(*bound, x64::Reg::RBP, sym->stack_offset);
+                }
+                update_owned_local_after_store(sym, bin.rhs.get());
+                return true;
             }
             if (auto bound = lookup_bound_reg(sym)) {
                 if (!emit_coerce_rax_to_type(sym->type, bin.rhs.get())) {
@@ -12249,7 +12840,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     return false;
                 }
 
-                if (!generate_expr(*bin.rhs)) return false;
+                bool save_rcx = reg_is_bound(x64::Reg::RCX);
+                if (save_rcx) {
+                    emit_.push(x64::Reg::RCX);
+                }
+                if (!generate_expr(*bin.rhs)) {
+                    if (save_rcx) emit_.pop(x64::Reg::RCX);
+                    return false;
+                }
                 emit_.push(x64::Reg::RAX);
 
                 if (auto bound = lookup_bound_reg(sym)) {
@@ -12287,7 +12885,11 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     return false;
                 }
                 emit_.mov(x64::Reg::RCX, x64::Reg::R10);
-                return emit_store_typed_to_address_in_rcx(*field_type);
+                bool ok = emit_store_typed_to_address_in_rcx(*field_type);
+                if (save_rcx) {
+                    emit_.pop(x64::Reg::RCX);
+                }
+                return ok;
             }
 
             std::int32_t foff = 0;
@@ -12392,7 +12994,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         // Generate right side -> RAX
         if (!generate_expr(*bin.rhs)) return false;
-        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // Save RHS to RCX
+        x64::Reg rhs_reg = pick_scratch_reg({x64::Reg::RAX, x64::Reg::RDX}).value_or(x64::Reg::R11);
+        emit_.mov(rhs_reg, x64::Reg::RAX);  // Save RHS
 
         // Register-bound locals must be updated in the register, not the stack spill slot.
         auto bound = lookup_bound_reg(sym);
@@ -12405,21 +13008,21 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // Apply operation
             switch (bin.op) {
                 case Op::AddAssign:
-                    emit_.add(x64::Reg::RAX, x64::Reg::RCX);
+                    emit_.add(x64::Reg::RAX, rhs_reg);
                     break;
             case Op::SubAssign:
-                emit_.sub(x64::Reg::RAX, x64::Reg::RCX);
+                emit_.sub(x64::Reg::RAX, rhs_reg);
                 break;
             case Op::MulAssign:
-                emit_.imul(x64::Reg::RAX, x64::Reg::RCX);
+                emit_.imul(x64::Reg::RAX, rhs_reg);
                 break;
             case Op::DivAssign:
                 emit_.cqo();
-                emit_.idiv(x64::Reg::RCX);
+                emit_.idiv(rhs_reg);
                 break;
             case Op::ModAssign:
                 emit_.cqo();
-                emit_.idiv(x64::Reg::RCX);
+                emit_.idiv(rhs_reg);
                 emit_.mov(x64::Reg::RAX, x64::Reg::RDX);  // remainder lives in rdx
                 break;
                 default:
@@ -12498,10 +13101,15 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     const auto& ident = un.operand->as<ast::IdentExpr>();
                     Symbol* sym = current_scope_->lookup(ident.name);
                     if (!sym) {
-                    error_undefined_name("variable", ident.name, collect_value_name_candidates());
-                    return false;
+                        error_undefined_name("variable", ident.name, collect_value_name_candidates());
+                        return false;
                     }
-                    emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+                    auto bound = lookup_bound_reg(sym);
+                    if (bound) {
+                        emit_.mov(x64::Reg::RAX, *bound);
+                    } else {
+                        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+                    }
                     if (un.op == Op::PreInc) {
                         emit_.add_smart(x64::Reg::RAX, 1);
                     } else {
@@ -12510,7 +13118,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     if (!emit_coerce_rax_to_type(sym->type)) {
                         return false;
                     }
-                    emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                    if (bound) {
+                        emit_.mov(*bound, x64::Reg::RAX);
+                        if (!should_elide_bound_stack_slot(sym)) {
+                            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                        }
+                    } else {
+                        emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                    }
                 } else {
                     error("increment/decrement requires a variable");
                     return false;
@@ -12526,21 +13141,36 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                         error_undefined_name("variable", ident.name, collect_value_name_candidates());
                         return false;
                     }
+                    auto bound = lookup_bound_reg(sym);
                     // Load current value (this is what we return)
-                    emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+                    if (bound) {
+                        emit_.mov(x64::Reg::RAX, *bound);
+                    } else {
+                        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+                    }
+                    x64::Reg tmp_reg = (bound && *bound == x64::Reg::RCX)
+                        ? x64::Reg::RCX
+                        : pick_scratch_reg({x64::Reg::RAX}).value_or(x64::Reg::RCX);
                     // Save to temp register
-                    emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+                    emit_.mov(tmp_reg, x64::Reg::RAX);
                     // Increment/decrement
                     if (un.op == Op::PostInc) {
-                        emit_.add_smart(x64::Reg::RCX, 1);
+                        emit_.add_smart(tmp_reg, 1);
                     } else {
-                        emit_.add_smart(x64::Reg::RCX, -1);
+                        emit_.add_smart(tmp_reg, -1);
                     }
-                    if (!emit_coerce_reg_to_type(x64::Reg::RCX, sym->type)) {
+                    if (!emit_coerce_reg_to_type(tmp_reg, sym->type)) {
                         return false;
                     }
                     // Store incremented value
-                    emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RCX);
+                    if (bound) {
+                        emit_.mov(*bound, tmp_reg);
+                        if (!should_elide_bound_stack_slot(sym)) {
+                            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, tmp_reg);
+                        }
+                    } else {
+                        emit_.mov_store(x64::Reg::RBP, sym->stack_offset, tmp_reg);
+                    }
                     // RAX still has original value
                 } else {
                     error("increment/decrement requires a variable");
@@ -12855,8 +13485,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         std::unordered_map<std::string, x64::Reg> inline_named_regs;
         FunctionLeafRegisterPlan inline_plan;
         if (try_make_function_leaf_register_plan(*info.decl, inline_plan)) {
-            constexpr std::array<x64::Reg, 6> inline_candidates = {
-                x64::Reg::R11,
+            constexpr std::array<x64::Reg, 5> inline_candidates = {
                 x64::Reg::R10,
                 x64::Reg::R9,
                 x64::Reg::R8,
@@ -13863,24 +14492,24 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         
         // Generate address
         if (!generate_expr(*call.args[0])) return false;
-        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // RCX = address
+        emit_.mov(x64::Reg::R11, x64::Reg::RAX);  // R11 = address
         
         emit_.pop(x64::Reg::RAX);  // RAX = value
         
-        // Write to [RCX] from RAX
+        // Write to [R11] from RAX
         switch (size) {
             case 1:
-                emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x01);  // mov [rcx], al
+                emit_.buffer().emit8(0x41); emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x03);  // mov [r11], al
                 break;
             case 2:
-                emit_.buffer().emit8(0x66); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x01);  // mov [rcx], ax
+                emit_.buffer().emit8(0x66); emit_.buffer().emit8(0x41); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x03);  // mov [r11], ax
                 break;
             case 4:
-                emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x01);  // mov [rcx], eax
+                emit_.buffer().emit8(0x41); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x03);  // mov [r11], eax
                 break;
             case 8:
             default:
-                emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x01);  // mov [rcx], rax
+                emit_.buffer().emit8(0x49); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x03);  // mov [r11], rax
                 break;
         }
         
@@ -13894,12 +14523,27 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             return false;
         }
         
+        emit_.push(x64::Reg::RDI);
+        emit_.push(x64::Reg::RSI);
+
         // Save args to stack, then use rep movsb
-        if (!generate_expr(*call.args[2])) return false;
+        if (!generate_expr(*call.args[2])) {
+            emit_.pop(x64::Reg::RSI);
+            emit_.pop(x64::Reg::RDI);
+            return false;
+        }
         emit_.push(x64::Reg::RAX);  // len
-        if (!generate_expr(*call.args[1])) return false;
+        if (!generate_expr(*call.args[1])) {
+            emit_.pop(x64::Reg::RSI);
+            emit_.pop(x64::Reg::RDI);
+            return false;
+        }
         emit_.push(x64::Reg::RAX);  // src
-        if (!generate_expr(*call.args[0])) return false;
+        if (!generate_expr(*call.args[0])) {
+            emit_.pop(x64::Reg::RSI);
+            emit_.pop(x64::Reg::RDI);
+            return false;
+        }
         emit_.mov(x64::Reg::RDI, x64::Reg::RAX);  // dst -> RDI
         emit_.pop(x64::Reg::RSI);  // src -> RSI
         emit_.pop(x64::Reg::RCX);  // len -> RCX
@@ -13907,6 +14551,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // rep movsb
         emit_.buffer().emit8(0xF3);
         emit_.buffer().emit8(0xA4);
+
+        emit_.pop(x64::Reg::RSI);
+        emit_.pop(x64::Reg::RDI);
         
         return true;
     }
@@ -18150,6 +18797,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 },
                 [&](const ast::CastExpr& e) -> bool {
                     return expr_mutates_ident(*e.expr, target, shadowed);
+                },
+                [&](const ast::FStringExpr& e) -> bool {
+                    for (const auto& part : e.parts) {
+                        if (part.is_expr && part.expr && expr_mutates_ident(*part.expr, target, shadowed)) {
+                            return true;
+                        }
+                    }
+                    return false;
                 },
                 [&](const ast::ArrayExpr& e) -> bool {
                     for (const auto& elem : e.elements) {
