@@ -122,6 +122,65 @@ def ensure_tcc(work_dir):
         pass
     return None
 
+def detect_x86_simd_flags(gcc_bin, cl_bin, work_dir):
+    probe_src = work_dir / "isa_probe.c"
+    probe_exe = work_dir / "isa_probe.exe"
+    probe_src.write_text(
+        "#ifdef _MSC_VER\n"
+        "#include <intrin.h>\n"
+        "static void cpuid_ex(int out[4], int leaf, int sub) { __cpuidex(out, leaf, sub); }\n"
+        "static unsigned long long xgetbv0(void) { return _xgetbv(0); }\n"
+        "#else\n"
+        "#include <cpuid.h>\n"
+        "static void cpuid_ex(int out[4], int leaf, int sub) {\n"
+        "    unsigned int a, b, c, d;\n"
+        "    __cpuid_count((unsigned)leaf, (unsigned)sub, a, b, c, d);\n"
+        "    out[0] = (int)a; out[1] = (int)b; out[2] = (int)c; out[3] = (int)d;\n"
+        "}\n"
+        "static unsigned long long xgetbv0(void) {\n"
+        "    unsigned int lo, hi;\n"
+        "    __asm__ volatile(\"xgetbv\" : \"=a\"(lo), \"=d\"(hi) : \"c\"(0));\n"
+        "    return ((unsigned long long)hi << 32) | lo;\n"
+        "}\n"
+        "#endif\n"
+        "int main(void) {\n"
+        "    int r[4] = {0};\n"
+        "    cpuid_ex(r, 0, 0);\n"
+        "    if (r[0] < 7) return 0;\n"
+        "    cpuid_ex(r, 1, 0);\n"
+        "    if ((r[2] & ((1 << 27) | (1 << 28))) != ((1 << 27) | (1 << 28))) return 0;\n"
+        "    unsigned long long xcr0 = xgetbv0();\n"
+        "    cpuid_ex(r, 7, 0);\n"
+        "    if ((xcr0 & 0xE6ULL) == 0xE6ULL &&\n"
+        "        (r[1] & ((1 << 16) | (1 << 17) | (1 << 30))) == ((1 << 16) | (1 << 17) | (1 << 30)))\n"
+        "        return 2;\n"
+        "    if ((xcr0 & 0x06ULL) == 0x06ULL && (r[1] & (1 << 5)))\n"
+        "        return 1;\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    isa = 0
+    is_windows = sys.platform.startswith("win")
+    try:
+        if cl_bin:
+            res = run_proc([str(cl_bin), "/nologo", str(probe_src), f"/Fe:{probe_exe}", f"/Fo:{work_dir / 'isa_probe.obj'}"], cwd=work_dir)
+        elif gcc_bin:
+            res = run_proc([str(gcc_bin), "-O0", str(probe_src), "-o", str(probe_exe)], cwd=work_dir)
+        else:
+            return None, False
+        if res.returncode == 0 and probe_exe.exists():
+            cmd = [str(probe_exe)] if is_windows else ["wine", str(probe_exe)]
+            isa = run_proc(cmd, cwd=work_dir).returncode
+    except Exception:
+        isa = 0
+    if isa == 2:
+        return "/arch:AVX512", True
+    if isa == 1:
+        return "/arch:AVX2", False
+    return None, False
+
+
 def find_compiler(name):
     return shutil.which(name)
 
@@ -215,6 +274,7 @@ def main():
         compilers["TCC"] = {"type": "tcc", "bin": tcc_bin}
 
     print(f"Toolchains detected: {', '.join(compilers.keys())}")
+    msvc_arch_flag, gcc_avx512 = detect_x86_simd_flags(gcc_bin, cl_bin, OUT_DIR)
     failures = [f"Missing toolchain: {name}" for name in args.require_toolchains if name not in compilers]
 
     all_results = {}
@@ -240,7 +300,10 @@ def main():
                     cmd = ["wine"] + cmd
 
             elif c_info["type"] == "gcc":
-                cmd = [str(c_info["bin"]), "-O3", "-mavx2", "-mfma", "-fwrapv", "-s", f"-DBENCH={bench['c_macro']}", str(BENCH_C), "-o", str(exe_out)]
+                cmd = [str(c_info["bin"]), "-O3", "-march=native"]
+                if gcc_avx512:
+                    cmd.append("-mprefer-vector-width=512")
+                cmd += ["-fwrapv", "-s", f"-DBENCH={bench['c_macro']}", str(BENCH_C), "-o", str(exe_out)]
 
             elif c_info["type"] == "tcc":
                 cmd = [str(c_info["bin"]), f"-DBENCH={bench['c_macro']}", str(BENCH_C), "-o", str(exe_out)]
@@ -248,8 +311,11 @@ def main():
                     cmd = ["wine"] + cmd
 
             elif c_info["type"] == "msvc":
-                cmd = [
-                    str(c_info["bin"]), "/nologo", "/O2", "/arch:AVX2", "/GS-", "/Ob2", "/Oi", "/Ot",
+                cmd = [str(c_info["bin"]), "/nologo", "/O2"]
+                if msvc_arch_flag:
+                    cmd.append(msvc_arch_flag)
+                cmd += [
+                    "/GS-", "/Ob2", "/Oi", "/Ot",
                     f"/DBENCH={bench['c_macro']}", str(BENCH_C),
                     f"/Fe:{exe_out}", f"/Fo:{build_dir / 'benchmark.obj'}"
                 ]
@@ -290,7 +356,7 @@ def main():
         if len(exits) > 1:
             failures.append(f"{bench_id}: toolchain result checksums disagree")
 
-    md = generate_markdown(all_results)
+    md = generate_markdown(all_results, msvc_arch_flag=msvc_arch_flag, gcc_avx512=gcc_avx512)
     if failures:
         md += "\n## Measurement Errors\n\n" + "\n".join(f"- {error}" for error in failures) + "\n"
     # Detect true host architecture
@@ -391,10 +457,14 @@ def get_cpu_info():
             pass
     return platform.processor() or "Unknown CPU"
 
-def generate_markdown(data):
+def generate_markdown(data, msvc_arch_flag=None, gcc_avx512=False):
     date_str = time.strftime("%Y-%m-%d")
     cpu = get_cpu_info()
     sys_name = f"{platform.system()} {platform.machine()}"
+    msvc_flags = f"/O2 {msvc_arch_flag} /Ob2 /Oi /Ot /GS-" if msvc_arch_flag else "/O2 /Ob2 /Oi /Ot /GS-"
+    gcc_flags = "-O3 -march=native -mprefer-vector-width=512 -fwrapv" if gcc_avx512 else "-O3 -march=native -fwrapv"
+    msvc_short = f"/O2 {msvc_arch_flag}" if msvc_arch_flag else "/O2"
+    gcc_short = "-O3 -march=native -mprefer-vector-width=512" if gcc_avx512 else "-O3 -march=native"
 
     lines = [
         "# Benchmark Showdown",
@@ -402,7 +472,7 @@ def generate_markdown(data):
         f"- **Date:** {date_str}",
         f"- **Host:** `{sys_name}`",
         f"- **CPU:** `{cpu}`",
-        "- **Toolchains:** Sable (native x64), MSVC (`/O2 /Ob2 /Oi /Ot /GS-`), GCC (`-O3 -fwrapv`), TCC",
+        f"- **Toolchains:** Sable (native x64), MSVC (`{msvc_flags}`), GCC (`{gcc_flags}`), TCC",
         "",
         "## Execution Runtime (lower is better)",
         "",
@@ -441,7 +511,7 @@ def generate_markdown(data):
         "",
         "## Compilation Speed & Binary Size",
         "",
-        "| Workload | Sable | MSVC (`/O2`) | GCC (`-O3`) | TCC |",
+        f"| Workload | Sable | MSVC (`{msvc_short}`) | GCC (`{gcc_short}`) | TCC |",
         "| :--- | ---: | ---: | ---: | ---: |",
     ]
 
