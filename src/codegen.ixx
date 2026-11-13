@@ -1426,6 +1426,13 @@ private:
 
     void pop_scope() {
         if (current_scope_) {
+            for (const auto& [_, sym] : current_scope_->symbols) {
+                register_bindings_.erase(&sym);
+                stack_struct_locals_.erase(&sym);
+                owned_locals_.erase(&sym);
+                accumulator_inductions_.erase(&sym);
+                counter_inductions_.erase(&sym);
+            }
             current_scope_ = current_scope_->parent;
         }
     }
@@ -3876,6 +3883,138 @@ private:
         }, stmt.kind);
     }
 
+    [[nodiscard]] bool expr_contains_non_inlined_call(const ast::Expr& expr) const {
+        return std::visit(overloaded{
+            [&](const ast::LiteralExpr&) { return false; },
+            [&](const ast::IdentExpr&) { return false; },
+            [&](const ast::UnaryExpr& e) { return expr_contains_non_inlined_call(*e.operand); },
+            [&](const ast::BinaryExpr& e) {
+                return expr_contains_non_inlined_call(*e.lhs) || expr_contains_non_inlined_call(*e.rhs);
+            },
+            [&](const ast::IndexExpr& e) {
+                return expr_contains_non_inlined_call(*e.base) || expr_contains_non_inlined_call(*e.index);
+            },
+            [&](const ast::FieldExpr& e) { return expr_contains_non_inlined_call(*e.base); },
+            [&](const ast::CastExpr& e) { return expr_contains_non_inlined_call(*e.expr); },
+            [&](const ast::ArrayExpr& e) {
+                for (const auto& elem : e.elements) {
+                    if (expr_contains_non_inlined_call(*elem)) return true;
+                }
+                return false;
+            },
+            [&](const ast::StructExpr& e) {
+                for (const auto& [_, value] : e.fields) {
+                    if (expr_contains_non_inlined_call(*value)) return true;
+                }
+                return false;
+            },
+            [&](const ast::CallExpr& e) {
+                if (!is_inline_safe_direct_call_expr(expr)) {
+                    return true;
+                }
+                for (const auto& arg : e.args) {
+                    if (expr_contains_non_inlined_call(*arg)) return true;
+                }
+                return false;
+            },
+            [&](const auto&) { return true; },
+        }, expr.kind);
+    }
+
+    [[nodiscard]] bool stmt_contains_non_inlined_call(const ast::Stmt& stmt) const {
+        return std::visit(overloaded{
+            [&](const ast::LetStmt& s) {
+                return s.init && expr_contains_non_inlined_call(*s.init);
+            },
+            [&](const ast::ExprStmt& s) {
+                return expr_contains_non_inlined_call(*s.expr);
+            },
+            [&](const ast::ReturnStmt& s) {
+                return s.value && expr_contains_non_inlined_call(*s.value);
+            },
+            [&](const ast::IfStmt& s) {
+                if (expr_contains_non_inlined_call(*s.condition)) {
+                    return true;
+                }
+                for (const auto& inner : s.then_block) {
+                    if (stmt_contains_non_inlined_call(*inner)) return true;
+                }
+                if (s.else_block) {
+                    for (const auto& inner : *s.else_block) {
+                        if (stmt_contains_non_inlined_call(*inner)) return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::SwitchStmt& s) {
+                if (expr_contains_non_inlined_call(*s.subject)) return true;
+                for (const auto& branch : s.cases) {
+                    for (const auto& inner : branch.body) {
+                        if (stmt_contains_non_inlined_call(*inner)) return true;
+                    }
+                }
+                if (s.else_block) {
+                    for (const auto& inner : *s.else_block) {
+                        if (stmt_contains_non_inlined_call(*inner)) return true;
+                    }
+                }
+                return false;
+            },
+            [&](const ast::WhileStmt& s) {
+                if (expr_contains_non_inlined_call(*s.condition)) return true;
+                for (const auto& inner : s.body) {
+                    if (stmt_contains_non_inlined_call(*inner)) return true;
+                }
+                return false;
+            },
+            [&](const ast::LoopStmt& s) {
+                for (const auto& inner : s.body) {
+                    if (stmt_contains_non_inlined_call(*inner)) return true;
+                }
+                return false;
+            },
+            [&](const ast::ForStmt& s) {
+                if (expr_contains_non_inlined_call(*s.iterable)) return true;
+                for (const auto& inner : s.body) {
+                    if (stmt_contains_non_inlined_call(*inner)) return true;
+                }
+                return false;
+            },
+            [&](const ast::BlockStmt& s) {
+                for (const auto& inner : s.block.stmts) {
+                    if (stmt_contains_non_inlined_call(*inner)) return true;
+                }
+                return false;
+            },
+            [&](const ast::ParallelForStmt& s) {
+                if (expr_contains_non_inlined_call(*s.start) || expr_contains_non_inlined_call(*s.end)) {
+                    return true;
+                }
+                for (const auto& inner : s.body) {
+                    if (stmt_contains_non_inlined_call(*inner)) return true;
+                }
+                return false;
+            },
+            [&](const auto&) { return false; },
+        }, stmt.kind);
+    }
+
+    [[nodiscard]] bool range_contains_non_inlined_call(
+        const std::vector<ast::StmtPtr>& stmts,
+        std::size_t start,
+        std::size_t end
+    ) const {
+        if (start >= end) {
+            return false;
+        }
+        for (std::size_t i = start; i < end; ++i) {
+            if (stmt_contains_non_inlined_call(*stmts[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] static bool range_contains_call(
         const std::vector<ast::StmtPtr>& stmts,
         std::size_t start,
@@ -4042,8 +4181,9 @@ private:
             x64::Reg::RDI,
         };
 
-        std::size_t reg_index = 0;
         const auto& body = fn.body_ref();
+        std::vector<std::string> candidate_names;
+        std::unordered_set<std::string> candidate_set;
         for (const auto& stmt : body) {
             if (!stmt->is<ast::LetStmt>()) {
                 break;
@@ -4052,16 +4192,173 @@ private:
             if (!let_init_is_saved_local_candidate(let)) {
                 break;
             }
-            if (reg_index >= kSavedCandidates.size()) {
-                break;
-            }
-            auto reg = kSavedCandidates[reg_index++];
-            plan.locals.push_back({let.name, reg});
-            plan.save_regs.push_back(reg);
             plan.prefix_count++;
+            if (!let.init->is<ast::StructExpr>() && candidate_set.insert(let.name).second) {
+                candidate_names.push_back(let.name);
+            }
         }
 
-        return !plan.locals.empty();
+        if (candidate_names.empty()) {
+            plan.prefix_count = 0;
+            return false;
+        }
+
+        std::unordered_map<std::string, std::uint64_t> weighted_uses;
+        std::unordered_set<std::string> address_taken;
+        std::function<void(const ast::Expr&, std::uint64_t)> scan_expr;
+        std::function<void(const ast::Stmt&, std::uint64_t)> scan_stmt;
+
+        scan_expr = [&](const ast::Expr& expr, std::uint64_t weight) {
+            std::visit(overloaded{
+                [&](const ast::IdentExpr& e) {
+                    if (candidate_set.contains(e.name)) {
+                        weighted_uses[e.name] += weight;
+                    }
+                },
+                [&](const ast::UnaryExpr& e) {
+                    if ((e.op == ast::UnaryExpr::Op::AddrOf || e.op == ast::UnaryExpr::Op::AddrOfMut) &&
+                        e.operand->is<ast::IdentExpr>()) {
+                        address_taken.insert(e.operand->as<ast::IdentExpr>().name);
+                    }
+                    scan_expr(*e.operand, weight);
+                },
+                [&](const ast::BinaryExpr& e) {
+                    scan_expr(*e.lhs, weight);
+                    scan_expr(*e.rhs, weight);
+                },
+                [&](const ast::CallExpr& e) {
+                    scan_expr(*e.callee, weight);
+                    for (const auto& arg : e.args) {
+                        scan_expr(*arg, weight);
+                    }
+                },
+                [&](const ast::IndexExpr& e) {
+                    scan_expr(*e.base, weight);
+                    scan_expr(*e.index, weight);
+                },
+                [&](const ast::FieldExpr& e) {
+                    scan_expr(*e.base, weight);
+                },
+                [&](const ast::CastExpr& e) {
+                    scan_expr(*e.expr, weight);
+                },
+                [&](const ast::ArrayExpr& e) {
+                    for (const auto& elem : e.elements) {
+                        scan_expr(*elem, weight);
+                    }
+                },
+                [&](const ast::StructExpr& e) {
+                    for (const auto& [_, val] : e.fields) {
+                        scan_expr(*val, weight);
+                    }
+                },
+                [&](const auto&) {},
+            }, expr.kind);
+        };
+
+        scan_stmt = [&](const ast::Stmt& stmt, std::uint64_t weight) {
+            std::visit(overloaded{
+                [&](const ast::LetStmt& s) {
+                    if (s.init) {
+                        scan_expr(*s.init, weight);
+                    }
+                },
+                [&](const ast::ExprStmt& s) {
+                    scan_expr(*s.expr, weight);
+                },
+                [&](const ast::ReturnStmt& s) {
+                    if (s.value) {
+                        scan_expr(*s.value, weight);
+                    }
+                },
+                [&](const ast::IfStmt& s) {
+                    scan_expr(*s.condition, weight);
+                    for (const auto& inner : s.then_block) {
+                        scan_stmt(*inner, weight);
+                    }
+                    if (s.else_block) {
+                        for (const auto& inner : *s.else_block) {
+                            scan_stmt(*inner, weight);
+                        }
+                    }
+                },
+                [&](const ast::SwitchStmt& s) {
+                    scan_expr(*s.subject, weight);
+                    for (const auto& br : s.cases) {
+                        for (const auto& inner : br.body) {
+                            scan_stmt(*inner, weight);
+                        }
+                    }
+                    if (s.else_block) {
+                        for (const auto& inner : *s.else_block) {
+                            scan_stmt(*inner, weight);
+                        }
+                    }
+                },
+                [&](const ast::WhileStmt& s) {
+                    std::uint64_t loop_w = weight < (1ULL << 48) ? weight * 16 : weight;
+                    scan_expr(*s.condition, loop_w);
+                    for (const auto& inner : s.body) {
+                        scan_stmt(*inner, loop_w);
+                    }
+                },
+                [&](const ast::LoopStmt& s) {
+                    std::uint64_t loop_w = weight < (1ULL << 48) ? weight * 16 : weight;
+                    for (const auto& inner : s.body) {
+                        scan_stmt(*inner, loop_w);
+                    }
+                },
+                [&](const ast::ForStmt& s) {
+                    std::uint64_t loop_w = weight < (1ULL << 48) ? weight * 16 : weight;
+                    scan_expr(*s.iterable, weight);
+                    for (const auto& inner : s.body) {
+                        scan_stmt(*inner, loop_w);
+                    }
+                },
+                [&](const ast::ParallelForStmt& s) {
+                    std::uint64_t loop_w = weight < (1ULL << 48) ? weight * 16 : weight;
+                    scan_expr(*s.start, weight);
+                    scan_expr(*s.end, weight);
+                    for (const auto& inner : s.body) {
+                        scan_stmt(*inner, loop_w);
+                    }
+                },
+                [&](const ast::BlockStmt& s) {
+                    for (const auto& inner : s.block.stmts) {
+                        scan_stmt(*inner, weight);
+                    }
+                },
+                [&](const auto&) {},
+            }, stmt.kind);
+        };
+
+        for (std::size_t i = plan.prefix_count; i < body.size(); ++i) {
+            scan_stmt(*body[i], 1);
+        }
+
+        std::vector<std::string> ranked;
+        ranked.reserve(candidate_names.size());
+        for (const auto& name : candidate_names) {
+            if (!address_taken.contains(name)) {
+                ranked.push_back(name);
+            }
+        }
+        std::stable_sort(ranked.begin(), ranked.end(), [&](const std::string& a, const std::string& b) {
+            return weighted_uses[a] > weighted_uses[b];
+        });
+
+        std::size_t count = std::min(ranked.size(), kSavedCandidates.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            auto reg = kSavedCandidates[i];
+            plan.locals.push_back({ranked[i], reg});
+            plan.save_regs.push_back(reg);
+        }
+
+        if (plan.locals.empty()) {
+            plan.prefix_count = 0;
+            return false;
+        }
+        return true;
     }
 
     [[nodiscard]] static bool expr_has_only_local_side_effects(const ast::Expr& expr, const std::unordered_set<std::string>& locals) {
@@ -4295,6 +4592,13 @@ private:
             }
         } else if (use_saved_local_plan) {
             current_function_saved_regs_ = saved_local_plan.save_regs;
+            if (!saved_local_plan.locals.empty()) {
+                bound_stack_elision_names_.push_back({});
+                for (const auto& [name, _] : saved_local_plan.locals) {
+                    bound_stack_elision_names_.back().insert(name);
+                }
+                pushed_function_bound_elision = true;
+            }
         }
 
         std::size_t frame_patch = emit_.prologue_patchable(current_function_saved_regs_);
@@ -4364,10 +4668,15 @@ private:
 
         bool body_ok = true;
         if (use_saved_local_plan) {
+            std::unordered_map<std::string, x64::Reg> saved_reg_map;
+            saved_reg_map.reserve(saved_local_plan.locals.size());
+            for (const auto& [name, reg] : saved_local_plan.locals) {
+                saved_reg_map[name] = reg;
+            }
             for (std::size_t i = 0; i < saved_local_plan.prefix_count; ++i) {
                 const auto& let = body[i]->as<ast::LetStmt>();
-                if (i < saved_local_plan.locals.size()) {
-                    pending_named_register_bindings_[saved_local_plan.locals[i].first] = saved_local_plan.locals[i].second;
+                if (auto it = saved_reg_map.find(let.name); it != saved_reg_map.end()) {
+                    pending_named_register_bindings_[let.name] = it->second;
                 }
                 Symbol* sym = define_let_symbol(let);
                 if (!sym || !emit_let_init(let, *sym)) {
@@ -4375,9 +4684,7 @@ private:
                     break;
                 }
                 update_owned_local_after_store(sym, let.init.get());
-                if (i < saved_local_plan.locals.size()) {
-                    pending_named_register_bindings_.erase(saved_local_plan.locals[i].first);
-                }
+                pending_named_register_bindings_.erase(let.name);
             }
             pending_named_register_bindings_.clear();
             if (body_ok) {
@@ -5720,57 +6027,83 @@ private:
             return false;
         }
 
-        std::vector<std::pair<const ast::LetStmt*, Symbol*>> lets;
-        lets.reserve(while_index - start_index);
-        for (std::size_t idx = start_index; idx < while_index; ++idx) {
-            const auto& let = stmts[idx]->as<ast::LetStmt>();
-            Symbol* sym = define_let_symbol(let);
-            if (!sym) {
-                return false;
-            }
-            lets.push_back({&let, sym});
-        }
-
-        const auto& while_stmt = stmts[while_index]->as<ast::WhileStmt>();
-        const auto& ret_stmt = stmts[return_index]->as<ast::ReturnStmt>();
-
-        {
-            WhileAlternatingBranchReductionPlan alternating_plan;
-            std::unordered_map<const Symbol*, const ast::Expr*> init_map;
-            bool all_bound = true;
-            for (const auto& [let, sym] : lets) {
-                if (!can_generate_pure_expr(*let->init)) {
-                    all_bound = false;
-                    break;
+        return try_speculative_codegen([&] {
+            std::vector<std::pair<const ast::LetStmt*, Symbol*>> lets;
+            lets.reserve(while_index - start_index);
+            for (std::size_t idx = start_index; idx < while_index; ++idx) {
+                const auto& let = stmts[idx]->as<ast::LetStmt>();
+                Symbol* sym = define_let_symbol(let);
+                if (!sym) {
+                    return false;
                 }
-                init_map[sym] = let->init.get();
+                lets.push_back({&let, sym});
             }
-            if (all_bound && try_make_while_alternating_branch_reduction_plan(while_stmt, ret_stmt, alternating_plan) &&
-                try_speculative_codegen([&] {
-                    return generate_while_alternating_branch_reduced_return(alternating_plan, &init_map, try_extract_return_mask(ret_stmt));
-                })) {
-                consumed = return_index;
-                return true;
-            }
-        }
 
-        WhileMultiStatePlan plan;
-        if (try_make_while_multistate_plan(while_stmt, plan)) {
-            WhileMultiStateReductionPlan reduced_plan;
-            if (try_make_while_multistate_reduction_plan(plan, ret_stmt, reduced_plan)) {
+            const auto& while_stmt = stmts[while_index]->as<ast::WhileStmt>();
+            const auto& ret_stmt = stmts[return_index]->as<ast::ReturnStmt>();
+
+            {
+                WhileAlternatingBranchReductionPlan alternating_plan;
                 std::unordered_map<const Symbol*, const ast::Expr*> init_map;
-                std::unordered_set<const Symbol*> needed_symbols = {
-                    reduced_plan.counter_sym,
-                    reduced_plan.accum_sym,
-                };
-                for (Symbol* sym : reduced_plan.contributor_syms) {
-                    needed_symbols.insert(sym);
+                bool all_bound = true;
+                for (const auto& [let, sym] : lets) {
+                    if (!can_generate_pure_expr(*let->init)) {
+                        all_bound = false;
+                        break;
+                    }
+                    init_map[sym] = let->init.get();
+                }
+                if (all_bound && try_make_while_alternating_branch_reduction_plan(while_stmt, ret_stmt, alternating_plan) &&
+                    try_speculative_codegen([&] {
+                        return generate_while_alternating_branch_reduced_return(alternating_plan, &init_map, try_extract_return_mask(ret_stmt));
+                    })) {
+                    consumed = return_index;
+                    return true;
+                }
+            }
+
+            WhileMultiStatePlan plan;
+            if (try_make_while_multistate_plan(while_stmt, plan)) {
+                WhileMultiStateReductionPlan reduced_plan;
+                if (try_make_while_multistate_reduction_plan(plan, ret_stmt, reduced_plan)) {
+                    std::unordered_map<const Symbol*, const ast::Expr*> init_map;
+                    std::unordered_set<const Symbol*> needed_symbols = {
+                        reduced_plan.counter_sym,
+                        reduced_plan.accum_sym,
+                    };
+                    for (Symbol* sym : reduced_plan.contributor_syms) {
+                        needed_symbols.insert(sym);
+                    }
+
+                    bool all_bound = lets.size() == needed_symbols.size();
+                    if (all_bound) {
+                        for (const auto& [let, sym] : lets) {
+                            if (!needed_symbols.contains(sym) || !can_generate_pure_expr(*let->init)) {
+                                all_bound = false;
+                                break;
+                            }
+                            init_map[sym] = let->init.get();
+                        }
+                    }
+
+                    if (all_bound && try_speculative_codegen([&] {
+                        return generate_while_multistate_reduced_return(reduced_plan, &init_map, try_extract_return_mask(ret_stmt));
+                    })) {
+                        consumed = return_index;
+                        return true;
+                    }
                 }
 
-                bool all_bound = lets.size() == needed_symbols.size();
+                std::unordered_map<const Symbol*, const ast::Expr*> init_map;
+                std::unordered_set<const Symbol*> bound_symbols;
+                for (const auto& [sym, _] : plan.bindings) {
+                    bound_symbols.insert(sym);
+                }
+
+                bool all_bound = lets.size() == plan.bindings.size();
                 if (all_bound) {
                     for (const auto& [let, sym] : lets) {
-                        if (!needed_symbols.contains(sym) || !can_generate_pure_expr(*let->init)) {
+                        if (!bound_symbols.contains(sym) || !can_generate_pure_expr(*let->init)) {
                             all_bound = false;
                             break;
                         }
@@ -5779,106 +6112,69 @@ private:
                 }
 
                 if (all_bound && try_speculative_codegen([&] {
-                    return generate_while_multistate_reduced_return(reduced_plan, &init_map, try_extract_return_mask(ret_stmt));
+                    return generate_while_multistate_registerized_return(plan, ret_stmt, &init_map);
                 })) {
                     consumed = return_index;
                     return true;
                 }
             }
 
-            std::unordered_map<const Symbol*, const ast::Expr*> init_map;
-            std::unordered_set<const Symbol*> bound_symbols;
-            for (const auto& [sym, _] : plan.bindings) {
-                bound_symbols.insert(sym);
-            }
+            WhileBoundPlan bound_plan;
+            if (try_make_while_bound_plan(while_stmt, bound_plan)) {
+                std::unordered_map<const Symbol*, const ast::Expr*> init_map;
+                std::unordered_set<const Symbol*> bound_symbols;
+                for (const auto& [sym, _] : bound_plan.bindings) {
+                    bound_symbols.insert(sym);
+                }
 
-            bool all_bound = lets.size() == plan.bindings.size();
-            if (all_bound) {
-                for (const auto& [let, sym] : lets) {
-                    if (!bound_symbols.contains(sym) || !can_generate_pure_expr(*let->init)) {
-                        all_bound = false;
-                        break;
+                bool all_bound = lets.size() == bound_plan.bindings.size();
+                if (all_bound) {
+                    for (const auto& [let, sym] : lets) {
+                        if (!bound_symbols.contains(sym) || !can_generate_pure_expr(*let->init)) {
+                            all_bound = false;
+                            break;
+                        }
+                        init_map[sym] = let->init.get();
                     }
-                    init_map[sym] = let->init.get();
+                }
+
+                if (all_bound && try_speculative_codegen([&] {
+                    return generate_while_bound_registerized_return(while_stmt, bound_plan, ret_stmt, &init_map);
+                })) {
+                    consumed = return_index;
+                    return true;
                 }
             }
 
-            if (all_bound && try_speculative_codegen([&] {
-                return generate_while_multistate_registerized_return(plan, ret_stmt, &init_map);
-            })) {
-                consumed = return_index;
-                return true;
-            }
-        }
+            WhileRegisterPlan single_plan;
+            if (try_make_while_register_plan(while_stmt, single_plan)) {
+                std::unordered_map<const Symbol*, const ast::Expr*> init_map;
+                std::unordered_set<const Symbol*> bound_symbols;
+                for (const auto& [sym, _] : single_plan.bindings) {
+                    bound_symbols.insert(sym);
+                }
 
-        WhileBoundPlan bound_plan;
-        if (try_make_while_bound_plan(while_stmt, bound_plan)) {
-            std::unordered_map<const Symbol*, const ast::Expr*> init_map;
-            std::unordered_set<const Symbol*> bound_symbols;
-            for (const auto& [sym, _] : bound_plan.bindings) {
-                bound_symbols.insert(sym);
-            }
-
-            bool all_bound = lets.size() == bound_plan.bindings.size();
-            if (all_bound) {
-                for (const auto& [let, sym] : lets) {
-                    if (!bound_symbols.contains(sym) || !can_generate_pure_expr(*let->init)) {
-                        all_bound = false;
-                        break;
+                bool all_bound = lets.size() == single_plan.bindings.size();
+                if (all_bound) {
+                    for (const auto& [let, sym] : lets) {
+                        if (!bound_symbols.contains(sym) || !can_generate_pure_expr(*let->init)) {
+                            all_bound = false;
+                            break;
+                        }
+                        init_map[sym] = let->init.get();
                     }
-                    init_map[sym] = let->init.get();
+                }
+
+                if (all_bound && try_speculative_codegen([&] {
+                    return generate_while_registerized_return(while_stmt, single_plan, ret_stmt, &init_map);
+                })) {
+                    consumed = return_index;
+                    return true;
                 }
             }
 
-            if (all_bound && try_speculative_codegen([&] {
-                return generate_while_bound_registerized_return(while_stmt, bound_plan, ret_stmt, &init_map);
-            })) {
-                consumed = return_index;
-                return true;
-            }
-        }
-
-        WhileRegisterPlan single_plan;
-        if (try_make_while_register_plan(while_stmt, single_plan)) {
-            std::unordered_map<const Symbol*, const ast::Expr*> init_map;
-            std::unordered_set<const Symbol*> bound_symbols;
-            for (const auto& [sym, _] : single_plan.bindings) {
-                bound_symbols.insert(sym);
-            }
-
-            bool all_bound = lets.size() == single_plan.bindings.size();
-            if (all_bound) {
-                for (const auto& [let, sym] : lets) {
-                    if (!bound_symbols.contains(sym) || !can_generate_pure_expr(*let->init)) {
-                        all_bound = false;
-                        break;
-                    }
-                    init_map[sym] = let->init.get();
-                }
-            }
-
-            if (all_bound && try_speculative_codegen([&] {
-                return generate_while_registerized_return(while_stmt, single_plan, ret_stmt, &init_map);
-            })) {
-                consumed = return_index;
-                return true;
-            }
-        }
-
-        for (const auto& [let, sym] : lets) {
-            if (!emit_let_init(*let, *sym)) {
-                return false;
-            }
-            update_owned_local_after_store(sym, let->init.get());
-        }
-        for (std::size_t idx = while_index; idx <= return_index; ++idx) {
-            if (!generate_stmt(*stmts[idx])) {
-                return false;
-            }
-        }
-
-        consumed = return_index;
-        return true;
+            return false;
+        });
     }
 
     [[nodiscard]] bool generate_stmt_list_from(const std::vector<ast::StmtPtr>& stmts, std::size_t start_index = 0) {
@@ -5992,22 +6288,21 @@ private:
                     !let.is_mut && let.init && is_inline_safe_direct_call_expr(*let.init);
                 bool later_call_arg_uses =
                     inline_safe_call_init && uses_ident_in_call_arg_context_in_range(let.name, stmts, i + 1);
-                bool later_multi_use_stmt =
-                    inline_safe_call_init && uses_ident_multiple_times_in_single_stmt_in_range(let.name, stmts, i + 1);
                 bool registerizable_immutable_init =
                     !let.is_mut && let.init && can_registerize_immutable_let_init(*let.init);
                 auto last_use = find_last_ident_use_in_range(let.name, stmts, i + 1);
                 bool lives_across_call =
+                    last_use && range_contains_non_inlined_call(stmts, i + 1, *last_use);
+                bool lives_across_any_call =
                     last_use && range_contains_call(stmts, i + 1, *last_use);
                 if (registerizable_immutable_init &&
                     !later_call_arg_uses &&
-                    !later_multi_use_stmt &&
                     !lives_across_call &&
                     !(inline_safe_call_init && !active_inline_safe_call_reg_lets.empty())) {
                     std::size_t remaining_uses = count_ident_uses_in_range(let.name, stmts, i + 1);
                     if (remaining_uses >= 2) {
-                        constexpr std::size_t kReservedScratchRegs = 2;
-                        if (available_scratch_reg_count() > kReservedScratchRegs) {
+                        std::size_t min_free_regs = lives_across_any_call ? 4 : 2;
+                        if (available_scratch_reg_count() > min_free_regs) {
                             auto reg = pick_scratch_reg();
                             if (!reg) {
                                 continue;
@@ -6245,6 +6540,12 @@ private:
                     return generate_pure_expr_into(*it->second, reg);
                 }
             }
+            if (auto bound = lookup_bound_reg(sym)) {
+                if (*bound != reg) {
+                    emit_.mov(reg, *bound);
+                }
+                return true;
+            }
             emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
             return true;
         };
@@ -6293,6 +6594,12 @@ private:
                 if (auto it = init_map->find(sym); it != init_map->end()) {
                     return generate_pure_expr_into(*it->second, reg);
                 }
+            }
+            if (auto bound = lookup_bound_reg(sym)) {
+                if (*bound != reg) {
+                    emit_.mov(reg, *bound);
+                }
+                return true;
             }
             emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
             return true;
@@ -6920,18 +7227,8 @@ private:
             return emit_binary_into_with_rhs_reg(*bound, update.op, *rhs_reg);
         }
 
-        if (update.has_rhs_imm &&
-            supports_binary_rhs_imm(update.op, update.rhs_imm) &&
-            update.op != ast::BinaryExpr::Op::Assign) {
-            emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, update.sym->stack_offset);
-            if (!emit_binary_into_with_rhs_imm(x64::Reg::RAX, update.op, update.rhs_imm)) {
-                return false;
-            }
-            emit_.mov_store(x64::Reg::RBP, update.sym->stack_offset, x64::Reg::RAX);
-            return true;
-        }
-
-        if (update.op == ast::BinaryExpr::Op::Add || update.op == ast::BinaryExpr::Op::Sub) {
+        if ((update.op == ast::BinaryExpr::Op::Add || update.op == ast::BinaryExpr::Op::Sub) &&
+            update.sym->type.size_bytes() == 8 && !update.sym->type.is_float()) {
             if (update.has_rhs_imm &&
                 update.rhs_imm >= (std::numeric_limits<std::int32_t>::min)() &&
                 update.rhs_imm <= (std::numeric_limits<std::int32_t>::max)()) {
@@ -6947,6 +7244,17 @@ private:
                 }
                 return true;
             }
+        }
+
+        if (update.has_rhs_imm &&
+            supports_binary_rhs_imm(update.op, update.rhs_imm) &&
+            update.op != ast::BinaryExpr::Op::Assign) {
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, update.sym->stack_offset);
+            if (!emit_binary_into_with_rhs_imm(x64::Reg::RAX, update.op, update.rhs_imm)) {
+                return false;
+            }
+            emit_.mov_store(x64::Reg::RBP, update.sym->stack_offset, x64::Reg::RAX);
+            return true;
         }
 
         if (!update.rhs || !can_generate_pure_expr(*update.rhs)) {
@@ -7619,6 +7927,10 @@ private:
             return generate_while_multistate_registerized(plan);
         }
 
+        if (lookup_bound_reg(plan.bindings[0].first) || lookup_bound_reg(plan.bindings[1].first)) {
+            return generate_while_multistate_registerized(plan);
+        }
+
         auto xmm0 = pick_xmm_reg();
         x64::XmmReg avoid0 = xmm0 ? *xmm0 : x64::XmmReg::XMM0;
         bind_xmm_reg(avoid0);
@@ -7700,7 +8012,13 @@ private:
 
     [[nodiscard]] bool generate_while_multistate_registerized(const WhileMultiStatePlan& plan) {
         for (const auto& [sym, reg] : plan.bindings) {
-            emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            if (auto bound = lookup_bound_reg(sym)) {
+                if (*bound != reg) {
+                    emit_.mov(reg, *bound);
+                }
+            } else {
+                emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            }
         }
 
         std::size_t loop_start = emit_.buffer().pos();
@@ -7717,7 +8035,13 @@ private:
 
         emit_.patch_jump(exit_patch);
         for (const auto& [sym, reg] : plan.bindings) {
-            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, reg);
+            if (auto bound = lookup_bound_reg(sym)) {
+                if (*bound != reg) {
+                    emit_.mov(*bound, reg);
+                }
+            } else {
+                emit_.mov_store(x64::Reg::RBP, sym->stack_offset, reg);
+            }
         }
 
         return true;
@@ -7765,7 +8089,13 @@ private:
                     continue;
                 }
             }
-            emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            if (auto bound = lookup_bound_reg(sym)) {
+                if (*bound != reg) {
+                    emit_.mov(reg, *bound);
+                }
+            } else {
+                emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            }
         }
 
         std::size_t loop_start = emit_.buffer().pos();
@@ -7799,8 +8129,16 @@ private:
         break_patches_.push_back({});
         continue_patches_.push_back({});
 
+        std::unordered_map<const Symbol*, x64::Reg> outer_bindings;
         for (const auto& [sym, reg] : plan.bindings) {
-            emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            if (auto bound = lookup_bound_reg(sym)) {
+                outer_bindings[sym] = *bound;
+                if (*bound != reg) {
+                    emit_.mov(reg, *bound);
+                }
+            } else {
+                emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            }
         }
 
         push_scope();
@@ -7814,7 +8152,11 @@ private:
 
         if (!generate_stmt_list(while_stmt.body)) {
             for (const auto& [sym, _] : plan.bindings) {
-                register_bindings_.erase(sym);
+                if (auto it = outer_bindings.find(sym); it != outer_bindings.end()) {
+                    register_bindings_[sym] = it->second;
+                } else {
+                    register_bindings_.erase(sym);
+                }
             }
             pop_scope();
             continue_patches_.pop_back();
@@ -7823,7 +8165,11 @@ private:
         }
 
         for (const auto& [sym, _] : plan.bindings) {
-            register_bindings_.erase(sym);
+            if (auto it = outer_bindings.find(sym); it != outer_bindings.end()) {
+                register_bindings_[sym] = it->second;
+            } else {
+                register_bindings_.erase(sym);
+            }
         }
         pop_scope();
 
@@ -7838,7 +8184,13 @@ private:
         break_patches_.pop_back();
 
         for (const auto& [sym, reg] : plan.bindings) {
-            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, reg);
+            if (auto it = outer_bindings.find(sym); it != outer_bindings.end()) {
+                if (it->second != reg) {
+                    emit_.mov(it->second, reg);
+                }
+            } else {
+                emit_.mov_store(x64::Reg::RBP, sym->stack_offset, reg);
+            }
         }
 
         return true;
@@ -7899,7 +8251,13 @@ private:
                     continue;
                 }
             }
-            emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            if (auto bound = lookup_bound_reg(sym)) {
+                if (*bound != reg) {
+                    emit_.mov(reg, *bound);
+                }
+            } else {
+                emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            }
         }
 
         push_scope();
@@ -8166,7 +8524,13 @@ private:
             return true;
         };
 
-        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, plan.counter_sym->stack_offset);
+        if (auto bound = lookup_bound_reg(plan.counter_sym)) {
+            if (*bound != x64::Reg::RCX) {
+                emit_.mov(x64::Reg::RCX, *bound);
+            }
+        } else {
+            emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, plan.counter_sym->stack_offset);
+        }
 
         for (Symbol* sym : plan.init_loads) {
             auto zmm = lookup_zmm(sym);
@@ -8222,7 +8586,13 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             emit_.vmovdqu32_zmm_store(x64::Reg::R10, 0, *zmm);
         }
 
-        emit_.mov_store(x64::Reg::RBP, plan.counter_sym->stack_offset, x64::Reg::RCX);
+        if (auto bound = lookup_bound_reg(plan.counter_sym)) {
+            if (*bound != x64::Reg::RCX) {
+                emit_.mov(*bound, x64::Reg::RCX);
+            }
+        } else {
+            emit_.mov_store(x64::Reg::RBP, plan.counter_sym->stack_offset, x64::Reg::RCX);
+        }
         return true;
     }
 
@@ -8380,7 +8750,13 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     continue;
                 }
             }
-            emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            if (auto bound = lookup_bound_reg(sym)) {
+                if (*bound != reg) {
+                    emit_.mov(reg, *bound);
+                }
+            } else {
+                emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            }
         }
 
         if (plan.induction) {
@@ -8489,8 +8865,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         break_patches_.push_back({});
         continue_patches_.push_back({});
 
+        std::unordered_map<const Symbol*, x64::Reg> outer_bindings;
         for (const auto& [sym, reg] : plan.bindings) {
-            emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            if (auto bound = lookup_bound_reg(sym)) {
+                outer_bindings[sym] = *bound;
+                if (*bound != reg) {
+                    emit_.mov(reg, *bound);
+                }
+            } else {
+                emit_.mov_load(reg, x64::Reg::RBP, sym->stack_offset);
+            }
         }
 
         if (plan.induction) {
@@ -8522,7 +8906,11 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         if (!generate_stmt_list(while_stmt.body)) {
             for (const auto& [sym, _] : plan.bindings) {
-                register_bindings_.erase(sym);
+                if (auto it = outer_bindings.find(sym); it != outer_bindings.end()) {
+                    register_bindings_[sym] = it->second;
+                } else {
+                    register_bindings_.erase(sym);
+                }
             }
             if (plan.induction) {
                 accumulator_inductions_.erase(plan.induction->accum_sym);
@@ -8535,7 +8923,11 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         }
 
         for (const auto& [sym, _] : plan.bindings) {
-            register_bindings_.erase(sym);
+            if (auto it = outer_bindings.find(sym); it != outer_bindings.end()) {
+                register_bindings_[sym] = it->second;
+            } else {
+                register_bindings_.erase(sym);
+            }
         }
         if (plan.induction) {
             accumulator_inductions_.erase(plan.induction->accum_sym);
@@ -8554,7 +8946,13 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         break_patches_.pop_back();
 
         for (const auto& [sym, reg] : plan.bindings) {
-            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, reg);
+            if (auto it = outer_bindings.find(sym); it != outer_bindings.end()) {
+                if (it->second != reg) {
+                    emit_.mov(it->second, reg);
+                }
+            } else {
+                emit_.mov_store(x64::Reg::RBP, sym->stack_offset, reg);
+            }
         }
 
         return true;
@@ -9374,6 +9772,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     [[nodiscard]] static bool try_get_i64_immediate(const ast::Expr& expr, std::int64_t& value) {
         if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
             return try_get_i64_immediate(*lit, value);
+        }
+        if (auto* un = std::get_if<ast::UnaryExpr>(&expr.kind); un && un->op == ast::UnaryExpr::Op::Neg) {
+            std::int64_t inner = 0;
+            if (try_get_i64_immediate(*un->operand, inner) &&
+                inner != (std::numeric_limits<std::int64_t>::min)()) {
+                value = -inner;
+                return true;
+            }
         }
         return false;
     }
@@ -11175,6 +11581,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             return emit_binary_with_rhs_imm(bin.op, rhs_imm);
         }
 
+        if (!binary_type_is_float() &&
+            (bin.op == Op::Add || bin.op == Op::Mul ||
+             bin.op == Op::BitAnd || bin.op == Op::BitOr || bin.op == Op::BitXor)) {
+            std::int64_t lhs_imm = 0;
+            if (try_get_i64_immediate(*bin.lhs, lhs_imm) && supports_binary_rhs_imm(bin.op, lhs_imm)) {
+                if (!generate_expr(*bin.rhs)) return false;
+                return emit_binary_with_rhs_imm(bin.op, lhs_imm);
+            }
+        }
+
         if (bin.rhs->is<ast::IdentExpr>()) {
             // fast path: rhs ident is bound to a register, use it directly
             // follows inline aliases for inlined fn params
@@ -11240,6 +11656,15 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                             }
                     }
                 }
+            }
+        }
+
+        if (!binary_type_is_float() && can_generate_pure_expr(*bin.rhs)) {
+            if (auto rhs_reg = pick_scratch_reg({x64::Reg::RAX})) {
+                ScopedScratchReg hold_rhs(*this, *rhs_reg);
+                if (!generate_expr(*bin.lhs)) return false;
+                if (!generate_pure_expr_into(*bin.rhs, *rhs_reg)) return false;
+                return emit_binary_with_rhs_reg(bin.op, *rhs_reg);
             }
         }
 

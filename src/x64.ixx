@@ -569,8 +569,9 @@ public:
             return;
         }
         
-        // small immediate → use imm8 encoding
-        if (imm >= -128 && imm <= 127) {
+        // 32-bit immediate → use imul imm8/imm32 encoding
+        if (imm >= (std::numeric_limits<std::int32_t>::min)() &&
+            imm <= (std::numeric_limits<std::int32_t>::max)()) {
             imul_imm(dst, src, static_cast<std::int32_t>(imm));
             return;
         }
