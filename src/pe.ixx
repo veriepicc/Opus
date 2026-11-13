@@ -52,6 +52,8 @@ constexpr const char* iat_functions[] = {
     "GetFileSize",                  // 27
     "LoadLibraryA",                 // 28
     "GetCurrentProcessId",          // 29
+    "CreateEventA",                 // 30
+    "SetEvent",                     // 31
 };
 
 constexpr std::size_t iat_func_count = sizeof(iat_functions) / sizeof(iat_functions[0]);
@@ -93,6 +95,8 @@ namespace iat_idx {
     constexpr std::size_t GetFileSize            = 27;
     constexpr std::size_t LoadLibraryA           = 28;
     constexpr std::size_t GetCurrentProcessId    = 29;
+    constexpr std::size_t CreateEventA           = 30;
+    constexpr std::size_t SetEvent               = 31;
 }
 
 // backward compat - old pe::iat::FuncName constants still work
@@ -127,6 +131,8 @@ namespace iat {
     constexpr std::size_t GetFileSize            = iat_slot(iat_idx::GetFileSize);
     constexpr std::size_t LoadLibraryA           = iat_slot(iat_idx::LoadLibraryA);
     constexpr std::size_t GetCurrentProcessId    = iat_slot(iat_idx::GetCurrentProcessId);
+    constexpr std::size_t CreateEventA           = iat_slot(iat_idx::CreateEventA);
+    constexpr std::size_t SetEvent               = iat_slot(iat_idx::SetEvent);
 }
 
 // named types for what used to be anonymous pairs

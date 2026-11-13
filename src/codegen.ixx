@@ -389,7 +389,7 @@ public:
     }
     
     bool has_iat_fixups() const { return !iat_fixups_.empty(); }
-    bool has_global_slot() const { return has_global_slot_; }
+    bool has_global_slot() const { return has_global_slot_ || has_pfor_pool_slot_; }
     
     // return fixups using the pe named struct
     std::vector<pe::IatFixup> get_iat_fixups() const {
@@ -506,11 +506,18 @@ private:
         std::int32_t chunk_off;    // __pfor_chunk stack offset
         std::int32_t rem_off;      // __pfor_rem stack offset (division remainder)
         std::int32_t idx_off;      // __pfor_i stack offset
+        std::int32_t pool_off;     // __pfor_pool stack offset
         std::int32_t ctx_arr_base; // bottom of context array on stack
         std::int32_t hdl_arr_base; // bottom of handle array on stack
         std::string body_fn;       // name of the emitted body function
         std::size_t stub_offset;   // offset of the thread entry stub
     };
+
+    struct FusedProducerExpr {
+        std::string loop_var;
+        const ast::Expr* expr = nullptr;
+    };
+    using FusedProducerMap = std::unordered_map<std::string, FusedProducerExpr>;
 
     struct SelfUpdateInfo {
         Symbol* sym = nullptr;
@@ -1038,6 +1045,11 @@ private:
     // __sable_init writes HeapAlloc result here, all global accesses load from here
     std::size_t global_base_slot_ = 0;
     bool has_global_slot_ = false;
+    std::size_t pfor_pool_slot_ = 0;
+    std::size_t pfor_pool_lock_slot_ = 0;
+    std::size_t pfor_pool_worker_offset_ = 0;
+    std::size_t pfor_pool_init_offset_ = 0;
+    bool has_pfor_pool_slot_ = false;
 
     // builtin dispatch tables - lazily initialized on first generate_call
     using BuiltinHandler = std::function<bool(const ast::CallExpr&)>;
@@ -6196,6 +6208,215 @@ private:
         });
     }
 
+    [[nodiscard]] static bool pfor_expr_structurally_equal(const ast::Expr& a, const ast::Expr& b) {
+        if (a.kind.index() != b.kind.index()) return false;
+        return std::visit(overloaded{
+            [&](const ast::LiteralExpr& la) -> bool {
+                const auto& lb = b.as<ast::LiteralExpr>();
+                return la.value == lb.value;
+            },
+            [&](const ast::IdentExpr& ia) -> bool {
+                return ia.name == b.as<ast::IdentExpr>().name;
+            },
+            [&](const ast::UnaryExpr& ua) -> bool {
+                const auto& ub = b.as<ast::UnaryExpr>();
+                return ua.op == ub.op && pfor_expr_structurally_equal(*ua.operand, *ub.operand);
+            },
+            [&](const ast::BinaryExpr& ba) -> bool {
+                const auto& bb = b.as<ast::BinaryExpr>();
+                return ba.op == bb.op &&
+                       pfor_expr_structurally_equal(*ba.lhs, *bb.lhs) &&
+                       pfor_expr_structurally_equal(*ba.rhs, *bb.rhs);
+            },
+            [&](const auto&) -> bool { return false; }
+        }, a.kind);
+    }
+
+    void analyze_pfor_fusion(
+        const std::vector<ast::StmtPtr>& stmts,
+        std::size_t start_index,
+        std::unordered_set<std::size_t>& skip_stmts,
+        std::unordered_map<std::size_t, FusedProducerMap>& fused_maps
+    ) {
+        if (!is_native_image_output() || !vectorize_enabled_ || stmts.size() <= start_index + 1) {
+            return;
+        }
+
+        auto parse_vector_pfor = [](const ast::ParallelForStmt& pfor, std::string& dst, const ast::Expr*& rhs) -> bool {
+            if (pfor.body.size() != 1) return false;
+            const auto* es = std::get_if<ast::ExprStmt>(&pfor.body[0]->kind);
+            const auto* assign = es ? std::get_if<ast::BinaryExpr>(&es->expr->kind) : nullptr;
+            if (!assign || assign->op != ast::BinaryExpr::Op::Assign) return false;
+            const auto* lhs_idx = std::get_if<ast::IndexExpr>(&assign->lhs->kind);
+            const auto* lhs_idx_id = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->index->kind) : nullptr;
+            const auto* lhs_base_id = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->base->kind) : nullptr;
+            if (!lhs_idx_id || lhs_idx_id->name != pfor.name || !lhs_base_id) return false;
+            dst = lhs_base_id->name;
+            rhs = assign->rhs.get();
+            return true;
+        };
+
+        auto is_malloc_let = [&](const ast::Stmt& stmt, std::string& out_name, const ast::Expr*& size_expr) -> bool {
+            if (!stmt.is<ast::LetStmt>()) return false;
+            const auto& let = stmt.as<ast::LetStmt>();
+            if (!let.init) return false;
+            const ast::Expr* cur = let.init.get();
+            while (auto* c = std::get_if<ast::CastExpr>(&cur->kind)) {
+                auto resolved = canonicalize_type(c->target_type);
+                if (!resolved) return false;
+                bool ok_ptr = false;
+                if (auto* pt = std::get_if<PointerType>(&resolved->kind)) {
+                    if (auto* prim = std::get_if<PrimitiveType>(&pt->pointee->kind)) {
+                        ok_ptr = (*prim == PrimitiveType::I64);
+                    }
+                } else if (auto* prim = std::get_if<PrimitiveType>(&resolved->kind)) {
+                    ok_ptr = (*prim == PrimitiveType::Ptr);
+                }
+                if (!ok_ptr) return false;
+                cur = c->expr.get();
+            }
+            const auto* call = std::get_if<ast::CallExpr>(&cur->kind);
+            if (!call || call->args.size() != 1) return false;
+            const auto* callee = std::get_if<ast::IdentExpr>(&call->callee->kind);
+            if (!callee || callee->name != "malloc") return false;
+            if (!expr_is_side_effect_free(*call->args[0])) return false;
+            out_name = let.name;
+            size_expr = call->args[0].get();
+            return true;
+        };
+
+        auto is_free_stmt = [](const ast::Stmt& stmt, const std::string& target) -> bool {
+            const auto* es = std::get_if<ast::ExprStmt>(&stmt.kind);
+            const auto* call = es ? std::get_if<ast::CallExpr>(&es->expr->kind) : nullptr;
+            if (!call || call->args.size() != 1) return false;
+            const auto* callee = std::get_if<ast::IdentExpr>(&call->callee->kind);
+            const auto* arg = std::get_if<ast::IdentExpr>(&call->args[0]->kind);
+            return callee && callee->name == "free" && arg && arg->name == target;
+        };
+
+        auto expr_reads_only_index_or_lit = [](const ast::Expr& expr, const std::string& loop_var, const auto& self) -> bool {
+            return std::visit(overloaded{
+                [&](const ast::LiteralExpr&) { return true; },
+                [&](const ast::IdentExpr& e) { return e.name == loop_var; },
+                [&](const ast::UnaryExpr& e) {
+                    return e.op == ast::UnaryExpr::Op::Neg && self(*e.operand, loop_var, self);
+                },
+                [&](const ast::BinaryExpr& e) {
+                    using Op = ast::BinaryExpr::Op;
+                    if (e.op != Op::Add && e.op != Op::Sub && e.op != Op::Mul &&
+                        e.op != Op::BitAnd && e.op != Op::BitOr && e.op != Op::BitXor) return false;
+                    return self(*e.lhs, loop_var, self) && self(*e.rhs, loop_var, self);
+                },
+                [&](const auto&) { return false; }
+            }, expr.kind);
+        };
+
+        for (std::size_t c_idx = start_index + 1; c_idx < stmts.size(); ++c_idx) {
+            if (skip_stmts.contains(c_idx) || !stmts[c_idx]->is<ast::ParallelForStmt>()) continue;
+            const auto& consumer = stmts[c_idx]->as<ast::ParallelForStmt>();
+            std::string out_name;
+            const ast::Expr* c_rhs = nullptr;
+            if (!parse_vector_pfor(consumer, out_name, c_rhs)) continue;
+
+            struct Candidate {
+                std::size_t alloc_idx;
+                std::size_t pfor_idx;
+                std::size_t free_idx;
+                std::string buf_name;
+                std::string loop_var;
+                const ast::Expr* rhs;
+            };
+            std::vector<Candidate> candidates;
+            FusedProducerMap trial_map;
+
+            for (std::size_t p_idx = c_idx; p_idx-- > start_index;) {
+                if (skip_stmts.contains(p_idx)) continue;
+                if (!stmts[p_idx]->is<ast::ParallelForStmt>()) continue;
+                const auto& producer = stmts[p_idx]->as<ast::ParallelForStmt>();
+                std::string buf_name;
+                const ast::Expr* p_rhs = nullptr;
+                if (!parse_vector_pfor(producer, buf_name, p_rhs)) continue;
+                if (buf_name == out_name || trial_map.contains(buf_name)) continue;
+                if (!pfor_expr_structurally_equal(*producer.start, *consumer.start) ||
+                    !pfor_expr_structurally_equal(*producer.end, *consumer.end)) {
+                    continue;
+                }
+                if (!expr_reads_only_index_or_lit(*p_rhs, producer.name, expr_reads_only_index_or_lit)) {
+                    continue;
+                }
+                if (count_ident_uses_in_expr(buf_name, *c_rhs) == 0) continue;
+
+                // Ensure range bounds & buf_name aren't touched between p_idx and c_idx
+                bool interval_clean = true;
+                for (std::size_t k = p_idx + 1; k < c_idx; ++k) {
+                    if (skip_stmts.contains(k)) continue;
+                    bool is_other_pfor = stmts[k]->is<ast::ParallelForStmt>();
+                    if (!is_other_pfor) { interval_clean = false; break; }
+                    if (count_ident_uses_in_stmt(buf_name, *stmts[k]) != 0) {
+                        interval_clean = false; break;
+                    }
+                }
+                if (!interval_clean) continue;
+
+                // Find matching malloc let before p_idx with no intervening uses
+                std::optional<std::size_t> alloc_idx;
+                for (std::size_t a_idx = p_idx; a_idx-- > start_index;) {
+                    if (skip_stmts.contains(a_idx)) continue;
+                    std::string let_name;
+                    const ast::Expr* sz = nullptr;
+                    if (is_malloc_let(*stmts[a_idx], let_name, sz) && let_name == buf_name) {
+                        bool pre_clean = true;
+                        for (std::size_t k = a_idx + 1; k < p_idx; ++k) {
+                            if (skip_stmts.contains(k)) continue;
+                            if (count_ident_uses_in_stmt(buf_name, *stmts[k]) != 0) {
+                                pre_clean = false;
+                                break;
+                            }
+                        }
+                        if (pre_clean) alloc_idx = a_idx;
+                        break;
+                    }
+                    if (count_ident_uses_in_stmt(buf_name, *stmts[a_idx]) != 0) {
+                        break;
+                    }
+                }
+                if (!alloc_idx) continue;
+
+                // Check post-consumer uses: only a single free(buf_name) allowed
+                std::optional<std::size_t> free_idx;
+                bool post_clean = true;
+                for (std::size_t k = c_idx + 1; k < stmts.size(); ++k) {
+                    if (skip_stmts.contains(k)) continue;
+                    std::size_t uses = count_ident_uses_in_stmt(buf_name, *stmts[k]);
+                    if (uses == 0) continue;
+                    if (!free_idx && uses == 1 && is_free_stmt(*stmts[k], buf_name)) {
+                        free_idx = k;
+                    } else {
+                        post_clean = false;
+                        break;
+                    }
+                }
+                if (!post_clean || !free_idx) continue;
+
+                trial_map[buf_name] = FusedProducerExpr{producer.name, p_rhs};
+                candidates.push_back({*alloc_idx, p_idx, *free_idx, buf_name, producer.name, p_rhs});
+            }
+
+            if (candidates.empty()) continue;
+
+            std::vector<Symbol*> dummy_syms;
+            vectorize::Loop dummy_vloop;
+            if (try_build_pfor_vector_loop(consumer, &trial_map, dummy_syms, dummy_vloop, true)) {
+                for (const auto& cand : candidates) {
+                    skip_stmts.insert(cand.alloc_idx);
+                    skip_stmts.insert(cand.pfor_idx);
+                    skip_stmts.insert(cand.free_idx);
+                }
+                fused_maps[c_idx] = std::move(trial_map);
+            }
+        }
+    }
+
     [[nodiscard]] bool generate_stmt_list_from(const std::vector<ast::StmtPtr>& stmts, std::size_t start_index = 0) {
         if (!current_scope_) {
             for (std::size_t i = start_index; i < stmts.size(); ++i) {
@@ -6204,12 +6425,16 @@ private:
             return true;
         }
 
+        std::unordered_set<std::size_t> skip_pfor_stmts;
+        std::unordered_map<std::size_t, FusedProducerMap> fused_pfor_maps;
+        analyze_pfor_fusion(stmts, start_index, skip_pfor_stmts, fused_pfor_maps);
+
         std::unordered_map<std::size_t, std::vector<std::string>> expirations;
         std::unordered_map<std::size_t, std::vector<const Symbol*>> reg_expirations;
         std::unordered_map<std::size_t, std::vector<std::string>> inline_call_reg_expirations;
         std::unordered_set<std::string> active_inline_safe_call_reg_lets;
         for (std::size_t i = start_index; i < stmts.size(); ++i) {
-            if (can_skip_stmt(stmts, i)) {
+            if (skip_pfor_stmts.contains(i) || can_skip_stmt(stmts, i)) {
                 continue;
             }
 
@@ -6362,7 +6587,15 @@ private:
                 }
             }
 
-            if (!generate_stmt(*stmts[i])) return false;
+            if (stmts[i]->is<ast::ParallelForStmt>()) {
+                const FusedProducerMap* fused = nullptr;
+                if (auto fit = fused_pfor_maps.find(i); fit != fused_pfor_maps.end()) {
+                    fused = &fit->second;
+                }
+                if (!generate_parallel_for(stmts[i]->as<ast::ParallelForStmt>(), fused)) return false;
+            } else {
+                if (!generate_stmt(*stmts[i])) return false;
+            }
 
             if (auto it = expirations.find(i); it != expirations.end()) {
                 for (const auto& name : it->second) {
@@ -9568,6 +9801,18 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 vloop.nodes.push_back(node);
                 return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
             }
+            if (auto* id = std::get_if<ast::IdentExpr>(&expr.kind)) {
+                if (id->name == for_stmt.name) {
+                    vectorize::Node node;
+                    node.op = vectorize::Op::index;
+                    vloop.nodes.push_back(node);
+                    return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                }
+                if (const ast::Expr* inl = current_scope_->lookup_inline(id->name)) {
+                    return self(self, *inl);
+                }
+                return std::nullopt;
+            }
             if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
                 std::int64_t val = 0;
                 if (!try_get_i64_immediate(*lit, val)) return std::nullopt;
@@ -9575,6 +9820,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 node.op = vectorize::Op::constant;
                 node.bits = static_cast<std::uint64_t>(val);
                 vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* un = std::get_if<ast::UnaryExpr>(&expr.kind); un && un->op == ast::UnaryExpr::Op::Neg) {
+                auto operand = self(self, *un->operand);
+                if (!operand) return std::nullopt;
+                vectorize::Node znode{vectorize::Op::constant, 0, 0, 0};
+                vloop.nodes.push_back(znode);
+                auto zidx = static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                vectorize::Node snode{vectorize::Op::sub, zidx, *operand, 0};
+                vloop.nodes.push_back(snode);
                 return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
             }
             if (auto* bin = std::get_if<ast::BinaryExpr>(&expr.kind)) {
@@ -9628,6 +9883,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         }
         emit_.mov(x64::Reg::RDX, x64::Reg::RAX); // count in RDX
         emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // pointer table in RCX
+        emit_.xor_(x64::Reg::R8, x64::Reg::R8);  // start_index = 0
 
         // Call the dispatch: call rel32
         std::size_t call_site = emit_.buffer().pos();
@@ -16942,13 +17198,146 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         Type type;
     };
 
+    [[nodiscard]] bool try_build_pfor_vector_loop(
+        const ast::ParallelForStmt& pfor,
+        const FusedProducerMap* fused_producers,
+        std::vector<Symbol*>& buffer_syms,
+        vectorize::Loop& vloop,
+        bool check_compile = false
+    ) {
+        if (!vectorize_enabled_ || pfor.body.size() != 1) return false;
+        const auto* expr_stmt = std::get_if<ast::ExprStmt>(&pfor.body[0]->kind);
+        const auto* assign = expr_stmt ? std::get_if<ast::BinaryExpr>(&expr_stmt->expr->kind) : nullptr;
+        if (!assign || assign->op != ast::BinaryExpr::Op::Assign) return false;
+        const auto* lhs_idx = std::get_if<ast::IndexExpr>(&assign->lhs->kind);
+        const auto* lhs_idx_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->index->kind) : nullptr;
+        const auto* lhs_base_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->base->kind) : nullptr;
+        if (!lhs_idx_ident || lhs_idx_ident->name != pfor.name || !lhs_base_ident) return false;
+
+        Symbol* dst_sym = current_scope_->lookup(lhs_base_ident->name);
+        if (!dst_sym && !check_compile) return false;
+
+        auto get_or_add_buf = [&](Symbol* sym, const std::string& name) -> std::uint16_t {
+            if (!sym) {
+                static std::vector<std::string> dummy_names;
+                for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+                    if (i < dummy_names.size() && dummy_names[i] == name) return static_cast<std::uint16_t>(i);
+                }
+                if (buffer_syms.empty()) dummy_names.clear();
+                buffer_syms.push_back(nullptr);
+                if (dummy_names.size() < buffer_syms.size()) dummy_names.resize(buffer_syms.size());
+                dummy_names[buffer_syms.size() - 1] = name;
+                return static_cast<std::uint16_t>(buffer_syms.size() - 1);
+            }
+            for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+                if (buffer_syms[i] == sym) return static_cast<std::uint16_t>(i);
+            }
+            buffer_syms.push_back(sym);
+            return static_cast<std::uint16_t>(buffer_syms.size() - 1);
+        };
+
+        std::uint16_t dst_buf_idx = get_or_add_buf(dst_sym, lhs_base_ident->name);
+        vloop = vectorize::Loop{};
+        vloop.element = vectorize::Element::i64;
+        vloop.result = vectorize::Result::map;
+        vloop.output = dst_buf_idx;
+
+        auto build_dag = [&](auto& self, const ast::Expr& expr, const std::string& cur_var, int depth) -> std::optional<vectorize::Value> {
+            if (depth > 32) return std::nullopt;
+            if (auto* idx = std::get_if<ast::IndexExpr>(&expr.kind)) {
+                auto* idx_id = std::get_if<ast::IdentExpr>(&idx->index->kind);
+                if (!idx_id || idx_id->name != cur_var) return std::nullopt;
+                auto* base_id = std::get_if<ast::IdentExpr>(&idx->base->kind);
+                if (!base_id) return std::nullopt;
+                if (fused_producers) {
+                    if (auto fit = fused_producers->find(base_id->name); fit != fused_producers->end()) {
+                        return self(self, *fit->second.expr, fit->second.loop_var, depth + 1);
+                    }
+                }
+                Symbol* src_sym = current_scope_->lookup(base_id->name);
+                if (!src_sym && !check_compile) return std::nullopt;
+                std::uint16_t b_idx = get_or_add_buf(src_sym, base_id->name);
+                vectorize::Node node;
+                node.op = vectorize::Op::load;
+                node.bits = b_idx;
+                vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* id = std::get_if<ast::IdentExpr>(&expr.kind)) {
+                if (id->name == cur_var) {
+                    vectorize::Node node;
+                    node.op = vectorize::Op::index;
+                    vloop.nodes.push_back(node);
+                    return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                }
+                if (const ast::Expr* inl = current_scope_->lookup_inline(id->name)) {
+                    return self(self, *inl, cur_var, depth + 1);
+                }
+                return std::nullopt;
+            }
+            if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
+                std::int64_t val = 0;
+                if (!try_get_i64_immediate(*lit, val)) return std::nullopt;
+                vectorize::Node node;
+                node.op = vectorize::Op::constant;
+                node.bits = static_cast<std::uint64_t>(val);
+                vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* un = std::get_if<ast::UnaryExpr>(&expr.kind); un && un->op == ast::UnaryExpr::Op::Neg) {
+                auto operand = self(self, *un->operand, cur_var, depth);
+                if (!operand) return std::nullopt;
+                vectorize::Node znode{vectorize::Op::constant, 0, 0, 0};
+                vloop.nodes.push_back(znode);
+                auto zidx = static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                vectorize::Node snode{vectorize::Op::sub, zidx, *operand, 0};
+                vloop.nodes.push_back(snode);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* bin = std::get_if<ast::BinaryExpr>(&expr.kind)) {
+                auto left = self(self, *bin->lhs, cur_var, depth);
+                if (!left) return std::nullopt;
+                auto right = self(self, *bin->rhs, cur_var, depth);
+                if (!right) return std::nullopt;
+                vectorize::Op vop = vectorize::Op::add;
+                switch (bin->op) {
+                    case ast::BinaryExpr::Op::Add:    vop = vectorize::Op::add; break;
+                    case ast::BinaryExpr::Op::Sub:    vop = vectorize::Op::sub; break;
+                    case ast::BinaryExpr::Op::Mul:    vop = vectorize::Op::mul; break;
+                    case ast::BinaryExpr::Op::BitAnd: vop = vectorize::Op::bit_and; break;
+                    case ast::BinaryExpr::Op::BitOr:  vop = vectorize::Op::bit_or; break;
+                    case ast::BinaryExpr::Op::BitXor: vop = vectorize::Op::bit_xor; break;
+                    default: return std::nullopt;
+                }
+                vectorize::Node node;
+                node.op = vop;
+                node.a = *left;
+                node.b = *right;
+                vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            return std::nullopt;
+        };
+
+        auto root = build_dag(build_dag, *assign->rhs, pfor.name, 0);
+        if (!root) return false;
+        vloop.root = *root;
+        vloop.buffers = static_cast<std::uint16_t>(buffer_syms.size());
+        if (check_compile) {
+            std::string reason;
+            return vectorize::detail::plan(vloop, 6, reason).has_value();
+        }
+        return true;
+    }
+
     // emits the inner loop function that each worker thread runs
     // registers body_fn in functions_, emits stub, patches jmp_over
     bool emit_pfor_body_function(
         const ast::ParallelForStmt& pfor,
         const std::vector<CapturedVar>& captures,
         PforLayout& layout,
-        std::size_t jmp_over
+        std::size_t jmp_over,
+        const FusedProducerMap* fused_producers = nullptr
     ) {
         functions_[layout.body_fn] = FunctionInfo{
             .name = layout.body_fn,
@@ -17008,113 +17397,36 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // try auto-vectorizing worker loop across this thread's chunk
         bool pfor_vectorized = false;
         if (vectorize_enabled_ && pfor.body.size() == 1) {
-            const auto* expr_stmt = std::get_if<ast::ExprStmt>(&pfor.body[0]->kind);
-            const auto* assign = expr_stmt ? std::get_if<ast::BinaryExpr>(&expr_stmt->expr->kind) : nullptr;
-            if (assign && assign->op == ast::BinaryExpr::Op::Assign) {
-                const auto* lhs_idx = std::get_if<ast::IndexExpr>(&assign->lhs->kind);
-                const auto* lhs_idx_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->index->kind) : nullptr;
-                const auto* lhs_base_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->base->kind) : nullptr;
-                if (lhs_idx_ident && lhs_idx_ident->name == pfor.name && lhs_base_ident) {
-                    Symbol* dst_sym = current_scope_->lookup(lhs_base_ident->name);
-                    if (dst_sym) {
-                        std::vector<Symbol*> buffer_syms;
-                        auto get_or_add_buf = [&](Symbol* sym) -> std::uint16_t {
-                            for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
-                                if (buffer_syms[i] == sym) return static_cast<std::uint16_t>(i);
-                            }
-                            buffer_syms.push_back(sym);
-                            return static_cast<std::uint16_t>(buffer_syms.size() - 1);
-                        };
-                        std::uint16_t dst_buf_idx = get_or_add_buf(dst_sym);
-
-                        vectorize::Loop vloop;
-                        vloop.element = vectorize::Element::i64;
-                        vloop.result = vectorize::Result::map;
-                        vloop.output = dst_buf_idx;
-
-                        auto build_dag = [&](auto& self, const ast::Expr& expr) -> std::optional<vectorize::Value> {
-                            if (auto* idx = std::get_if<ast::IndexExpr>(&expr.kind)) {
-                                auto* idx_id = std::get_if<ast::IdentExpr>(&idx->index->kind);
-                                if (!idx_id || idx_id->name != pfor.name) return std::nullopt;
-                                auto* base_id = std::get_if<ast::IdentExpr>(&idx->base->kind);
-                                if (!base_id) return std::nullopt;
-                                Symbol* src_sym = current_scope_->lookup(base_id->name);
-                                if (!src_sym) return std::nullopt;
-                                std::uint16_t b_idx = get_or_add_buf(src_sym);
-                                vectorize::Node node;
-                                node.op = vectorize::Op::load;
-                                node.bits = b_idx;
-                                vloop.nodes.push_back(node);
-                                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
-                            }
-                            if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
-                                std::int64_t val = 0;
-                                if (!try_get_i64_immediate(*lit, val)) return std::nullopt;
-                                vectorize::Node node;
-                                node.op = vectorize::Op::constant;
-                                node.bits = static_cast<std::uint64_t>(val);
-                                vloop.nodes.push_back(node);
-                                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
-                            }
-                            if (auto* bin = std::get_if<ast::BinaryExpr>(&expr.kind)) {
-                                auto left = self(self, *bin->lhs);
-                                if (!left) return std::nullopt;
-                                auto right = self(self, *bin->rhs);
-                                if (!right) return std::nullopt;
-                                vectorize::Op vop = vectorize::Op::add;
-                                switch (bin->op) {
-                                    case ast::BinaryExpr::Op::Add:    vop = vectorize::Op::add; break;
-                                    case ast::BinaryExpr::Op::Sub:    vop = vectorize::Op::sub; break;
-                                    case ast::BinaryExpr::Op::Mul:    vop = vectorize::Op::mul; break;
-                                    case ast::BinaryExpr::Op::BitAnd: vop = vectorize::Op::bit_and; break;
-                                    case ast::BinaryExpr::Op::BitOr:  vop = vectorize::Op::bit_or; break;
-                                    case ast::BinaryExpr::Op::BitXor: vop = vectorize::Op::bit_xor; break;
-                                    default: return std::nullopt;
-                                }
-                                vectorize::Node node;
-                                node.op = vop;
-                                node.a = *left;
-                                node.b = *right;
-                                vloop.nodes.push_back(node);
-                                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
-                            }
-                            return std::nullopt;
-                        };
-
-                        auto root = build_dag(build_dag, *assign->rhs);
-                        if (root) {
-                            vloop.root = *root;
-                            vloop.buffers = static_cast<std::uint16_t>(buffer_syms.size());
-
-                            std::size_t dispatch_entry = 0;
-                            if (emit_vector_dispatch(vloop, dispatch_entry)) {
-                                // compute slice pointers: ptr + iter_start * 8
-                                std::int32_t buf_table_bytes = static_cast<std::int32_t>(buffer_syms.size() * 8);
-                                emit_.sub_imm(x64::Reg::RSP, buf_table_bytes);
-                                for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
-                                    emit_ptr_symbol_into(buffer_syms[i], x64::Reg::RAX);
-                                    emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
-                                    emit_.shl_imm(x64::Reg::RCX, 3); // iter_start * 8
-                                    emit_.add(x64::Reg::RAX, x64::Reg::RCX); // RAX = slice pointer
-                                    emit_.mov_store(x64::Reg::RSP, static_cast<std::int32_t>(i * 8), x64::Reg::RAX);
-                                }
-
-                                // count = iter_end - iter_start
-                                emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, iter_end.stack_offset);
-                                emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
-                                emit_.sub(x64::Reg::RDX, x64::Reg::RCX); // RDX = chunk count
-                                emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // RCX = slice pointer table
-
-                                std::size_t call_site = emit_.buffer().pos();
-                                emit_.buffer().emit8(0xE8);
-                                std::int32_t rel = emit_.buffer().rel32(call_site + 1, dispatch_entry);
-                                emit_.buffer().emit32(static_cast<std::uint32_t>(rel));
-
-                                emit_.add_imm(x64::Reg::RSP, buf_table_bytes);
-                                pfor_vectorized = true;
-                            }
-                        }
+            std::vector<Symbol*> buffer_syms;
+            vectorize::Loop vloop;
+            if (try_build_pfor_vector_loop(pfor, fused_producers, buffer_syms, vloop, false)) {
+                std::size_t dispatch_entry = 0;
+                if (emit_vector_dispatch(vloop, dispatch_entry)) {
+                    // compute slice pointers: ptr + iter_start * 8
+                    std::int32_t buf_table_bytes = static_cast<std::int32_t>(buffer_syms.size() * 8);
+                    emit_.sub_imm(x64::Reg::RSP, buf_table_bytes);
+                    for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+                        emit_ptr_symbol_into(buffer_syms[i], x64::Reg::RAX);
+                        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
+                        emit_.shl_imm(x64::Reg::RCX, 3); // iter_start * 8
+                        emit_.add(x64::Reg::RAX, x64::Reg::RCX); // RAX = slice pointer
+                        emit_.mov_store(x64::Reg::RSP, static_cast<std::int32_t>(i * 8), x64::Reg::RAX);
                     }
+
+                    // count = iter_end - iter_start, start_index = iter_start
+                    emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, iter_end.stack_offset);
+                    emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
+                    emit_.mov(x64::Reg::R8, x64::Reg::RCX);  // R8 = start_index
+                    emit_.sub(x64::Reg::RDX, x64::Reg::RCX); // RDX = chunk count
+                    emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // RCX = slice pointer table
+
+                    std::size_t call_site = emit_.buffer().pos();
+                    emit_.buffer().emit8(0xE8);
+                    std::int32_t rel = emit_.buffer().rel32(call_site + 1, dispatch_entry);
+                    emit_.buffer().emit32(static_cast<std::uint32_t>(rel));
+
+                    emit_.add_imm(x64::Reg::RSP, buf_table_bytes);
+                    pfor_vectorized = true;
                 }
             }
         }
@@ -17155,8 +17467,378 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         return true;
     }
 
+    void emit_pause() {
+        emit_.buffer().emit8(0xF3);
+        emit_.buffer().emit8(0x90);
+    }
+
+    // lazily emits persistent thread pool slots, worker loop, and init function
+    void ensure_pfor_pool_runtime() {
+        if (has_pfor_pool_slot_) return;
+        has_pfor_pool_slot_ = true;
+        std::size_t jmp_over = emit_.jmp_rel32_placeholder();
+
+        pfor_pool_slot_ = emit_.buffer().pos();
+        emit_.buffer().emit64(0);
+        pfor_pool_lock_slot_ = emit_.buffer().pos();
+        emit_.buffer().emit64(0);
+
+        // ---- __pfor_pool_worker(RCX = slot_ptr) ----
+        // slot layout: +00 fn_ptr, +08 arg0, +10 arg1, +18 arg2, +20 go_gen, +28 wake_evt, +30 sleep, +38 pool
+        // pool layout: +00 ncores, +08 busy, +10 rem, +18 done_evt, +20 main_waiting
+        pfor_pool_worker_offset_ = emit_.buffer().pos();
+        emit_.push(x64::Reg::RBP);
+        emit_.mov(x64::Reg::RBP, x64::Reg::RSP);
+        emit_.push(x64::Reg::R12);
+        emit_.push(x64::Reg::R13);
+        emit_.push(x64::Reg::R14);
+        emit_.push(x64::Reg::R15);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+
+        emit_.mov(x64::Reg::R12, x64::Reg::RCX);
+        emit_.mov_load(x64::Reg::R13, x64::Reg::R12, 0x38);
+        emit_.xor_(x64::Reg::R14, x64::Reg::R14);
+
+        std::size_t worker_top = emit_.buffer().pos();
+        emit_.mov_imm32(x64::Reg::R15, 4096);
+        std::size_t spin_top = emit_.buffer().pos();
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0x20);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::R14);
+        std::size_t spin_got_work = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_pause();
+        emit_.dec(x64::Reg::R15);
+        emit_.jcc_rel32_to(x64::Emitter::CC_NE, spin_top);
+
+        // go to sleep safely (xchg sleep=1, re-check go_gen)
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.xchg_mem(x64::Reg::R12, 0x30, x64::Reg::RAX);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0x20);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::R14);
+        std::size_t race_got_work = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::R12, 0x28);
+        emit_.mov_imm32(x64::Reg::RDX, -1);
+        emit_iat_call_raw(pe::iat::WaitForSingleObject);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::R12, 0x30, x64::Reg::RAX);
+        emit_jmp_rel32_to(worker_top);
+
+        emit_.patch_jump(race_got_work);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::R12, 0x30, x64::Reg::RAX);
+
+        emit_.patch_jump(spin_got_work);
+        emit_.mov_load(x64::Reg::R14, x64::Reg::R12, 0x20);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::R12, 0x08);
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::R12, 0x10);
+        emit_.mov_load(x64::Reg::R8, x64::Reg::R12, 0x18);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0x00);
+        emit_.call(x64::Reg::RAX);
+
+        emit_.mov_imm64(x64::Reg::RAX, static_cast<std::uint64_t>(-1LL));
+        emit_.lock_xadd(x64::Reg::R13, 0x10, x64::Reg::RAX);
+        emit_.cmp_imm(x64::Reg::RAX, 1);
+        emit_.jcc_rel32_to(x64::Emitter::CC_NE, worker_top);
+        emit_.cmp_mem_imm(x64::Reg::R13, 0x20, 0);
+        emit_.jcc_rel32_to(x64::Emitter::CC_E, worker_top);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::R13, 0x18);
+        emit_iat_call_raw(pe::iat::SetEvent);
+        emit_jmp_rel32_to(worker_top);
+
+        // ---- __pfor_get_or_init_pool() -> RAX ----
+        pfor_pool_init_offset_ = emit_.buffer().pos();
+        emit_.push(x64::Reg::RBP);
+        emit_.mov(x64::Reg::RBP, x64::Reg::RSP);
+        emit_.push(x64::Reg::RBX);
+        emit_.push(x64::Reg::R12);
+        emit_.push(x64::Reg::R13);
+        emit_.sub_imm(x64::Reg::RSP, 104); // 16-byte aligned: 0..31 shadow, 32..47 args, 48..95 SYSTEM_INFO
+
+        std::size_t lea_slot1 = emit_lea_rip_disp32(x64::Reg::R12);
+        patch_rel32(lea_slot1, pfor_pool_slot_);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0);
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t already_init = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+        std::size_t lea_lock1 = emit_lea_rip_disp32(x64::Reg::RBX);
+        patch_rel32(lea_lock1, pfor_pool_lock_slot_);
+        std::size_t spin_init = emit_.buffer().pos();
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_imm32(x64::Reg::RCX, 1);
+        emit_.lock_cmpxchg(x64::Reg::RBX, 0, x64::Reg::RCX);
+        std::size_t got_lock = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_pause();
+        emit_jmp_rel32_to(spin_init);
+
+        emit_.patch_jump(got_lock);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0);
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t unlocked_ret = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+        // GetSystemInfo(&[rsp+48])
+        emit_.lea(x64::Reg::RCX, x64::Reg::RSP, 48);
+        emit_iat_call_raw(pe::iat::GetSystemInfo);
+        // mov eax, dword [rsp + 48 + 32]
+        emit_.buffer().emit8(0x8B); emit_.buffer().emit8(0x44);
+        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x50);
+        emit_.cmp_imm(x64::Reg::RAX, 1);
+        std::size_t min_ok = emit_.jcc_rel32(x64::Emitter::CC_GE);
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.patch_jump(min_ok);
+        emit_.cmp_imm(x64::Reg::RAX, PFOR_MAX_THREADS);
+        std::size_t max_ok = emit_.jcc_rel32(x64::Emitter::CC_LE);
+        emit_.mov_imm32(x64::Reg::RAX, PFOR_MAX_THREADS);
+        emit_.patch_jump(max_ok);
+        emit_.mov(x64::Reg::R13, x64::Reg::RAX); // R13 = ncores
+
+        // HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY=8, (ncores + 1) * 64)
+        emit_iat_call_raw(pe::iat::GetProcessHeap);
+        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+        emit_.mov_imm32(x64::Reg::RDX, 8);
+        emit_.mov(x64::Reg::R8, x64::Reg::R13);
+        emit_.inc(x64::Reg::R8);
+        emit_.shl_imm(x64::Reg::R8, 6);
+        emit_iat_call_raw(pe::iat::HeapAlloc);
+        emit_.mov(x64::Reg::R12, x64::Reg::RAX); // R12 = pool_ptr
+        emit_.mov_store(x64::Reg::R12, 0x00, x64::Reg::R13);
+
+        emit_.cmp_imm(x64::Reg::R13, 1);
+        std::size_t single_core = emit_.jcc_rel32(x64::Emitter::CC_LE);
+
+        // done_evt = CreateEventA(NULL, FALSE, FALSE, NULL)
+        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+        emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);
+        emit_.xor_(x64::Reg::R8, x64::Reg::R8);
+        emit_.xor_(x64::Reg::R9, x64::Reg::R9);
+        emit_iat_call_raw(pe::iat::CreateEventA);
+        emit_.mov_store(x64::Reg::R12, 0x18, x64::Reg::RAX);
+
+        emit_.mov_imm32(x64::Reg::RBX, 1); // k = 1 .. ncores-1
+        std::size_t create_top = emit_.buffer().pos();
+        emit_.cmp(x64::Reg::RBX, x64::Reg::R13);
+        std::size_t create_done = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+        emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);
+        emit_.xor_(x64::Reg::R8, x64::Reg::R8);
+        emit_.xor_(x64::Reg::R9, x64::Reg::R9);
+        emit_iat_call_raw(pe::iat::CreateEventA);
+
+        // slot_k = pool + (k + 1) * 64 -> RCX
+        emit_.mov(x64::Reg::RCX, x64::Reg::RBX);
+        emit_.inc(x64::Reg::RCX);
+        emit_.shl_imm(x64::Reg::RCX, 6);
+        emit_.add(x64::Reg::RCX, x64::Reg::R12);
+        emit_.mov_store(x64::Reg::RCX, 0x28, x64::Reg::RAX); // wake_evt
+        emit_.mov_store(x64::Reg::RCX, 0x38, x64::Reg::R12); // pool_ptr
+
+        // CreateThread(NULL, 0, worker, slot_k, 0, NULL)
+        emit_.mov(x64::Reg::R9, x64::Reg::RCX);
+        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+        emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);
+        std::size_t lea_worker = emit_lea_rip_disp32(x64::Reg::R8);
+        patch_rel32(lea_worker, pfor_pool_worker_offset_);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RSP, 0x20, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RSP, 0x28, x64::Reg::RAX);
+        emit_iat_call_raw(pe::iat::CreateThread);
+        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+        emit_iat_call_raw(pe::iat::CloseHandle);
+
+        emit_.inc(x64::Reg::RBX);
+        emit_jmp_rel32_to(create_top);
+        emit_.patch_jump(create_done);
+        emit_.patch_jump(single_core);
+
+        std::size_t lea_slot2 = emit_lea_rip_disp32(x64::Reg::RCX);
+        patch_rel32(lea_slot2, pfor_pool_slot_);
+        emit_.mov(x64::Reg::RAX, x64::Reg::R12);
+        emit_.xchg_mem(x64::Reg::RCX, 0, x64::Reg::RAX);
+        emit_.mov(x64::Reg::RAX, x64::Reg::R12);
+
+        emit_.patch_jump(unlocked_ret);
+        std::size_t lea_lock2 = emit_lea_rip_disp32(x64::Reg::RBX);
+        patch_rel32(lea_lock2, pfor_pool_lock_slot_);
+        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+        emit_.xchg_mem(x64::Reg::RBX, 0, x64::Reg::RCX);
+
+        emit_.patch_jump(already_init);
+        emit_.add_imm(x64::Reg::RSP, 104);
+        emit_.pop(x64::Reg::R13);
+        emit_.pop(x64::Reg::R12);
+        emit_.pop(x64::Reg::RBX);
+        emit_.pop(x64::Reg::RBP);
+        emit_.ret();
+
+        emit_.patch_jump(jmp_over);
+    }
+
+    // emits fast persistent-pool dispatch with nested CreateThread fallback
+    void emit_pfor_pool_and_spawn(const PforLayout& layout) {
+        ensure_pfor_pool_runtime();
+
+        // grow rsp once to cover all locals + fallback arrays
+        std::int32_t frame_needed = (-current_scope_->next_offset + 15) & ~15;
+        emit_.sub_imm(x64::Reg::RSP, frame_needed);
+
+        std::size_t init_call = emit_.buffer().pos();
+        emit_.buffer().emit8(0xE8);
+        emit_.buffer().emit32(static_cast<std::uint32_t>(emit_.buffer().rel32(init_call + 1, pfor_pool_init_offset_)));
+        emit_.mov_store(x64::Reg::RBP, layout.pool_off, x64::Reg::RAX);
+
+        emit_.mov(x64::Reg::RDX, x64::Reg::RAX);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_imm32(x64::Reg::RCX, 1);
+        emit_.lock_cmpxchg(x64::Reg::RDX, 0x08, x64::Reg::RCX);
+        std::size_t pool_busy = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+        // range = end - start
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.end_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.start_off);
+        emit_.sub(x64::Reg::RAX, x64::Reg::RCX);
+        emit_.mov_store(x64::Reg::RBP, layout.range_off, x64::Reg::RAX);
+
+        // active = min(pool->ncores, range)
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, layout.pool_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RDX, 0x00);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
+        std::size_t use_pool_ncores = emit_.jcc_rel32(x64::Emitter::CC_GE);
+        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+        emit_.patch_jump(use_pool_ncores);
+        emit_.mov_store(x64::Reg::RBP, layout.ncores_off, x64::Reg::RCX);
+
+        // chunk = range / active
+        emit_.cqo();
+        emit_.idiv(x64::Reg::RCX);
+        emit_.mov_store(x64::Reg::RBP, layout.chunk_off, x64::Reg::RAX);
+
+        // pool->main_waiting = 0; pool->remaining = active - 1
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, layout.pool_off);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RDX, 0x20, x64::Reg::RAX);
+        emit_.dec(x64::Reg::RCX);
+        emit_.mov_store(x64::Reg::RDX, 0x10, x64::Reg::RCX);
+
+        // dispatch workers k = 1 .. active - 1
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.mov_store(x64::Reg::RBP, layout.idx_off, x64::Reg::RAX);
+        std::size_t disp_top = emit_.buffer().pos();
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.ncores_off);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
+        std::size_t disp_done = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        // slot_k -> RDX
+        emit_.mov(x64::Reg::RDX, x64::Reg::RAX);
+        emit_.inc(x64::Reg::RDX);
+        emit_.shl_imm(x64::Reg::RDX, 6);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.pool_off);
+        emit_.add(x64::Reg::RDX, x64::Reg::RCX);
+
+        // slot_k->fn_ptr = body_fn
+        std::size_t body_fix = emit_lea_rip_disp32(x64::Reg::R8);
+        call_fixups_.push_back({body_fix, layout.body_fn});
+        emit_.mov_store(x64::Reg::RDX, 0x00, x64::Reg::R8);
+
+        // slot_k->arg0 = start + k * chunk
+        emit_.mov_load(x64::Reg::R8, x64::Reg::RBP, layout.chunk_off);
+        emit_.imul(x64::Reg::RAX, x64::Reg::R8);
+        emit_.mov_load(x64::Reg::R9, x64::Reg::RBP, layout.start_off);
+        emit_.add(x64::Reg::RAX, x64::Reg::R9);
+        emit_.mov_store(x64::Reg::RDX, 0x08, x64::Reg::RAX);
+
+        // slot_k->arg1 = (k + 1 == active) ? end : arg0 + chunk
+        emit_.mov_load(x64::Reg::R9, x64::Reg::RBP, layout.idx_off);
+        emit_.inc(x64::Reg::R9);
+        emit_.cmp(x64::Reg::R9, x64::Reg::RCX);
+        std::size_t not_last_w = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.end_off);
+        std::size_t end_ok_w = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(not_last_w);
+        emit_.add(x64::Reg::RAX, x64::Reg::R8);
+        emit_.patch_jump(end_ok_w);
+        emit_.mov_store(x64::Reg::RDX, 0x10, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RDX, 0x18, x64::Reg::RBP);
+
+        // lock xadd [slot_k + 0x20], 1
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.lock_xadd(x64::Reg::RDX, 0x20, x64::Reg::RAX);
+        emit_.cmp_mem_imm(x64::Reg::RDX, 0x30, 0);
+        std::size_t no_wake = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RDX, 0x28);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_iat_call_raw(pe::iat::SetEvent);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.patch_jump(no_wake);
+
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
+        emit_.inc(x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.idx_off, x64::Reg::RAX);
+        emit_jmp_rel32_to(disp_top);
+        emit_.patch_jump(disp_done);
+
+        // run chunk 0 on caller thread: body_fn(start, active == 1 ? end : start + chunk, rbp)
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.start_off);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.ncores_off);
+        emit_.cmp_imm(x64::Reg::RAX, 1);
+        std::size_t multi_chunk0 = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, layout.end_off);
+        std::size_t chunk0_ready = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(multi_chunk0);
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, layout.chunk_off);
+        emit_.add(x64::Reg::RDX, x64::Reg::RCX);
+        emit_.patch_jump(chunk0_ready);
+        emit_.mov(x64::Reg::R8, x64::Reg::RBP);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        std::size_t c0_call = emit_.buffer().pos();
+        emit_.buffer().emit8(0xE8);
+        emit_.buffer().emit32(0);
+        call_fixups_.push_back({c0_call + 1, layout.body_fn});
+        emit_.add_smart(x64::Reg::RSP, 32);
+
+        // wait for workers if active > 1
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.ncores_off);
+        emit_.cmp_imm(x64::Reg::RAX, 1);
+        std::size_t skip_wait = emit_.jcc_rel32(x64::Emitter::CC_LE);
+
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.pool_off);
+        emit_.mov_imm32(x64::Reg::RAX, 16384);
+        std::size_t wait_spin = emit_.buffer().pos();
+        emit_.cmp_mem_imm(x64::Reg::RCX, 0x10, 0);
+        std::size_t wait_done1 = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_pause();
+        emit_.dec(x64::Reg::RAX);
+        emit_.jcc_rel32_to(x64::Emitter::CC_NE, wait_spin);
+
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.xchg_mem(x64::Reg::RCX, 0x20, x64::Reg::RAX);
+        emit_.cmp_mem_imm(x64::Reg::RCX, 0x10, 0);
+        std::size_t wait_done2 = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RCX, 0x18);
+        emit_.mov_imm32(x64::Reg::RDX, -1);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_iat_call_raw(pe::iat::WaitForSingleObject);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.patch_jump(wait_done1);
+        emit_.patch_jump(wait_done2);
+        emit_.patch_jump(skip_wait);
+
+        // release pool->busy = 0
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.pool_off);
+        emit_.xchg_mem(x64::Reg::RCX, 0x08, x64::Reg::RAX);
+        std::size_t all_done = emit_.jmp_rel32_placeholder();
+
+        // nested parallel for fallback
+        emit_.patch_jump(pool_busy);
+        emit_pfor_spawn_loop(layout, false);
+        emit_pfor_wait_and_close(layout);
+
+        emit_.patch_jump(all_done);
+    }
+
     // emits the CreateThread loop that spawns one worker per core
-    void emit_pfor_spawn_loop(const PforLayout& layout) {
+    void emit_pfor_spawn_loop(const PforLayout& layout, bool sub_frame = true) {
         // get cpu count via GetSystemInfo (48 byte struct, dwNumberOfProcessors at offset 32)
         emit_.sub_imm(x64::Reg::RSP, 48);
         emit_.mov(x64::Reg::RCX, x64::Reg::RSP);
@@ -17198,8 +17880,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.mov_store(x64::Reg::RBP, layout.rem_off, x64::Reg::RDX);
 
         // grow rsp to cover all our locals so function calls dont clobber them
-        std::int32_t frame_needed = (-current_scope_->next_offset + 15) & ~15;
-        emit_.sub_imm(x64::Reg::RSP, frame_needed);
+        if (sub_frame) {
+            std::int32_t frame_needed = (-current_scope_->next_offset + 15) & ~15;
+            emit_.sub_imm(x64::Reg::RSP, frame_needed);
+        }
 
         // i = 0
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
@@ -17349,7 +18033,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     }
 
     // parallel for codegen ? extracts body into internal function, spawns N threads, waits for all
-    [[nodiscard]] bool generate_parallel_for(const ast::ParallelForStmt& pfor) {
+    [[nodiscard]] bool generate_parallel_for(
+        const ast::ParallelForStmt& pfor,
+        const FusedProducerMap* fused_producers = nullptr
+    ) {
         if (!is_native_image_output()) {
             error("parallel for requires native image codegen");
             return false;
@@ -17373,6 +18060,17 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, end_sym.stack_offset);
         emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
         std::size_t skip_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        // flush any register-bound captured variables to their stack slots before workers read parent_rbp
+        for (Scope* s = current_scope_; s != nullptr; s = s->parent) {
+            for (const auto& [name, sym] : s->symbols) {
+                if (name.starts_with("__pfor_") || name == pfor.name) continue;
+                if (stack_struct_locals_.contains(&sym)) continue;
+                if (auto bound = lookup_bound_reg(&sym)) {
+                    emit_.mov_store(x64::Reg::RBP, sym.stack_offset, *bound);
+                }
+            }
+        }
 
         // collect captured variables from parent scopes
         // threads cant access the callers stack directly, so we snapshot vars into the body frame
@@ -17621,7 +18319,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         std::size_t jmp_over = emit_.jmp_rel32_placeholder();
 
         // phase 1: emit the worker thread body function + entry stub
-        if (!emit_pfor_body_function(pfor, captures, layout, jmp_over)) {
+        if (!emit_pfor_body_function(pfor, captures, layout, jmp_over, fused_producers)) {
             pop_scope();
             return false;
         }
@@ -17658,11 +18356,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             Type::make_primitive(PrimitiveType::I64), true);
         layout.idx_off = idx_sym.stack_offset;
 
-        // phase 2: spawn worker threads
-        emit_pfor_spawn_loop(layout);
+        auto& pool_sym = current_scope_->define("__pfor_pool",
+            Type::make_primitive(PrimitiveType::I64), true);
+        layout.pool_off = pool_sym.stack_offset;
 
-        // phase 3: wait for all threads and close handles
-        emit_pfor_wait_and_close(layout);
+        // phase 2 & 3: persistent pool dispatch with CreateThread fallback
+        emit_pfor_pool_and_spawn(layout);
 
         emit_.patch_jump(skip_patch);
 
