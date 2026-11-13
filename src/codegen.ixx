@@ -1514,15 +1514,34 @@ private:
         break_patches_.resize(snapshot.break_mark);
         continue_patches_.resize(snapshot.continue_mark);
         if (snapshot.scope) {
-            snapshot.scope->symbols.clear();
-            for (const auto& sym : snapshot.symbols) {
-                snapshot.scope->symbols.emplace(sym.name, Symbol{
-                    .name = sym.name,
-                    .type = sym.type.clone(),
-                    .stack_offset = sym.stack_offset,
-                    .is_param = sym.is_param,
-                    .is_mut = sym.is_mut,
-                });
+            std::unordered_map<std::string, std::size_t> snapshot_index;
+            snapshot_index.reserve(snapshot.symbols.size());
+            for (std::size_t idx = 0; idx < snapshot.symbols.size(); ++idx) {
+                snapshot_index[snapshot.symbols[idx].name] = idx;
+            }
+            for (auto it = snapshot.scope->symbols.begin(); it != snapshot.scope->symbols.end(); ) {
+                auto snap_it = snapshot_index.find(it->first);
+                if (snap_it == snapshot_index.end()) {
+                    it = snapshot.scope->symbols.erase(it);
+                } else {
+                    const auto& snap = snapshot.symbols[snap_it->second];
+                    it->second.type = snap.type.clone();
+                    it->second.stack_offset = snap.stack_offset;
+                    it->second.is_param = snap.is_param;
+                    it->second.is_mut = snap.is_mut;
+                    ++it;
+                }
+            }
+            for (const auto& snap : snapshot.symbols) {
+                if (!snapshot.scope->symbols.contains(snap.name)) {
+                    snapshot.scope->symbols.emplace(snap.name, Symbol{
+                        .name = snap.name,
+                        .type = snap.type.clone(),
+                        .stack_offset = snap.stack_offset,
+                        .is_param = snap.is_param,
+                        .is_mut = snap.is_mut,
+                    });
+                }
             }
             snapshot.scope->inline_bindings = snapshot.inline_bindings;
             snapshot.scope->next_offset = snapshot.next_offset;
