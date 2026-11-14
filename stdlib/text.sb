@@ -1,4 +1,9 @@
-// Text helpers layered over the builtin string primitives.
+import mem
+import ascii
+
+// High-speed O(N) text helpers layered over direct memory scans and single-pass builders.
+// Ownership:
+// - text_clone/text_slice/text_prefix/text_suffix/text_trim*/text_join*/text_repeat/text_pad*/text_surround return heap strings; caller must free.
 
 function int text_len(str text) {
     return string_length(text)
@@ -13,6 +18,9 @@ function bool text_eq(str a, str b) {
 }
 
 function str text_clone(str text) {
+    if text == 0 {
+        return string_substring("", 0, 0)
+    }
     return string_substring(text, 0, string_length(text))
 }
 
@@ -25,6 +33,9 @@ function str text_prefix(str text, int length) {
 }
 
 function str text_suffix(str text, int length) {
+    if length <= 0 {
+        return string_substring("", 0, 0)
+    }
     let total = string_length(text)
     if length >= total {
         return text_clone(text)
@@ -33,51 +44,51 @@ function str text_suffix(str text, int length) {
 }
 
 function int text_char_at(str text, int index) {
-    return char_at(text, index)
+    if text == 0 || index < 0 {
+        return 0
+    }
+    let len = string_length(text)
+    if index >= len {
+        return 0
+    }
+    return mem.read8((text as ptr) + index)
 }
 
 function bool text_starts_with(str text, str prefix) {
-    let text_len_val = string_length(text)
     let prefix_len = string_length(prefix)
+    if prefix_len == 0 {
+        return true
+    }
+    let text_len_val = string_length(text)
     if prefix_len > text_len_val {
         return false
     }
-
-    var i = 0
-    while i < prefix_len {
-        if char_at(text, i) != char_at(prefix, i) {
-            return false
-        }
-        i++
-    }
-
-    return true
+    return memcmp(text as ptr, prefix as ptr, prefix_len) == 0
 }
 
 function bool text_ends_with(str text, str suffix) {
-    let text_len_val = string_length(text)
     let suffix_len = string_length(suffix)
+    if suffix_len == 0 {
+        return true
+    }
+    let text_len_val = string_length(text)
     if suffix_len > text_len_val {
         return false
     }
-
     let start = text_len_val - suffix_len
-    var i = 0
-    while i < suffix_len {
-        if char_at(text, start + i) != char_at(suffix, i) {
-            return false
-        }
-        i++
-    }
-
-    return true
+    return memcmp((text as ptr) + start, suffix as ptr, suffix_len) == 0
 }
 
 function int text_find_char(str text, int ch) {
+    if text == 0 {
+        return -1
+    }
     let len = string_length(text)
+    let p = text as ptr
+    let target = ch & 255
     var i = 0
     while i < len {
-        if char_at(text, i) == ch {
+        if mem.read8(p + i) == target {
             return i
         }
         i++
@@ -86,9 +97,14 @@ function int text_find_char(str text, int ch) {
 }
 
 function int text_rfind_char(str text, int ch) {
+    if text == 0 {
+        return -1
+    }
+    let p = text as ptr
+    let target = ch & 255
     var i = string_length(text) - 1
     while i >= 0 {
-        if char_at(text, i) == ch {
+        if mem.read8(p + i) == target {
             return i
         }
         i--
@@ -97,11 +113,16 @@ function int text_rfind_char(str text, int ch) {
 }
 
 function int text_count_char(str text, int ch) {
+    if text == 0 {
+        return 0
+    }
     let len = string_length(text)
+    let p = text as ptr
+    let target = ch & 255
     var count = 0
     var i = 0
     while i < len {
-        if char_at(text, i) == ch {
+        if mem.read8(p + i) == target {
             count++
         }
         i++
@@ -123,23 +144,31 @@ function int text_find(str text, str needle) {
         return -1
     }
 
-    var i = 0
-    while i <= text_len_val - needle_len {
-        var j = 0
-        var matched = true
-        while j < needle_len {
-            if char_at(text, i + j) != char_at(needle, j) {
-                matched = false
-                break
+    let hay = text as ptr
+    let ndl = needle as ptr
+    let first = mem.read8(ndl)
+    if needle_len == 1 {
+        var i = 0
+        while i < text_len_val {
+            if mem.read8(hay + i) == first {
+                return i
             }
-            j++
+            i++
         }
-        if matched {
-            return i
+        return -1
+    }
+
+    let limit = text_len_val - needle_len
+    let rest_len = needle_len - 1
+    var i = 0
+    while i <= limit {
+        if mem.read8(hay + i) == first {
+            if memcmp(hay + i + 1, ndl + 1, rest_len) == 0 {
+                return i
+            }
         }
         i++
     }
-
     return -1
 }
 
@@ -148,10 +177,14 @@ function bool text_contains(str text, str needle) {
 }
 
 function bool text_is_blank(str text) {
+    if text == 0 {
+        return true
+    }
     let len = string_length(text)
+    let p = text as ptr
     var i = 0
     while i < len {
-        if !is_whitespace(char_at(text, i)) {
+        if !ascii_is_space(mem.read8(p + i)) {
             return false
         }
         i++
@@ -161,9 +194,10 @@ function bool text_is_blank(str text) {
 
 function str text_trim_left(str text) {
     let len = string_length(text)
+    let p = text as ptr
     var start = 0
     while start < len {
-        if !is_whitespace(char_at(text, start)) {
+        if !ascii_is_space(mem.read8(p + start)) {
             break
         }
         start++
@@ -172,9 +206,10 @@ function str text_trim_left(str text) {
 }
 
 function str text_trim_right(str text) {
+    let p = text as ptr
     var stop = string_length(text)
     while stop > 0 {
-        if !is_whitespace(char_at(text, stop - 1)) {
+        if !ascii_is_space(mem.read8(p + stop - 1)) {
             break
         }
         stop--
@@ -183,7 +218,23 @@ function str text_trim_right(str text) {
 }
 
 function str text_trim(str text) {
-    return text_trim_right(text_trim_left(text))
+    let len = string_length(text)
+    let p = text as ptr
+    var start = 0
+    while start < len {
+        if !ascii_is_space(mem.read8(p + start)) {
+            break
+        }
+        start++
+    }
+    var stop = len
+    while stop > start {
+        if !ascii_is_space(mem.read8(p + stop - 1)) {
+            break
+        }
+        stop--
+    }
+    return string_substring(text, start, stop - start)
 }
 
 function str text_join2(str left, str right) {
@@ -191,32 +242,74 @@ function str text_join2(str left, str right) {
 }
 
 function str text_join3(str a, str b, str c) {
-    let ab = string_append(a, b)
-    let abc = string_append(ab, c)
-    free(ab)
-    return abc
+    let la = string_length(a)
+    let lb = string_length(b)
+    let lc = string_length(c)
+    let total = la + lb + lc
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return string_substring("", 0, 0)
+    }
+    if la > 0 { memcpy(buf, a as ptr, la) }
+    if lb > 0 { memcpy(buf + la, b as ptr, lb) }
+    if lc > 0 { memcpy(buf + la + lb, c as ptr, lc) }
+    mem.write8(buf + total, 0)
+    let out = make_string(buf)
+    free(buf)
+    return out
 }
 
 function str text_join4(str a, str b, str c, str d) {
-    let abc = text_join3(a, b, c)
-    let abcd = string_append(abc, d)
-    free(abc)
-    return abcd
+    let la = string_length(a)
+    let lb = string_length(b)
+    let lc = string_length(c)
+    let ld = string_length(d)
+    let total = la + lb + lc + ld
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return string_substring("", 0, 0)
+    }
+    var pos = 0
+    if la > 0 { memcpy(buf, a as ptr, la); pos += la }
+    if lb > 0 { memcpy(buf + pos, b as ptr, lb); pos += lb }
+    if lc > 0 { memcpy(buf + pos, c as ptr, lc); pos += lc }
+    if ld > 0 { memcpy(buf + pos, d as ptr, ld); pos += ld }
+    mem.write8(buf + pos, 0)
+    let out = make_string(buf)
+    free(buf)
+    return out
 }
 
 function str text_repeat(str text, int count) {
     if count <= 0 {
-        return string_substring(text, 0, 0)
+        return string_substring("", 0, 0)
+    }
+    let len = string_length(text)
+    if len == 0 {
+        return string_substring("", 0, 0)
+    }
+    if count == 1 {
+        return text_clone(text)
     }
 
-    var out = text_clone(text)
-    var i = 1
-    while i < count {
-        let next = string_append(out, text)
-        free(out)
-        out = next
-        i++
+    let total = len * count
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return string_substring("", 0, 0)
     }
+
+    memcpy(buf, text as ptr, len)
+    var filled = len
+    while filled * 2 <= total {
+        memcpy(buf + filled, buf, filled)
+        filled *= 2
+    }
+    if filled < total {
+        memcpy(buf + filled, buf, total - filled)
+    }
+    mem.write8(buf + total, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }
 
@@ -225,10 +318,32 @@ function str text_pad_left(str text, int width, str fill) {
     if len >= width {
         return text_clone(text)
     }
-
-    let pad = text_repeat(fill, width - len)
-    let out = string_append(pad, text)
-    free(pad)
+    let fill_len = string_length(fill)
+    if fill_len == 0 {
+        return text_clone(text)
+    }
+    let reps = width - len
+    let pad_bytes = fill_len * reps
+    let total = pad_bytes + len
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return text_clone(text)
+    }
+    memcpy(buf, fill as ptr, fill_len)
+    var filled = fill_len
+    while filled * 2 <= pad_bytes {
+        memcpy(buf + filled, buf, filled)
+        filled *= 2
+    }
+    if filled < pad_bytes {
+        memcpy(buf + filled, buf, pad_bytes - filled)
+    }
+    if len > 0 {
+        memcpy(buf + pad_bytes, text as ptr, len)
+    }
+    mem.write8(buf + total, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }
 
@@ -237,16 +352,36 @@ function str text_pad_right(str text, int width, str fill) {
     if len >= width {
         return text_clone(text)
     }
-
-    let pad = text_repeat(fill, width - len)
-    let out = string_append(text, pad)
-    free(pad)
+    let fill_len = string_length(fill)
+    if fill_len == 0 {
+        return text_clone(text)
+    }
+    let reps = width - len
+    let pad_bytes = fill_len * reps
+    let total = len + pad_bytes
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return text_clone(text)
+    }
+    if len > 0 {
+        memcpy(buf, text as ptr, len)
+    }
+    let pad_dst = buf + len
+    memcpy(pad_dst, fill as ptr, fill_len)
+    var filled = fill_len
+    while filled * 2 <= pad_bytes {
+        memcpy(pad_dst + filled, pad_dst, filled)
+        filled *= 2
+    }
+    if filled < pad_bytes {
+        memcpy(pad_dst + filled, pad_dst, pad_bytes - filled)
+    }
+    mem.write8(buf + total, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }
 
 function str text_surround(str text, str left, str right) {
-    let inner = string_append(left, text)
-    let out = string_append(inner, right)
-    free(inner)
-    return out
+    return text_join3(left, text, right)
 }

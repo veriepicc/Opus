@@ -1,6 +1,6 @@
 import mem
 
-// General utility algorithms for 8-byte cells and integers.
+// Fast algorithms for 8-byte integer spans.
 
 function i64 algo_min_i64(i64 a, i64 b) {
     if a < b {
@@ -44,62 +44,86 @@ function i64 algo_sign_i64(i64 item) {
 }
 
 function bool algo_is_even_i64(i64 item) {
-    return item % 2 == 0
+    return (item & 1) == 0
 }
 
 function bool algo_is_odd_i64(i64 item) {
-    return item % 2 != 0
+    return (item & 1) != 0
 }
 
 function void algo_swap_i64(ptr a, ptr b) {
+    if a == b {
+        return
+    }
     let tmp = mem.read(a)
     mem.write(a, mem.read(b))
     mem.write(b, tmp)
 }
 
 function void algo_fill_i64(ptr values, int len, i64 item) {
+    if values == 0 || len <= 0 {
+        return
+    }
+    var arr = values as *i64
     for i in range(0, len) {
-        mem.write(values + i * 8, item)
+        arr[i] = item
     }
 }
 
 function void algo_copy_i64(ptr dst, ptr src, int len) {
+    if dst == 0 || src == 0 || len <= 0 || dst == src {
+        return
+    }
     memcpy(dst, src, len * 8)
 }
 
 function void algo_reverse_i64(ptr values, int len) {
+    if values == 0 || len <= 1 {
+        return
+    }
+    var arr = values as *i64
     var left = 0
     var right = len - 1
     while left < right {
-        algo_swap_i64(values + left * 8, values + right * 8)
+        let tmp = arr[left]
+        arr[left] = arr[right]
+        arr[right] = tmp
         left++
         right--
     }
 }
 
 function i64 algo_sum_i64(ptr values, int len) {
+    if values == 0 || len <= 0 {
+        return 0
+    }
+    let arr = values as *i64
     var total = 0
     for i in range(0, len) {
-        total += mem.read(values + i * 8)
+        total += arr[i]
     }
     return total
 }
 
 function i64 algo_product_i64(ptr values, int len) {
-    if len <= 0 {
+    if values == 0 || len <= 0 {
         return 0
     }
-
+    let arr = values as *i64
     var total = 1
     for i in range(0, len) {
-        total *= mem.read(values + i * 8)
+        total *= arr[i]
     }
     return total
 }
 
 function i64 algo_index_of_i64(ptr values, int len, i64 target) {
+    if values == 0 || len <= 0 {
+        return -1
+    }
+    let arr = values as *i64
     for i in range(0, len) {
-        if mem.read(values + i * 8) == target {
+        if arr[i] == target {
             return i
         }
     }
@@ -111,9 +135,13 @@ function bool algo_contains_i64(ptr values, int len, i64 target) {
 }
 
 function i64 algo_count_i64(ptr values, int len, i64 target) {
+    if values == 0 || len <= 0 {
+        return 0
+    }
+    let arr = values as *i64
     var count = 0
     for i in range(0, len) {
-        if mem.read(values + i * 8) == target {
+        if arr[i] == target {
             count++
         }
     }
@@ -121,13 +149,13 @@ function i64 algo_count_i64(ptr values, int len, i64 target) {
 }
 
 function i64 algo_min_span_i64(ptr values, int len) {
-    if len <= 0 {
+    if values == 0 || len <= 0 {
         return 0
     }
-
-    var best = mem.read(values)
+    let arr = values as *i64
+    var best = arr[0]
     for i in range(1, len) {
-        let item = mem.read(values + i * 8)
+        let item = arr[i]
         if item < best {
             best = item
         }
@@ -136,13 +164,13 @@ function i64 algo_min_span_i64(ptr values, int len) {
 }
 
 function i64 algo_max_span_i64(ptr values, int len) {
-    if len <= 0 {
+    if values == 0 || len <= 0 {
         return 0
     }
-
-    var best = mem.read(values)
+    let arr = values as *i64
+    var best = arr[0]
     for i in range(1, len) {
-        let item = mem.read(values + i * 8)
+        let item = arr[i]
         if item > best {
             best = item
         }
@@ -151,11 +179,15 @@ function i64 algo_max_span_i64(ptr values, int len) {
 }
 
 function i64 algo_binary_search_i64(ptr values, int len, i64 target) {
+    if values == 0 || len <= 0 {
+        return -1
+    }
+    let arr = values as *i64
     var low = 0
     var high = len - 1
     while low <= high {
-        let mid = (low + high) / 2
-        let item = mem.read(values + mid * 8)
+        let mid = low + ((high - low) >> 1)
+        let item = arr[mid]
         if item == target {
             return mid
         }
@@ -168,16 +200,82 @@ function i64 algo_binary_search_i64(ptr values, int len, i64 target) {
     return -1
 }
 
-function void algo_sort_i64(ptr values, int len) {
-    for i in range(0, len) {
-        for j in range(0, len - i - 1) {
-            let left = mem.read(values + j * 8)
-            let right = mem.read(values + (j + 1) * 8)
-            if left > right {
-                mem.write(values + j * 8, right)
-                mem.write(values + (j + 1) * 8, left)
+internal function void algo_insertion_sort_i64(ptr values, int lo, int hi) {
+    var arr = values as *i64
+    var i = lo + 1
+    while i <= hi {
+        let key = arr[i]
+        var j = i - 1
+        while j >= lo {
+            let cur = arr[j]
+            if cur <= key {
+                break
             }
+            arr[j + 1] = cur
+            j--
+        }
+        arr[j + 1] = key
+        i++
+    }
+}
+
+internal function void algo_qsort_i64(ptr values, int lo, int hi) {
+    var arr = values as *i64
+    while lo < hi {
+        if hi - lo <= 16 {
+            algo_insertion_sort_i64(values, lo, hi)
+            return
+        }
+
+        let mid = lo + ((hi - lo) >> 1)
+        if arr[mid] < arr[lo] {
+            let t0 = arr[lo]; arr[lo] = arr[mid]; arr[mid] = t0
+        }
+        if arr[hi] < arr[lo] {
+            let t1 = arr[lo]; arr[lo] = arr[hi]; arr[hi] = t1
+        }
+        if arr[hi] < arr[mid] {
+            let t2 = arr[mid]; arr[mid] = arr[hi]; arr[hi] = t2
+        }
+
+        let pivot = arr[mid]
+        var i = lo
+        var j = hi
+        while i <= j {
+            while arr[i] < pivot {
+                i++
+            }
+            while arr[j] > pivot {
+                j--
+            }
+            if i <= j {
+                if i != j {
+                    let tmp = arr[i]
+                    arr[i] = arr[j]
+                    arr[j] = tmp
+                }
+                i++
+                j--
+            }
+        }
+
+        if j - lo < hi - i {
+            if lo < j {
+                algo_qsort_i64(values, lo, j)
+            }
+            lo = i
+        } else {
+            if i < hi {
+                algo_qsort_i64(values, i, hi)
+            }
+            hi = j
         }
     }
 }
 
+function void algo_sort_i64(ptr values, int len) {
+    if values == 0 || len <= 1 {
+        return
+    }
+    algo_qsort_i64(values, 0, len - 1)
+}

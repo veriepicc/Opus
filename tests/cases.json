@@ -1770,5 +1770,26 @@
     "kind": "robustness",
     "Name": "tests/stress_parser/negative/99_5000_proper.sb",
     "File": "tests/stress_parser/negative/99_5000_proper.sb"
+  },
+  {
+    "kind": "stress",
+    "Name": "test_stdlib_regression",
+    "File": "tests/test_stdlib_regression.sb",
+    "ExpectedExit": 0,
+    "RuntimeTimeoutSeconds": 10
+  },
+  {
+    "kind": "stress",
+    "Name": "test_compiler_codegen_regressions",
+    "File": "tests/test_compiler_codegen_regressions.sb",
+    "ExpectedExit": 0,
+    "RuntimeTimeoutSeconds": 10
+  },
+  {
+    "kind": "stress",
+    "Name": "test_scripting_ergonomics",
+    "File": "tests/test_scripting_ergonomics.sb",
+    "ExpectedExit": 0,
+    "RuntimeTimeoutSeconds": 10
   }
 ]

@@ -190,6 +190,16 @@ struct CastExpr {
     Type target_type;
 };
 
+struct FStringPart {
+    bool is_expr = false;
+    std::string text;
+    ExprPtr expr;
+};
+
+struct FStringExpr {
+    std::vector<FStringPart> parts;
+};
+
 struct ArrayExpr {
     ExprList elements;
 };
@@ -255,6 +265,7 @@ struct Expr {
         IndexExpr,
         FieldExpr,
         CastExpr,
+        FStringExpr,
         ArrayExpr,
         StructExpr,
         IfExpr,
@@ -370,6 +381,10 @@ struct LoopStmt {
 struct BreakStmt {};
 struct ContinueStmt {};
 
+struct DeferStmt {
+    StmtPtr stmt;
+};
+
 struct BlockStmt {
     Block block;
 };
@@ -394,6 +409,7 @@ struct Stmt {
         LoopStmt,
         BreakStmt,
         ContinueStmt,
+        DeferStmt,
         BlockStmt,
         ParallelForStmt
     >;
@@ -625,8 +641,6 @@ struct Decl {
 struct Module {
     std::string name;
     DeclList decls;
-
-    SyntaxMode syntax = SyntaxMode::CStyle;
     std::string source_file;
 };
 
@@ -821,6 +835,13 @@ inline void walk_expr(ExprT& expr, Visitor&& visitor) {
         [&](auto& e) requires std::same_as<std::remove_cvref_t<decltype(e)>, CastExpr> {
             walk_expr_ptr(e.expr, visit);
         },
+        [&](auto& e) requires std::same_as<std::remove_cvref_t<decltype(e)>, FStringExpr> {
+            for (auto& part : e.parts) {
+                if (part.is_expr) {
+                    walk_expr_ptr(part.expr, visit);
+                }
+            }
+        },
         [&](auto& e) requires std::same_as<std::remove_cvref_t<decltype(e)>, ArrayExpr> {
             for (auto& elem : e.elements) {
                 walk_expr_ptr(elem, visit);
@@ -917,6 +938,9 @@ inline void walk_stmt(StmtT& stmt, Visitor&& visitor) {
         },
         [&](auto& s) requires std::same_as<std::remove_cvref_t<decltype(s)>, BlockStmt> {
             walk_block(s.block, visit);
+        },
+        [&](auto& s) requires std::same_as<std::remove_cvref_t<decltype(s)>, DeferStmt> {
+            walk_stmt_ptr(s.stmt, visit);
         },
         [&](auto& s) requires std::same_as<std::remove_cvref_t<decltype(s)>, ParallelForStmt> {
             walk_expr_ptr(s.start, visit);
@@ -1169,6 +1193,13 @@ template<typename NodeT>
             [&](const CastExpr& e) {
                 require_child(expr, e.expr, "cast operand");
             },
+            [&](const FStringExpr& e) {
+                for (const auto& part : e.parts) {
+                    if (part.is_expr) {
+                        require_child(expr, part.expr, "f-string interpolation expression");
+                    }
+                }
+            },
             [&](const ArrayExpr& e) {
                 for (const auto& elem : e.elements) {
                     require_child(expr, elem, "array element");
@@ -1265,6 +1296,9 @@ template<typename NodeT>
             },
             [&](const BlockStmt& s) {
                 validate_block(stmt, s.block, "statement block");
+            },
+            [&](const DeferStmt& s) {
+                require_child(stmt, s.stmt, "deferred statement");
             },
             [&](const ParallelForStmt& s) {
                 validate_name(stmt, s.name, "parallel loop variable");

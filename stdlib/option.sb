@@ -1,30 +1,35 @@
-// Specialized optional value wrappers.
+// Specialized optional value wrappers backed by zero-copy views.
 // Sable does not have generics yet, so we keep the most useful payload shapes.
 
-struct OptI64 {
-    has_value: i64,
-    item: i64,
+enum OptOffset {
+    HasValue = 0,
+    Item = 8,
 }
 
-struct OptPtr {
-    has_value: i64,
-    item: ptr,
+view OptI64 {
+    has_value: i64 @ OptOffset.HasValue
+    item: i64 @ OptOffset.Item
 }
 
-struct OptStr {
-    has_value: i64,
-    item: str,
+view OptPtr {
+    has_value: i64 @ OptOffset.HasValue
+    item: ptr @ OptOffset.Item
 }
 
-struct OptBool {
-    has_value: i64,
-    item: i64,
+view OptStr {
+    has_value: i64 @ OptOffset.HasValue
+    item: str @ OptOffset.Item
+}
+
+view OptBool {
+    has_value: i64 @ OptOffset.HasValue
+    item: i64 @ OptOffset.Item
 }
 
 function OptI64 opt_i64_some(i64 item) {
-    var opt: OptI64 = malloc(16)
+    let opt = malloc(16) as OptI64
     if opt == 0 {
-        return 0
+        return 0 as OptI64
     }
     opt.has_value = 1
     opt.item = item
@@ -32,9 +37,9 @@ function OptI64 opt_i64_some(i64 item) {
 }
 
 function OptI64 opt_i64_none() {
-    var opt: OptI64 = malloc(16)
+    let opt = malloc(16) as OptI64
     if opt == 0 {
-        return 0
+        return 0 as OptI64
     }
     opt.has_value = 0
     opt.item = 0
@@ -42,22 +47,28 @@ function OptI64 opt_i64_none() {
 }
 
 function bool opt_i64_is_some(OptI64 opt) {
+    if opt == 0 {
+        return false
+    }
     return opt.has_value != 0
 }
 
 function bool opt_i64_is_none(OptI64 opt) {
+    if opt == 0 {
+        return true
+    }
     return opt.has_value == 0
 }
 
 function i64 opt_i64_unwrap(OptI64 opt) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return 0
 }
 
 function i64 opt_i64_unwrap_or(OptI64 opt, i64 fallback) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return fallback
@@ -70,9 +81,9 @@ function void opt_i64_free(OptI64 opt) {
 }
 
 function OptPtr opt_ptr_some(ptr item_ptr) {
-    var opt: OptPtr = malloc(16)
+    let opt = malloc(16) as OptPtr
     if opt == 0 {
-        return 0
+        return 0 as OptPtr
     }
     opt.has_value = 1
     opt.item = item_ptr
@@ -80,9 +91,9 @@ function OptPtr opt_ptr_some(ptr item_ptr) {
 }
 
 function OptPtr opt_ptr_none() {
-    var opt: OptPtr = malloc(16)
+    let opt = malloc(16) as OptPtr
     if opt == 0 {
-        return 0
+        return 0 as OptPtr
     }
     opt.has_value = 0
     opt.item = 0
@@ -90,22 +101,28 @@ function OptPtr opt_ptr_none() {
 }
 
 function bool opt_ptr_is_some(OptPtr opt) {
+    if opt == 0 {
+        return false
+    }
     return opt.has_value != 0
 }
 
 function bool opt_ptr_is_none(OptPtr opt) {
+    if opt == 0 {
+        return true
+    }
     return opt.has_value == 0
 }
 
 function ptr opt_ptr_unwrap(OptPtr opt) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return 0
 }
 
 function ptr opt_ptr_unwrap_or(OptPtr opt, ptr fallback) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return fallback
@@ -118,9 +135,9 @@ function void opt_ptr_free(OptPtr opt) {
 }
 
 function OptStr opt_str_some(str text_value) {
-    var opt: OptStr = malloc(16)
+    let opt = malloc(16) as OptStr
     if opt == 0 {
-        return 0
+        return 0 as OptStr
     }
     opt.has_value = 1
     opt.item = text_value
@@ -128,9 +145,9 @@ function OptStr opt_str_some(str text_value) {
 }
 
 function OptStr opt_str_none() {
-    var opt: OptStr = malloc(16)
+    let opt = malloc(16) as OptStr
     if opt == 0 {
-        return 0
+        return 0 as OptStr
     }
     opt.has_value = 0
     opt.item = ""
@@ -138,22 +155,28 @@ function OptStr opt_str_none() {
 }
 
 function bool opt_str_is_some(OptStr opt) {
+    if opt == 0 {
+        return false
+    }
     return opt.has_value != 0
 }
 
 function bool opt_str_is_none(OptStr opt) {
+    if opt == 0 {
+        return true
+    }
     return opt.has_value == 0
 }
 
 function str opt_str_unwrap(OptStr opt) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return ""
 }
 
 function str opt_str_unwrap_or(OptStr opt, str fallback) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return fallback
@@ -166,19 +189,23 @@ function void opt_str_free(OptStr opt) {
 }
 
 function OptBool opt_bool_some(bool flag) {
-    var opt: OptBool = malloc(16)
+    let opt = malloc(16) as OptBool
     if opt == 0 {
-        return 0
+        return 0 as OptBool
     }
     opt.has_value = 1
-    opt.item = flag
+    if flag {
+        opt.item = 1
+    } else {
+        opt.item = 0
+    }
     return opt
 }
 
 function OptBool opt_bool_none() {
-    var opt: OptBool = malloc(16)
+    let opt = malloc(16) as OptBool
     if opt == 0 {
-        return 0
+        return 0 as OptBool
     }
     opt.has_value = 0
     opt.item = 0
@@ -186,22 +213,28 @@ function OptBool opt_bool_none() {
 }
 
 function bool opt_bool_is_some(OptBool opt) {
+    if opt == 0 {
+        return false
+    }
     return opt.has_value != 0
 }
 
 function bool opt_bool_is_none(OptBool opt) {
+    if opt == 0 {
+        return true
+    }
     return opt.has_value == 0
 }
 
 function bool opt_bool_unwrap(OptBool opt) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item != 0
     }
     return false
 }
 
 function bool opt_bool_unwrap_or(OptBool opt, bool fallback) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item != 0
     }
     return fallback

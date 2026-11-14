@@ -576,10 +576,21 @@ public:
             return;
         }
         
-        // fallback to standard imul
+        // fallback to standard imul. the 64-bit constant needs a temp register and
+        // it must never be one of the operands: with dst==R11 the mov_imm64 wiped
+        // the live value and salt*K compiled as K*K (hft checksum regression).
         if (dst != src) mov(dst, src);
-        mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
-        imul(dst, Reg::R11);
+        if (dst != Reg::R11) {
+            mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
+            imul(dst, Reg::R11);
+        } else {
+            // dst IS the R11 scratch: round-trip R10 through the stack so any
+            // registerized R10 value survives
+            push(Reg::R10);
+            mov_imm64(Reg::R10, static_cast<std::uint64_t>(imm));
+            imul(dst, Reg::R10);
+            pop(Reg::R10);
+        }
     }
 
     // smart divide - uses shift for power of 2, idiv otherwise
@@ -633,9 +644,17 @@ public:
             return;
         }
         
-        // large immediate → load to temp reg and add
-        mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
-        add(dst, Reg::R11);
+        // large immediate → load to temp reg and add (never clobber dst: with
+        // dst==R11 the load turned x + BIG into BIG + BIG)
+        if (dst != Reg::R11) {
+            mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
+            add(dst, Reg::R11);
+        } else {
+            push(Reg::R10);
+            mov_imm64(Reg::R10, static_cast<std::uint64_t>(imm));
+            add(dst, Reg::R10);
+            pop(Reg::R10);
+        }
     }
 
     // smart move - keep mov semantics and prefer smaller immediates
@@ -709,6 +728,19 @@ public:
         buf_.emit8(modrm(0b11, right, left));
     }
 
+    void test_imm(Reg reg, std::int32_t imm) {
+        buf_.emit8(rex(true, Reg::RAX, reg));
+        buf_.emit8(0xF7);
+        buf_.emit8(modrm(0b11, Reg(0), reg));
+        buf_.emit32(static_cast<std::uint32_t>(imm));
+    }
+
+    void cmp_load(Reg dst, Reg base, std::int32_t offset) {
+        buf_.emit8(rex(true, dst, base));
+        buf_.emit8(0x3B);
+        emit_mem_operand(dst, base, offset);
+    }
+
     // smart compare
     void cmp_smart(Reg left, Reg right) {
         // compare reg to itself → always equal, use test
@@ -730,9 +762,18 @@ public:
             return;
         }
         
-        // large immediate → load to temp and compare
-        mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
-        cmp(left, Reg::R11);
+        // large immediate → load to temp and compare. Comparing R11 against R11
+        // (after clobbering it with the immediate) would make the comparison
+        // trivially equal, so round-trip R10 when left is already the scratch.
+        if (left == Reg::R11) {
+            push(Reg::R10);
+            mov_imm64(Reg::R10, static_cast<std::uint64_t>(imm));
+            cmp(left, Reg::R10);
+            pop(Reg::R10);
+        } else {
+            mov_imm64(Reg::R11, static_cast<std::uint64_t>(imm));
+            cmp(left, Reg::R11);
+        }
     }
 
     // setcc - set byte based on condition code
@@ -1071,6 +1112,15 @@ public:
         emit_mem_operand(Reg(static_cast<std::uint8_t>(dst)), base, offset);
     }
 
+    // movntdq [base+offset], xmm - non-temporal streaming store (128-bit, 16-byte aligned)
+    void movntdq_store(Reg base, std::int32_t offset, XmmReg src) {
+        buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(static_cast<std::uint8_t>(src)), base));
+        buf_.emit8(0x0F);
+        buf_.emit8(0xE7);
+        emit_mem_operand(Reg(static_cast<std::uint8_t>(src)), base, offset);
+    }
+
     // vmovdqu128 [mem], xmm - store 128 bits (2x i64) from XMM (SSE2)
     void movdqu128_store(Reg base, std::int32_t offset, XmmReg src) {
         buf_.emit8(0xF3);
@@ -1173,6 +1223,16 @@ public:
         buf_.emit8(imm);
     }
 
+    // pslld xmm, imm8 - shift dword lanes left
+    void pslld(XmmReg dst, std::uint8_t imm) {
+        buf_.emit8(0x66);
+        buf_.emit8(rex(false, Reg(6), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(0x0F);
+        buf_.emit8(0x72);
+        buf_.emit8(modrm(0b11, Reg(6), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(imm);
+    }
+
     // psllq xmm, imm8 - shift qword lanes left
     void psllq(XmmReg dst, std::uint8_t imm) {
         buf_.emit8(0x66);
@@ -1180,6 +1240,14 @@ public:
         buf_.emit8(0x0F);
         buf_.emit8(0x73);
         buf_.emit8(modrm(0b11, Reg(6), Reg(static_cast<std::uint8_t>(dst))));
+        buf_.emit8(imm);
+    }
+
+    // vpslld ymm, ymm, imm8 - shift dword lanes left (VEX.256)
+    void vpslld_imm(std::uint8_t dst, std::uint8_t src, std::uint8_t imm) {
+        emit_vex3(0x01, 0x01, false, 6, dst, src);
+        buf_.emit8(0x72);
+        buf_.emit8(modrm(0b11, Reg(6), Reg(src)));
         buf_.emit8(imm);
     }
 
@@ -1461,14 +1529,14 @@ public:
         // EVEX.512.F3.0F.W0 6F /r
         emit_evex(0x01, 0x02, false, zmm_dst, 0, static_cast<std::uint8_t>(base));
         buf_.emit8(0x6F);
-        emit_mem_operand(Reg(zmm_dst & 7), base, offset);
+        emit_mem_operand_evex(Reg(zmm_dst & 7), base, offset);
     }
 
     void vmovdqu32_zmm_store(Reg base, std::int32_t offset, std::uint8_t zmm_src) {
         // EVEX.512.F3.0F.W0 7F /r
         emit_evex(0x01, 0x02, false, zmm_src, 0, static_cast<std::uint8_t>(base));
         buf_.emit8(0x7F);
-        emit_mem_operand(Reg(zmm_src & 7), base, offset);
+        emit_mem_operand_evex(Reg(zmm_src & 7), base, offset);
     }
 
     // vmovntdq [base+offset], zmm - non-temporal streaming store (bypasses cache pollution)
@@ -1476,7 +1544,23 @@ public:
         // EVEX.512.66.0F.W0 E7 /r
         emit_evex(0x01, 0x01, false, zmm_src, 0, static_cast<std::uint8_t>(base));
         buf_.emit8(0xE7);
-        emit_mem_operand(Reg(zmm_src & 7), base, offset);
+        emit_mem_operand_evex(Reg(zmm_src & 7), base, offset);
+    }
+
+    void vpsllq_zmm_imm(std::uint8_t dst, std::uint8_t src, std::uint8_t imm) {
+        // EVEX.512.66.0F.W1 73 /6 ib
+        emit_evex(0x01, 0x01, true, 6, dst, src);
+        buf_.emit8(0x73);
+        buf_.emit8(modrm(0b11, Reg(6), Reg(src)));
+        buf_.emit8(imm);
+    }
+
+    void vpslld_zmm_imm(std::uint8_t dst, std::uint8_t src, std::uint8_t imm) {
+        // EVEX.512.66.0F.W0 72 /6 ib
+        emit_evex(0x01, 0x01, false, 6, dst, src);
+        buf_.emit8(0x72);
+        buf_.emit8(modrm(0b11, Reg(6), Reg(src)));
+        buf_.emit8(imm);
     }
 
     // prefetcht0 [base+offset] - pulls cache line into L1 cache
@@ -1543,6 +1627,21 @@ public:
         emit_vex3(0x01, 0x02, false, ymm_src, 0, static_cast<std::uint8_t>(base));
         buf_.emit8(0x7F);
         emit_mem_operand(Reg(ymm_src & 7), base, offset);
+    }
+
+    // vmovntdq [base+offset], ymm (256-bit non-temporal aligned store)
+    void vmovntdq_store(Reg base, std::int32_t offset, std::uint8_t ymm_src) {
+        // VEX.256.66.0F.WIG E7 /r
+        emit_vex3(0x01, 0x01, false, ymm_src, 0, static_cast<std::uint8_t>(base));
+        buf_.emit8(0xE7);
+        emit_mem_operand(Reg(ymm_src & 7), base, offset);
+    }
+
+    // vmovdqa ymm, ymm (256-bit register move)
+    void vmovdqa_ymm(std::uint8_t dst, std::uint8_t src) {
+        emit_vex3(0x01, 0x01, false, dst, 0, src);
+        buf_.emit8(0x6F);
+        buf_.emit8(modrm(0b11, Reg(dst), Reg(src)));
     }
 
     // vpaddd ymm, ymm, ymm (packed 32-bit integer add)
@@ -2462,6 +2561,23 @@ buf_.emit8(0x6F);
             buf_.emit8(modrm(0b01, reg_field, base));
             if (base_low == 4) buf_.emit8(0x24);
             buf_.emit8(static_cast<std::uint8_t>(offset));
+        } else {
+            buf_.emit8(modrm(0b10, reg_field, base));
+            if (base_low == 4) buf_.emit8(0x24);
+            buf_.emit32(static_cast<std::uint32_t>(offset));
+        }
+    }
+
+    // EVEX 512-bit memory operand: disp8 is compressed (scaled by 64 bytes)
+    void emit_mem_operand_evex(Reg reg_field, Reg base, std::int32_t offset) {
+        std::uint8_t base_low = static_cast<std::uint8_t>(base) & 7;
+        if (offset == 0 && base_low != 5) {
+            buf_.emit8(modrm(0b00, reg_field, base));
+            if (base_low == 4) buf_.emit8(0x24);
+        } else if ((offset % 64) == 0 && (offset / 64) >= -128 && (offset / 64) <= 127) {
+            buf_.emit8(modrm(0b01, reg_field, base));
+            if (base_low == 4) buf_.emit8(0x24);
+            buf_.emit8(static_cast<std::uint8_t>(offset / 64));
         } else {
             buf_.emit8(modrm(0b10, reg_field, base));
             if (base_low == 4) buf_.emit8(0x24);

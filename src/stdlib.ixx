@@ -9,7 +9,7 @@ export inline const std::unordered_map<std::string, std::string>& embedded_stdli
     static const std::unordered_map<std::string, std::string> sources = {
         {"algo", R"SBALGO(import mem
 
-// General utility algorithms for 8-byte cells and integers.
+// Fast algorithms for 8-byte integer spans.
 
 function i64 algo_min_i64(i64 a, i64 b) {
     if a < b {
@@ -53,62 +53,86 @@ function i64 algo_sign_i64(i64 item) {
 }
 
 function bool algo_is_even_i64(i64 item) {
-    return item % 2 == 0
+    return (item & 1) == 0
 }
 
 function bool algo_is_odd_i64(i64 item) {
-    return item % 2 != 0
+    return (item & 1) != 0
 }
 
 function void algo_swap_i64(ptr a, ptr b) {
+    if a == b {
+        return
+    }
     let tmp = mem.read(a)
     mem.write(a, mem.read(b))
     mem.write(b, tmp)
 }
 
 function void algo_fill_i64(ptr values, int len, i64 item) {
+    if values == 0 || len <= 0 {
+        return
+    }
+    var arr = values as *i64
     for i in range(0, len) {
-        mem.write(values + i * 8, item)
+        arr[i] = item
     }
 }
 
 function void algo_copy_i64(ptr dst, ptr src, int len) {
+    if dst == 0 || src == 0 || len <= 0 || dst == src {
+        return
+    }
     memcpy(dst, src, len * 8)
 }
 
 function void algo_reverse_i64(ptr values, int len) {
+    if values == 0 || len <= 1 {
+        return
+    }
+    var arr = values as *i64
     var left = 0
     var right = len - 1
     while left < right {
-        algo_swap_i64(values + left * 8, values + right * 8)
+        let tmp = arr[left]
+        arr[left] = arr[right]
+        arr[right] = tmp
         left++
         right--
     }
 }
 
 function i64 algo_sum_i64(ptr values, int len) {
+    if values == 0 || len <= 0 {
+        return 0
+    }
+    let arr = values as *i64
     var total = 0
     for i in range(0, len) {
-        total += mem.read(values + i * 8)
+        total += arr[i]
     }
     return total
 }
 
 function i64 algo_product_i64(ptr values, int len) {
-    if len <= 0 {
+    if values == 0 || len <= 0 {
         return 0
     }
-
+    let arr = values as *i64
     var total = 1
     for i in range(0, len) {
-        total *= mem.read(values + i * 8)
+        total *= arr[i]
     }
     return total
 }
 
 function i64 algo_index_of_i64(ptr values, int len, i64 target) {
+    if values == 0 || len <= 0 {
+        return -1
+    }
+    let arr = values as *i64
     for i in range(0, len) {
-        if mem.read(values + i * 8) == target {
+        if arr[i] == target {
             return i
         }
     }
@@ -120,9 +144,13 @@ function bool algo_contains_i64(ptr values, int len, i64 target) {
 }
 
 function i64 algo_count_i64(ptr values, int len, i64 target) {
+    if values == 0 || len <= 0 {
+        return 0
+    }
+    let arr = values as *i64
     var count = 0
     for i in range(0, len) {
-        if mem.read(values + i * 8) == target {
+        if arr[i] == target {
             count++
         }
     }
@@ -130,13 +158,13 @@ function i64 algo_count_i64(ptr values, int len, i64 target) {
 }
 
 function i64 algo_min_span_i64(ptr values, int len) {
-    if len <= 0 {
+    if values == 0 || len <= 0 {
         return 0
     }
-
-    var best = mem.read(values)
+    let arr = values as *i64
+    var best = arr[0]
     for i in range(1, len) {
-        let item = mem.read(values + i * 8)
+        let item = arr[i]
         if item < best {
             best = item
         }
@@ -145,13 +173,13 @@ function i64 algo_min_span_i64(ptr values, int len) {
 }
 
 function i64 algo_max_span_i64(ptr values, int len) {
-    if len <= 0 {
+    if values == 0 || len <= 0 {
         return 0
     }
-
-    var best = mem.read(values)
+    let arr = values as *i64
+    var best = arr[0]
     for i in range(1, len) {
-        let item = mem.read(values + i * 8)
+        let item = arr[i]
         if item > best {
             best = item
         }
@@ -160,11 +188,15 @@ function i64 algo_max_span_i64(ptr values, int len) {
 }
 
 function i64 algo_binary_search_i64(ptr values, int len, i64 target) {
+    if values == 0 || len <= 0 {
+        return -1
+    }
+    let arr = values as *i64
     var low = 0
     var high = len - 1
     while low <= high {
-        let mid = (low + high) / 2
-        let item = mem.read(values + mid * 8)
+        let mid = low + ((high - low) >> 1)
+        let item = arr[mid]
         if item == target {
             return mid
         }
@@ -177,23 +209,87 @@ function i64 algo_binary_search_i64(ptr values, int len, i64 target) {
     return -1
 }
 
-function void algo_sort_i64(ptr values, int len) {
-    for i in range(0, len) {
-        for j in range(0, len - i - 1) {
-            let left = mem.read(values + j * 8)
-            let right = mem.read(values + (j + 1) * 8)
-            if left > right {
-                mem.write(values + j * 8, right)
-                mem.write(values + (j + 1) * 8, left)
+internal function void algo_insertion_sort_i64(ptr values, int lo, int hi) {
+    var arr = values as *i64
+    var i = lo + 1
+    while i <= hi {
+        let key = arr[i]
+        var j = i - 1
+        while j >= lo {
+            let cur = arr[j]
+            if cur <= key {
+                break
             }
+            arr[j + 1] = cur
+            j--
+        }
+        arr[j + 1] = key
+        i++
+    }
+}
+
+internal function void algo_qsort_i64(ptr values, int lo, int hi) {
+    var arr = values as *i64
+    while lo < hi {
+        if hi - lo <= 16 {
+            algo_insertion_sort_i64(values, lo, hi)
+            return
+        }
+
+        let mid = lo + ((hi - lo) >> 1)
+        if arr[mid] < arr[lo] {
+            let t0 = arr[lo]; arr[lo] = arr[mid]; arr[mid] = t0
+        }
+        if arr[hi] < arr[lo] {
+            let t1 = arr[lo]; arr[lo] = arr[hi]; arr[hi] = t1
+        }
+        if arr[hi] < arr[mid] {
+            let t2 = arr[mid]; arr[mid] = arr[hi]; arr[hi] = t2
+        }
+
+        let pivot = arr[mid]
+        var i = lo
+        var j = hi
+        while i <= j {
+            while arr[i] < pivot {
+                i++
+            }
+            while arr[j] > pivot {
+                j--
+            }
+            if i <= j {
+                if i != j {
+                    let tmp = arr[i]
+                    arr[i] = arr[j]
+                    arr[j] = tmp
+                }
+                i++
+                j--
+            }
+        }
+
+        if j - lo < hi - i {
+            if lo < j {
+                algo_qsort_i64(values, lo, j)
+            }
+            lo = i
+        } else {
+            if i < hi {
+                algo_qsort_i64(values, i, hi)
+            }
+            hi = j
         }
     }
 }
 
+function void algo_sort_i64(ptr values, int len) {
+    if values == 0 || len <= 1 {
+        return
+    }
+    algo_qsort_i64(values, 0, len - 1)
+}
 )SBALGO"},
-        {"ascii", R"SBASCII(import text
-
-// ASCII-oriented helpers for formatting, parsing, and quick protocol work.
+        {"ascii", R"SBASCII(// ASCII-oriented helpers for formatting, parsing, and protocol work.
 // Ownership:
 // - ascii_hex_digit/ascii_hex_byte return heap strings; caller must free.
 
@@ -235,23 +331,54 @@ function int ascii_to_upper(int ch) {
     return ch
 }
 
+function int ascii_hex_value(int ch) {
+    if ch >= 48 and ch <= 57 {
+        return ch - 48
+    }
+    if ch >= 65 and ch <= 70 {
+        return ch - 55
+    }
+    if ch >= 97 and ch <= 102 {
+        return ch - 87
+    }
+    return -1
+}
+
+function int ascii_hex_nibble_char(int nibble) {
+    var n = nibble
+    if n < 0 {
+        n = 0
+    } else if n > 15 {
+        n = 15
+    }
+    if n < 10 {
+        return 48 + n
+    }
+    return 55 + n
+}
+
 function str ascii_hex_digit(int nibble) {
-    let table = "0123456789ABCDEF"
-    if nibble < 0 {
-        nibble = 0
+    let buf = malloc(2)
+    if buf == 0 {
+        return string_substring("", 0, 0)
     }
-    if nibble > 15 {
-        nibble = 15
-    }
-    return string_substring(table, nibble, 1)
+    mem_write_i8(buf, ascii_hex_nibble_char(nibble))
+    mem_write_i8(buf + 1, 0)
+    let out = make_string(buf)
+    free(buf)
+    return out
 }
 
 function str ascii_hex_byte(int byte_value) {
-    let hi = ascii_hex_digit((byte_value >> 4) & 15)
-    let lo = ascii_hex_digit(byte_value & 15)
-    let out = string_append(hi, lo)
-    free(hi)
-    free(lo)
+    let buf = malloc(3)
+    if buf == 0 {
+        return string_substring("", 0, 0)
+    }
+    mem_write_i8(buf, ascii_hex_nibble_char((byte_value >> 4) & 15))
+    mem_write_i8(buf + 1, ascii_hex_nibble_char(byte_value & 15))
+    mem_write_i8(buf + 2, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }
 )SBASCII"},
@@ -264,34 +391,36 @@ using CppVectorPushBackI64Fn = fn(ptr, i64) -> void
 
 // MSVC std::vector-style layout view for 8-byte cells:
 // [first ptr][last ptr][end ptr]
-// This is useful for host interop when C++ exposes a vector object or bridge API.
 
-struct CppVector {
-    first: ptr,
-    last: ptr,
-    finish: ptr,
+enum CppVectorOffset {
+    First = 0,
+    Last = 8,
+    Finish = 16,
+}
+
+view CppVector {
+    first: ptr @ CppVectorOffset.First
+    last: ptr @ CppVectorOffset.Last
+    finish: ptr @ CppVectorOffset.Finish
 }
 
 function CppVector cpp_vector_from_range(ptr first, ptr last, ptr finish) {
-    var view: CppVector = malloc(24)
-    if view == 0 {
-        return 0
+    let view_obj = malloc(24) as CppVector
+    if view_obj == 0 {
+        return 0 as CppVector
     }
-    view.first = first
-    view.last = last
-    view.finish = finish
-    return view
+    view_obj.first = first
+    view_obj.last = last
+    view_obj.finish = finish
+    return view_obj
 }
 
 function CppVector cpp_vector_read(ptr object_addr) {
-    var view: CppVector = malloc(24)
-    if view == 0 {
-        return 0
+    if object_addr == 0 {
+        return cpp_vector_from_range(0, 0, 0)
     }
-    view.first = mem.read(object_addr)
-    view.last = mem.read(object_addr + 8)
-    view.finish = mem.read(object_addr + 16)
-    return view
+    let raw = object_addr as CppVector
+    return cpp_vector_from_range(raw.first, raw.last, raw.finish)
 }
 
 function CppVector cpp_vector_from_array(ptr data) {
@@ -299,8 +428,6 @@ function CppVector cpp_vector_from_array(ptr data) {
         return cpp_vector_from_range(0, 0, 0)
     }
 
-    // This mirrors the builtin array header described in the docs:
-    // length at data - 16, capacity at data - 8, cells at data.
     let used = array_len(data)
     var capacity = mem.read(data - 8)
     if capacity < used {
@@ -311,75 +438,83 @@ function CppVector cpp_vector_from_array(ptr data) {
     return cpp_vector_from_range(data, last, finish)
 }
 
-function ptr cpp_vector_data(CppVector view) {
-    return view.first
+function ptr cpp_vector_data(CppVector view_obj) {
+    if view_obj == 0 {
+        return 0
+    }
+    return view_obj.first
 }
 
-function int cpp_vector_size(CppVector view) {
-    let first = view.first
-    let last = view.last
+function int cpp_vector_size(CppVector view_obj) {
+    if view_obj == 0 {
+        return 0
+    }
+    let first = view_obj.first
+    let last = view_obj.last
     if first == 0 || last < first {
         return 0
     }
     return (last - first) / 8
 }
 
-function int cpp_vector_capacity(CppVector view) {
-    let first = view.first
-    let finish = view.finish
+function int cpp_vector_capacity(CppVector view_obj) {
+    if view_obj == 0 {
+        return 0
+    }
+    let first = view_obj.first
+    let finish = view_obj.finish
     if first == 0 || finish < first {
         return 0
     }
     return (finish - first) / 8
 }
 
-function bool cpp_vector_is_empty(CppVector view) {
-    return cpp_vector_size(view) == 0
+function bool cpp_vector_is_empty(CppVector view_obj) {
+    return cpp_vector_size(view_obj) == 0
 }
 
-function i64 cpp_vector_at_i64(CppVector view, int idx) {
-    let count = cpp_vector_size(view)
+function i64 cpp_vector_at_i64(CppVector view_obj, int idx) {
+    let count = cpp_vector_size(view_obj)
     if idx < 0 || idx >= count {
         return 0
     }
-
-    let addr = view.first + idx * 8
-    return mem.read(addr)
+    let arr = view_obj.first as *i64
+    return arr[idx]
 }
 
-function i64 cpp_vector_front_i64(CppVector view) {
-    return cpp_vector_at_i64(view, 0)
+function i64 cpp_vector_front_i64(CppVector view_obj) {
+    return cpp_vector_at_i64(view_obj, 0)
 }
 
-function i64 cpp_vector_back_i64(CppVector view) {
-    let count = cpp_vector_size(view)
+function i64 cpp_vector_back_i64(CppVector view_obj) {
+    let count = cpp_vector_size(view_obj)
     if count <= 0 {
         return 0
     }
-    return cpp_vector_at_i64(view, count - 1)
+    return cpp_vector_at_i64(view_obj, count - 1)
 }
 
-function Vec cpp_vector_copy_view_i64(CppVector view) {
-    let count = cpp_vector_size(view)
+function Vec cpp_vector_copy_view_i64(CppVector view_obj) {
+    let count = cpp_vector_size(view_obj)
     var out = vec_new(count)
-    if count > 0 && view.first != 0 {
-        mem_copy_cells(vec_data(out), view.first, count)
+    if count > 0 && view_obj.first != 0 && out.data != 0 {
+        mem.copy_cells(out.data, view_obj.first, count)
         out.size = count
-        mem.write(vec_data(out) - 16, count)
+        mem.write(out.data - 16, count)
     }
     return out
 }
 
 function Vec cpp_vector_copy_i64(ptr object_addr) {
-    let view = cpp_vector_read(object_addr)
-    let out = cpp_vector_copy_view_i64(view)
-    cpp_vector_free(view)
+    let view_obj = cpp_vector_read(object_addr)
+    let out = cpp_vector_copy_view_i64(view_obj)
+    cpp_vector_free(view_obj)
     return out
 }
 
-function void cpp_vector_free(CppVector view) {
-    if view != 0 {
-        free(view)
+function void cpp_vector_free(CppVector view_obj) {
+    if view_obj != 0 {
+        free(view_obj)
     }
 }
 
@@ -397,7 +532,6 @@ function void cpp_vector_call_push_back_i64(ptr method_addr, ptr this_vec, i64 i
     let method = method_addr as CppVectorPushBackI64Fn
     method(this_vec, item)
 }
-
 )SBCPPVECTO"},
         {"demo", R"SBDEMO(import mem
 import text
@@ -563,9 +697,10 @@ function int main() {
 }
 )SBDEMO"},
         {"fmt", R"SBFMT(import ascii
+import mem
 import text
 
-// Small formatting helpers that make ordinary output code much less repetitive.
+// Formatting helpers using single-pass buffer assembly.
 // Ownership:
 // - every fmt_* function returning str returns a heap string; caller must free.
 
@@ -588,16 +723,29 @@ function str fmt_int_pad_left(int number, int width) {
 }
 
 function str fmt_pair(str key, str val) {
-    let left = string_append(key, ": ")
-    let out = string_append(left, val)
-    free(left)
-    return out
+    return text_join3(key, ": ", val)
 }
 
 function str fmt_csv3(str a, str b, str c) {
-    let ab = text_join3(a, ",", b)
-    let out = text_join3(ab, ",", c)
-    free(ab)
+    let la = string_length(a)
+    let lb = string_length(b)
+    let lc = string_length(c)
+    let total = la + lb + lc + 2
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return text_clone("")
+    }
+    var pos = 0
+    if la > 0 { memcpy(buf, a as ptr, la); pos += la }
+    mem.write8(buf + pos, 44)
+    pos++
+    if lb > 0 { memcpy(buf + pos, b as ptr, lb); pos += lb }
+    mem.write8(buf + pos, 44)
+    pos++
+    if lc > 0 { memcpy(buf + pos, c as ptr, lc); pos += lc }
+    mem.write8(buf + pos, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }
 
@@ -606,9 +754,17 @@ function str fmt_wrap(str val, str left, str right) {
 }
 
 function str fmt_hex_byte(int byte_value) {
-    let body = ascii_hex_byte(byte_value)
-    let out = string_append("0x", body)
-    free(body)
+    let buf = malloc(5)
+    if buf == 0 {
+        return text_clone("0x00")
+    }
+    mem.write8(buf, 48)
+    mem.write8(buf + 1, 120)
+    mem.write8(buf + 2, ascii_hex_nibble_char((byte_value >> 4) & 15))
+    mem.write8(buf + 3, ascii_hex_nibble_char(byte_value & 15))
+    mem.write8(buf + 4, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }
 )SBFMT"},
@@ -658,40 +814,65 @@ function bool fs_contains(str file_path, str needle) {
     return ok
 }
 )SBFS"},
-        {"http", R"SBHTTP(// DONOTUSE: ffi_call0..7 are radioactive compat junk until typed abi control replaces them
+        {"http", R"SBHTTP(import mem
 
-struct HttpUrl {
-    secure: int,
-    port: int,
-    host: str,
-    path: str,
+// HTTP client helpers built on WinHTTP using typed function pointers and zero-copy views.
+
+enum HttpUrlOffset {
+    Secure = 0,
+    Port = 8,
+    Host = 16,
+    Path = 24,
 }
 
-struct HttpResponse {
-    status: int,
-    body: str,
+enum HttpResponseOffset {
+    Status = 0,
+    Body = 8,
 }
 
-struct HttpWideParts {
-    user_agent_w: ptr,
-    method_w: ptr,
-    host_w: ptr,
-    path_w: ptr,
+enum HttpWidePartsOffset {
+    UserAgentW = 0,
+    MethodW = 8,
+    HostW = 16,
+    PathW = 24,
 }
 
+view HttpUrl {
+    secure: int @ HttpUrlOffset.Secure
+    port: int @ HttpUrlOffset.Port
+    host: str @ HttpUrlOffset.Host
+    path: str @ HttpUrlOffset.Path
+}
+
+view HttpResponse {
+    status: int @ HttpResponseOffset.Status
+    body: str @ HttpResponseOffset.Body
+}
+
+view HttpWideParts {
+    user_agent_w: ptr @ HttpWidePartsOffset.UserAgentW
+    method_w: ptr @ HttpWidePartsOffset.MethodW
+    host_w: ptr @ HttpWidePartsOffset.HostW
+    path_w: ptr @ HttpWidePartsOffset.PathW
+}
+
+using WinHttpOpenFn = fn(ptr, int, ptr, ptr, int) -> ptr
+using WinHttpSetTimeoutsFn = fn(ptr, int, int, int, int) -> int
 using WinHttpConnectFn = fn(ptr, ptr, int, int) -> ptr
+using WinHttpOpenRequestFn = fn(ptr, ptr, ptr, ptr, ptr, ptr, int) -> ptr
+using WinHttpSendRequestFn = fn(ptr, ptr, int, ptr, int, int, int) -> int
+using WinHttpReceiveResponseFn = fn(ptr, ptr) -> int
+using WinHttpQueryHeadersFn = fn(ptr, int, ptr, ptr, ptr, ptr) -> int
+using WinHttpQueryDataAvailableFn = fn(ptr, ptr) -> int
+using WinHttpReadDataFn = fn(ptr, ptr, int, ptr) -> int
+using WinHttpCloseHandleFn = fn(ptr) -> int
 
 function str http_empty_text() {
     return string_substring("", 0, 0)
 }
 
 function ptr http_make_zero(int size) {
-    let block = malloc(size)
-    if block == 0 {
-        return 0
-    }
-    memset(block, 0, size)
-    return block
+    return mem.make_zero(size)
 }
 
 function bool http_is_digit(int ch) {
@@ -711,6 +892,9 @@ function bool http_is_empty(str text_value) {
 }
 
 function str http_clone(str text_value) {
+    if text_value == 0 {
+        return http_empty_text()
+    }
     return string_substring(text_value, 0, string_length(text_value))
 }
 
@@ -736,46 +920,44 @@ function int http_find(str text_value, str needle) {
         return -1
     }
 
+    let hay = text_value as ptr
+    let ndl = needle as ptr
+    let first = mem.read8(ndl)
+    let limit = text_len_val - needle_len
     var i = 0
-    while i <= text_len_val - needle_len {
-        var j = 0
-        var matched = true
-        while j < needle_len {
-            if char_at(text_value, i + j) != char_at(needle, j) {
-                matched = false
-                break
+    while i <= limit {
+        if mem.read8(hay + i) == first {
+            if needle_len == 1 or memcmp(hay + i + 1, ndl + 1, needle_len - 1) == 0 {
+                return i
             }
-            j++
-        }
-        if matched {
-            return i
         }
         i++
     }
-
     return -1
 }
 
 function int http_rfind_char(str text_value, int ch) {
-    var i = string_length(text_value)
-    while i > 0 {
-        i--
-        if char_at(text_value, i) == ch {
+    let p = text_value as ptr
+    let target = ch & 255
+    var i = string_length(text_value) - 1
+    while i >= 0 {
+        if mem.read8(p + i) == target {
             return i
         }
+        i--
     }
     return -1
 }
 
 function HttpUrl http_url_new() {
-    var parsed: HttpUrl = malloc(32)
+    let parsed = malloc(32) as HttpUrl
     if parsed == 0 {
-        return 0
+        return 0 as HttpUrl
     }
     parsed.secure = 1
     parsed.port = 443
-    parsed.host = 0
-    parsed.path = 0
+    parsed.host = 0 as str
+    parsed.path = 0 as str
     return parsed
 }
 
@@ -793,12 +975,12 @@ function void http_url_free(HttpUrl parsed) {
 }
 
 function HttpResponse http_response_new(int status, str body_text) {
-    var response: HttpResponse = malloc(16)
+    let response = malloc(16) as HttpResponse
     if response == 0 {
         if body_text != 0 {
             free(body_text)
         }
-        return 0
+        return 0 as HttpResponse
     }
     response.status = status
     response.body = body_text
@@ -806,9 +988,9 @@ function HttpResponse http_response_new(int status, str body_text) {
 }
 
 function HttpWideParts http_wide_parts_new() {
-    var parts: HttpWideParts = malloc(32)
+    let parts = malloc(32) as HttpWideParts
     if parts == 0 {
-        return 0
+        return 0 as HttpWideParts
     }
     parts.user_agent_w = 0
     parts.method_w = 0
@@ -859,37 +1041,43 @@ function bool http_ok(HttpResponse response) {
 
 function int http_parse_port(str text_value) {
     let len = http_len(text_value)
-    if len <= 0 {
+    if len <= 0 or len > 5 {
         return -1
     }
 
+    let p = text_value as ptr
     var value = 0
     var i = 0
     while i < len {
-        let ch = char_at(text_value, i)
+        let ch = mem.read8(p + i)
         if !http_is_digit(ch) {
             return -1
         }
         value = value * 10 + (ch - 48)
         i++
     }
-
+    if value <= 0 or value > 65535 {
+        return -1
+    }
     return value
 }
 
 function ptr http_utf16z(str text_value) {
-    let len = http_len(text_value)
-    let out = http_make_zero((len + 1) * 2)
+    if text_value == 0 {
+        return 0
+    }
+    let len = string_length(text_value)
+    let out = mem.make_zero((len + 1) * 2)
     if out == 0 {
         return 0
     }
 
+    let p = text_value as ptr
     var i = 0
     while i < len {
-        mem_write_i16(out + i * 2, char_at(text_value, i))
+        mem.write16(out + i * 2, mem.read8(p + i))
         i++
     }
-
     return out
 }
 
@@ -897,42 +1085,14 @@ function ptr http_url_host_utf16(HttpUrl parsed) {
     if parsed == 0 or parsed.host == 0 {
         return 0
     }
-
-    let host_text = parsed.host
-    let host_len = string_length(host_text)
-    let out = http_make_zero((host_len + 1) * 2)
-    if out == 0 {
-        return 0
-    }
-
-    var i = 0
-    while i < host_len {
-        mem_write_i16(out + i * 2, char_at(host_text, i))
-        i++
-    }
-
-    return out
+    return http_utf16z(parsed.host)
 }
 
 function ptr http_url_path_utf16(HttpUrl parsed) {
     if parsed == 0 or parsed.path == 0 {
         return 0
     }
-
-    let path_text = parsed.path
-    let path_len = string_length(path_text)
-    let out = http_make_zero((path_len + 1) * 2)
-    if out == 0 {
-        return 0
-    }
-
-    var i = 0
-    while i < path_len {
-        mem_write_i16(out + i * 2, char_at(path_text, i))
-        i++
-    }
-
-    return out
+    return http_utf16z(parsed.path)
 }
 
 function ptr http_open_session(ptr open_fn, ptr set_timeouts_fn) {
@@ -941,52 +1101,24 @@ function ptr http_open_session(ptr open_fn, ptr set_timeouts_fn) {
         return 0
     }
 
-    let session = ffi_call5(open_fn, user_agent_w, 1, 0, 0, 0)
+    let winhttp_open = open_fn as WinHttpOpenFn
+    let session = winhttp_open(user_agent_w, 1, 0, 0, 0)
     free(user_agent_w)
-    if session != 0 {
-        ffi_call5(set_timeouts_fn, session, 3000, 3000, 3000, 3000)
+    if session != 0 and set_timeouts_fn != 0 {
+        let winhttp_set_timeouts = set_timeouts_fn as WinHttpSetTimeoutsFn
+        winhttp_set_timeouts(session, 5000, 5000, 5000, 5000)
     }
     return session
 }
 
-function ptr http_open_connection(ptr connect_fn, ptr session, HttpUrl parsed) {
-    let host_w = http_url_host_utf16(parsed)
-    if host_w == 0 {
-        return 0
-    }
-
-    return host_w
-}
-
-function ptr http_open_get_request(ptr open_request_fn, ptr connection, HttpUrl parsed) {
-    let method_w = http_utf16z("GET")
-    if method_w == 0 {
-        return 0
-    }
-
-    let path_w = http_url_path_utf16(parsed)
-    if path_w == 0 {
-        free(method_w)
-        return 0
-    }
-
-    var request_flags = 0
-    if parsed.secure != 0 {
-        request_flags = 8388608
-    }
-
-    let request = ffi_call7(open_request_fn, connection, method_w, path_w, 0, 0, 0, request_flags)
-    free(path_w)
-    free(method_w)
-    return request
-}
-
 function str http_bytes_to_text(ptr bytes, int len) {
-    let copy = http_make_zero(len + 1)
+    let copy = mem.make_zero(len + 1)
     if copy == 0 {
         return http_empty_text()
     }
-    memcpy(copy, bytes, len)
+    if len > 0 and bytes != 0 {
+        memcpy(copy, bytes, len)
+    }
     let out = make_string(copy)
     free(copy)
     return out
@@ -997,7 +1129,8 @@ function str http_take_path(str url, int start_idx, int stop_idx) {
         return http_clone("/")
     }
 
-    let first = char_at(url, start_idx)
+    let p = url as ptr
+    let first = mem.read8(p + start_idx)
     if first == 47 {
         return http_slice(url, start_idx, stop_idx - start_idx)
     }
@@ -1009,48 +1142,38 @@ function str http_take_path(str url, int start_idx, int stop_idx) {
 }
 
 function HttpUrl http_parse_url(str url) {
+    if url == 0 {
+        return 0 as HttpUrl
+    }
     let parsed = http_url_new()
     if parsed == 0 {
-        return 0
+        return 0 as HttpUrl
     }
 
     let url_len = http_len(url)
+    let p = url as ptr
     var start = 0
 
-    if url_len >= 8 and
-       char_at(url, 0) == 104 and
-       char_at(url, 1) == 116 and
-       char_at(url, 2) == 116 and
-       char_at(url, 3) == 112 and
-       char_at(url, 4) == 115 and
-       char_at(url, 5) == 58 and
-       char_at(url, 6) == 47 and
-       char_at(url, 7) == 47 {
+    if url_len >= 8 and memcmp(p, "https://" as ptr, 8) == 0 {
         parsed.secure = 1
         parsed.port = 443
         start = 8
-    } else if url_len >= 7 and
-              char_at(url, 0) == 104 and
-              char_at(url, 1) == 116 and
-              char_at(url, 2) == 116 and
-              char_at(url, 3) == 112 and
-              char_at(url, 4) == 58 and
-              char_at(url, 5) == 47 and
-              char_at(url, 6) == 47 {
-        parsed.secure =)SBHTTP"
-            R"SBHTTP( 0
+    } else if url_len >= 7 and memcmp(p, "http://" as ptr, 7) == 0 {
+        parsed.secure = 0
         parsed.port = 80
         start = 7
     }
 
     if start >= url_len {
         http_url_free(parsed)
-        return 0
+        return 0 )SBHTTP"
+            R"SBHTTP(as HttpUrl
     }
 
     var host_end = start
     while host_end < url_len {
-        if char_at(url, host_end) == 47 {
+        let ch = mem.read8(p + host_end)
+        if ch == 47 or ch == 63 {
             break
         }
         host_end++
@@ -1058,55 +1181,71 @@ function HttpUrl http_parse_url(str url) {
 
     if host_end <= start {
         http_url_free(parsed)
-        return 0
+        return 0 as HttpUrl
     }
 
-    parsed.host = string_substring(url, start, host_end - start)
+    // Optional host:port parsing
+    var host_stop = host_end
+    var colon_idx = start
+    while colon_idx < host_end {
+        if mem.read8(p + colon_idx) == 58 {
+            let port_str = string_substring(url, colon_idx + 1, host_end - colon_idx - 1)
+            let parsed_port = http_parse_port(port_str)
+            free(port_str)
+            if parsed_port <= 0 {
+                http_url_free(parsed)
+                return 0 as HttpUrl
+            }
+            parsed.port = parsed_port
+            host_stop = colon_idx
+            break
+        }
+        colon_idx++
+    }
+
+    if host_stop <= start {
+        http_url_free(parsed)
+        return 0 as HttpUrl
+    }
+
+    parsed.host = string_substring(url, start, host_stop - start)
     if parsed.host == 0 or string_length(parsed.host) == 0 {
         http_url_free(parsed)
-        return 0
+        return 0 as HttpUrl
     }
 
     parsed.path = http_take_path(url, host_end, url_len)
     if parsed.path == 0 {
         http_url_free(parsed)
-        return 0
+        return 0 as HttpUrl
     }
 
     return parsed
 }
 
 function void http_close_if(ptr close_fn, ptr handle_value) {
-    if handle_value != 0 {
-        ffi_call1(close_fn, handle_value)
+    if handle_value != 0 and close_fn != 0 {
+        let winhttp_close = close_fn as WinHttpCloseHandleFn
+        winhttp_close(handle_value)
     }
 }
 
 function int http_query_status(ptr request_handle, ptr query_headers) {
-    let status_ptr = http_make_zero(8)
-    let size_ptr = http_make_zero(8)
+    let status_ptr = mem.make_zero(8)
+    let size_ptr = mem.make_zero(8)
     if status_ptr == 0 or size_ptr == 0 {
-        if status_ptr != 0 {
-            free(status_ptr)
-        }
-        if size_ptr != 0 {
-            free(size_ptr)
-        }
+        if status_ptr != 0 { free(status_ptr) }
+        if size_ptr != 0 { free(size_ptr) }
         return 0
     }
 
-    mem_write_i32(size_ptr, 4)
+    mem.write32(size_ptr, 4)
     var status = 0
-    let ok = ffi_call6(
-        query_headers,
-        request_handle,
-        19 + 536870912,
-        0,
-        status_ptr,
-        size_ptr,
-        0)
+    let query_fn = query_headers as WinHttpQueryHeadersFn
+    // WINHTTP_QUERY_STATUS_CODE (19) | WINHTTP_QUERY_FLAG_NUMBER (0x20000000)
+    let ok = query_fn(request_handle, 19 + 536870912, 0, status_ptr, size_ptr, 0)
     if ok != 0 {
-        status = mem_read_i32(status_ptr)
+        status = mem.read32(status_ptr)
     }
 
     free(status_ptr)
@@ -1115,76 +1254,87 @@ function int http_query_status(ptr request_handle, ptr query_headers) {
 }
 
 function str http_read_body(ptr request_handle, ptr query_data_available, ptr read_data) {
-    let available_ptr = http_make_zero(8)
-    let read_count_ptr = http_make_zero(8)
-    let chunk_ptr = http_make_zero(4097)
-    if available_ptr == 0 or read_count_ptr == 0 or chunk_ptr == 0 {
-        if available_ptr != 0 {
-            free(available_ptr)
-        }
-        if read_count_ptr != 0 {
-            free(read_count_ptr)
-        }
-        if chunk_ptr != 0 {
-            free(chunk_ptr)
-        }
+    let available_ptr = mem.make_zero(8)
+    let read_count_ptr = mem.make_zero(8)
+    var cap = 4096
+    var total_len = 0
+    var buf = malloc(cap + 1)
+    if available_ptr == 0 or read_count_ptr == 0 or buf == 0 {
+        if available_ptr != 0 { free(available_ptr) }
+        if read_count_ptr != 0 { free(read_count_ptr) }
+        if buf != 0 { free(buf) }
         return http_empty_text()
     }
 
-    var body = http_empty_text()
+    let query_avail_fn = query_data_available as WinHttpQueryDataAvailableFn
+    let read_data_fn = read_data as WinHttpReadDataFn
+    var failed = false
+
     while true {
-        mem_write_i32(available_ptr, 0)
-        if ffi_call2(query_data_available, request_handle, available_ptr) == 0 {
-            free(body)
-            body = http_empty_text()
+        mem.write32(available_ptr, 0)
+        if query_avail_fn(request_handle, available_ptr) == 0 {
+            failed = true
             break
         }
 
-        let available = mem_read_i32(available_ptr)
+        let available = mem.read32(available_ptr)
         if available <= 0 {
             break
         }
 
-        var to_read = available
-        if to_read > 4096 {
-            to_read = 4096
+        if total_len + available + 1 > cap {
+            var new_cap = cap
+            while new_cap < total_len + available + 1 {
+                new_cap = new_cap * 2
+            }
+            let next_buf = malloc(new_cap + 1)
+            if next_buf == 0 {
+                failed = true
+                break
+            }
+            if total_len > 0 {
+                memcpy(next_buf, buf, total_len)
+            }
+            free(buf)
+            buf = next_buf
+            cap = new_cap
         }
 
-        mem_write_i32(read_count_ptr, 0)
-        if ffi_call4(read_data, request_handle, chunk_ptr, to_read, read_count_ptr) == 0 {
-            free(body)
-            body = http_empty_text()
+        mem.write32(read_count_ptr, 0)
+        if read_data_fn(request_handle, buf + total_len, available, read_count_ptr) == 0 {
+            failed = true
             break
         }
 
-        let chunk_len = mem_read_i32(read_count_ptr)
+        let chunk_len = mem.read32(read_count_ptr)
         if chunk_len <= 0 {
             break
         }
-
-        mem_write_i8(chunk_ptr + chunk_len, 0)
-        let chunk_text = http_bytes_to_text(chunk_ptr, chunk_len)
-        let next_body = string_append(body, chunk_text)
-        free(body)
-        free(chunk_text)
-        body = next_body
+        total_len = total_len + chunk_len
     }
 
     free(available_ptr)
     free(read_count_ptr)
-    free(chunk_ptr)
-    return body
+    if failed {
+        free(buf)
+        return http_empty_text()
+    }
+    mem.write8(buf + total_len, 0)
+    let out = make_string(buf)
+    free(buf)
+    return out
 }
 
-function int http_debug_fetch_stage(str url) {
+function HttpResponse http_fetch(str url) {
     let parsed = http_parse_url(url)
     if parsed == 0 {
-        return 901
+        return http_fail_response()
     }
 
     let module_handle = load_library("winhttp.dll")
     if module_handle == 0 {
-        return 902
+        http_url_free(parsed)
+        return http_fail_response()
     }
 
     let open_fn = get_proc(module_handle, "WinHttpOpen")
@@ -1201,31 +1351,39 @@ function int http_debug_fetch_stage(str url) {
     if open_fn == 0 or connect_fn == 0 or open_request_fn == 0 or send_request_fn == 0 or
        receive_response_fn == 0 or query_data_available_fn == 0 or query_headers_fn == 0 or read_data_fn == 0 or
        set_timeouts_fn == 0 or close_handle_fn == 0 {
-        return 903
+        http_url_free(parsed)
+        return http_fail_response()
     }
 
     let host_w = http_url_host_utf16(parsed)
-    if host_w == 0 {
-        return 904
-    }
-    return 905
-
-    let user_agent_w = http_utf16z("Sable/WinHTTP")
     let method_w = http_utf16z("GET")
     let path_w = http_url_path_utf16(parsed)
-    if user_agent_w == 0 or method_w == 0 or path_w == 0 {
-        return 906
+    if host_w == 0 or method_w == 0 or path_w == 0 {
+        if host_w != 0 { free(host_w) }
+        if method_w != 0 { free(method_w) }
+        if path_w != 0 { free(path_w) }
+        http_url_free(parsed)
+        return http_fail_response()
     }
 
-    let session = ffi_call5(open_fn, user_agent_w, 1, 0, 0, 0)
+    let session = http_open_session(open_fn, set_timeouts_fn)
     if session == 0 {
-        return 905
+        free(host_w)
+        free(method_w)
+        free(path_w)
+        http_url_free(parsed)
+        return http_fail_response()
     }
-    ffi_call5(set_timeouts_fn, session, 3000, 3000, 3000, 3000)
 
-    let connection = ffi_call4(connect_fn, session, host_w, parsed.port, 0)
+    let winhttp_connect = connect_fn as WinHttpConnectFn
+    let connection = winhttp_connect(session, host_w, parsed.port, 0)
+    free(host_w)
     if connection == 0 {
-        return 906
+        free(method_w)
+        free(path_w)
+        http_close_if(close_handle_fn, session)
+        http_url_free(parsed)
+        return http_fail_response()
     }
 
     var request_flags = 0
@@ -1233,22 +1391,44 @@ function int http_debug_fetch_stage(str url) {
         request_flags = 8388608
     }
 
-    let request = ffi_call7(open_request_fn, connection, method_w, path_w, 0, 0, 0, request_flags)
+    let winhttp_open_req = open_request_fn as WinHttpOpenRequestFn
+    let request = winhttp_open_req(connection, method_w, path_w, 0, 0, 0, request_flags)
+    free(method_w)
+    free(path_w)
+    http_url_free(parsed)
+
     if request == 0 {
-        return 907
-    }
-    if ffi_call7(send_request_fn, request, 0, 0, 0, 0, 0, 0) == 0 {
-        return 908
-    }
-    if ffi_call2(receive_response_fn, request, 0) == 0 {
-        return 909
+        http_close_if(close_handle_fn, connection)
+        http_close_if(close_handle_fn, session)
+        return http_fail_response()
     }
 
-    return http_query_status(request, query_headers_fn)
+    let winhttp_send = send_request_fn as WinHttpSendRequestFn
+    let winhttp_recv = receive_response_fn as WinHttpReceiveResponseFn
+    if winhttp_send(request, 0, 0, 0, 0, 0, 0) == 0 or winhttp_recv(request, 0) == 0 {
+        http_close_if(close_handle_fn, request)
+        http_close_if(close_handle_fn, connection)
+        http_close_if(close_handle_fn, session)
+        return http_fail_response()
+    }
+
+    let status = http_query_status(request, query_headers_fn)
+    let body = http_read_body(request, query_data_available_fn, read_data_fn)
+
+    http_close_if(close_handle_fn, request)
+    http_close_if(close_handle_fn, connection)
+    http_close_if(close_handle_fn, session)
+    return http_response_new(status, body)
 }
 
-function HttpResponse http_fetch(str url) {
-    return http_response_new(http_debug_fetch_stage(url), http_empty_text())
+function int http_debug_fetch_stage(str url) {
+    let response = http_fetch(url)
+    if response == 0 {
+        return 0
+    }
+    let status = response.status
+    http_response_free(response)
+    return status
 }
 
 function str http_get(str url) {
@@ -1258,8 +1438,12 @@ function str http_get(str url) {
     }
 
     let body_text = response.body
-    response.body = 0
+    response.body = 0 as str
     free(response)
+    if body_text == 0 {
+        ret)SBHTTP"
+            R"SBHTTP(urn http_empty_text()
+    }
     return body_text
 }
 )SBHTTP"},
@@ -1267,12 +1451,7 @@ function str http_get(str url) {
 import mem
 import text
 
-// Full JSON DOM parser + stringify helpers.
-// The representation is intentionally small and explicit:
-// - linked children for arrays/objects
-// - text payload for strings and numbers
-// - bool payload for booleans
-// - stable recursive free/stringify path
+// Full high-speed JSON DOM parser + stringify helpers backed by zero-copy views.
 // Ownership:
 // - json_parse allocates a tree that must be released with json_free.
 // - json_key/json_string/json_number_text/json_get_string/json_quote_string/json_escape_string_inner/json_stringify return heap strings; caller must free.
@@ -1284,29 +1463,54 @@ let JSON_KIND_STRING: int = 3
 let JSON_KIND_ARRAY: int = 4
 let JSON_KIND_OBJECT: int = 5
 
-let JSON_OFFSET_KIND: int = 0
-let JSON_OFFSET_BOOL: int = 8
-let JSON_OFFSET_COUNT: int = 16
-let JSON_OFFSET_KEY: int = 24
-let JSON_OFFSET_TEXT: int = 32
-let JSON_OFFSET_CHILD: int = 40
-let JSON_OFFSET_NEXT: int = 48
-
-struct JsonValue {
-    kind: int,
-    bool_value: int,
-    count: int,
-    key: str,
-    text: str,
-    child: ptr,
-    next: ptr,
+enum JsonValueOffset {
+    Kind = 0,
+    BoolValue = 8,
+    Count = 16,
+    Key = 24,
+    Text = 32,
+    Child = 40,
+    Next = 48,
+    Tail = 56,
 }
 
-struct JsonCursor {
-    source: str,
-    index: int,
-    length: int,
-    ok: int,
+enum JsonCursorOffset {
+    Source = 0,
+    SrcPtr = 8,
+    Index = 16,
+    Length = 24,
+    Ok = 32,
+}
+
+enum JsonBufOffset {
+    Data = 0,
+    Len = 8,
+    Cap = 16,
+}
+
+view JsonValue {
+    kind: int @ JsonValueOffset.Kind
+    bool_value: int @ JsonValueOffset.BoolValue
+    count: int @ JsonValueOffset.Count
+    key: str @ JsonValueOffset.Key
+    text: str @ JsonValueOffset.Text
+    child: ptr @ JsonValueOffset.Child
+    next: ptr @ JsonValueOffset.Next
+    tail: ptr @ JsonValueOffset.Tail
+}
+
+view JsonCursor {
+    source: str @ JsonCursorOffset.Source
+    src_ptr: ptr @ JsonCursorOffset.SrcPtr
+    index: int @ JsonCursorOffset.Index
+    length: int @ JsonCursorOffset.Length
+    ok: int @ JsonCursorOffset.Ok
+}
+
+view JsonStrBuf {
+    data: ptr @ JsonBufOffset.Data
+    len: int @ JsonBufOffset.Len
+    cap: int @ JsonBufOffset.Cap
 }
 
 function str json_owned_empty() {
@@ -1314,17 +1518,18 @@ function str json_owned_empty() {
 }
 
 function JsonValue json_new(int kind) {
-    var node: JsonValue = malloc(56)
+    let node = malloc(64) as JsonValue
     if node == 0 {
-        return 0
+        return 0 as JsonValue
     }
     node.kind = kind
     node.bool_value = 0
     node.count = 0
-    node.key = json_owned_empty()
-    node.text = json_owned_empty()
+    node.key = 0 as str
+    node.text = 0 as str
     node.child = 0
     node.next = 0
+    node.tail = 0
     return node
 }
 
@@ -1335,9 +1540,10 @@ function void json_set_key(JsonValue value_node, str key_name) {
         }
         return
     }
-    var target = value_node
-    free(target.key)
-    target.key = key_name
+    if value_node.key != 0 {
+        free(value_node.key)
+    }
+    value_node.key = key_name
 }
 
 function void json_set_text(JsonValue value_node, str text_value) {
@@ -1347,27 +1553,34 @@ function void json_set_text(JsonValue value_node, str text_value) {
         }
         return
     }
-    var target = value_node
-    free(target.text)
-    target.text = text_value
+    if value_node.text != 0 {
+        free(value_node.text)
+    }
+    value_node.text = text_value
 }
 
 function JsonCursor json_cursor_new(str source) {
-    var cursor: JsonCursor = malloc(32)
+    let cursor = malloc(40) as JsonCursor
     if cursor == 0 {
-        return 0
+        return 0 as JsonCursor
     }
     cursor.source = source
+    cursor.src_ptr = source as ptr
     cursor.index = 0
-    cursor.length = string_length(source)
-    cursor.ok = 1
+    if source == 0 {
+        cursor.length = 0
+        cursor.ok = 0
+    } else {
+        cursor.length = string_length(source)
+        cursor.ok = 1
+    }
     return cursor
 }
 
 function JsonCursor json_cursor_at(str source, int start_idx) {
     let cursor = json_cursor_new(source)
     if cursor == 0 {
-        return 0
+        return 0 as JsonCursor
     }
 
     if start_idx < 0 {
@@ -1387,8 +1600,7 @@ function bool json_cursor_is_ok(JsonCursor cursor) {
 
 function void json_fail(JsonCursor cursor) {
     if cursor != 0 {
-        var current = cursor
-        current.ok = 0
+        cursor.ok = 0
     }
 }
 
@@ -1399,7 +1611,7 @@ function int json_peek(JsonCursor cursor) {
     if cursor.index >= cursor.length {
         return 0
     }
-    return char_at(cursor.source, cursor.index)
+    return mem.read8(cursor.src_ptr + cursor.index)
 }
 
 function int json_peek_offset(JsonCursor cursor, int offset) {
@@ -1410,15 +1622,15 @@ function int json_peek_offset(JsonCursor cursor, int offset) {
     if idx < 0 or idx >= cursor.length {
         return 0
     }
-    return char_at(cursor.source, idx)
+    return mem.read8(cursor.src_ptr + idx)
 }
 
 function int json_take(JsonCursor cursor) {
-    let ch = json_peek(cursor)
-    if ch != 0 {
-        var current = cursor
-        current.index = current.index + 1
+    if cursor == 0 or cursor.index >= cursor.length {
+        return 0
     }
+    let ch = mem.read8(cursor.src_ptr + cursor.index)
+    cursor.index = cursor.index + 1
     return ch
 }
 
@@ -1426,13 +1638,17 @@ function void json_skip_ws_cursor(JsonCursor cursor) {
     if cursor == 0 {
         return
     }
-    var current = cursor
-    while current.index < current.length {
-        if !ascii_is_space(char_at(current.source, current.index)) {
+    var idx = cursor.index
+    let total = cursor.length
+    let p = cursor.src_ptr
+    while idx < total {
+        let ch = mem.read8(p + idx)
+        if !ascii_is_space(ch) {
             break
         }
-        current.index = current.index + 1
+        idx++
     }
+    cursor.index = idx
 }
 
 function bool json_consume(JsonCursor cursor, int ch) {
@@ -1440,39 +1656,38 @@ function bool json_consume(JsonCursor cursor, int ch) {
         json_fail(cursor)
         return false
     }
-    var current = cursor
-    current.index = current.index + 1
+    cursor.index = cursor.index + 1
     return true
 }
 
 function bool json_match_word(JsonCursor cursor, str word) {
     let word_len = string_length(word)
-    var i = 0
-    while i < word_len {
-        if json_peek_offset(cursor, i) != char_at(word, i) {
-            return false
-        }
-        i++
+    if cursor == 0 or cursor.index + word_len > cursor.length {
+        return false
     }
-    var current = cursor
-    current.index = current.index + word_len
+    if memcmp(cursor.src_ptr + cursor.index, word as ptr, word_len) != 0 {
+        return false
+    }
+    cursor.index = cursor.index + word_len
     return true
 }
 
 function int json_hex4(JsonCursor cursor) {
-    var out_value = 0
-    var i = 0
-    while i < 4 {
-        let ch = json_take(cursor)
-        let nibble = ascii_hex_digit(ch)
-        if nibble < 0 {
-            json_fail(cursor)
-            return -1
-        }
-        out_value = out_value * 16 + nibble
-        i++
+    if cursor == 0 or cursor.index + 4 > cursor.length {
+        json_fail(cursor)
+        return -1
     }
-    return out_value
+    let p = cursor.src_ptr + cursor.index
+    let n0 = ascii_hex_value(mem.read8(p))
+    let n1 = ascii_hex_value(mem.read8(p + 1))
+    let n2 = ascii_hex_value(mem.read8(p + 2))
+    let n3 = ascii_hex_value(mem.read8(p + 3))
+    if n0 < 0 or n1 < 0 or n2 < 0 or n3 < 0 {
+        json_fail(cursor)
+        return -1
+    }
+    cursor.index = cursor.index + 4
+    return (n0 << 12) | (n1 << 8) | (n2 << 4) | n3
 }
 
 function int json_write_utf8(ptr buf, int out_idx, int codepoint) {
@@ -1507,19 +1722,54 @@ function int json_write_utf8(ptr buf, int out_idx, int codepoint) {
 
 function str json_parse_string_raw(JsonCursor cursor) {
     if !json_consume(cursor, 34) {
-        return 0
+        return 0 as str
     }
 
-    let max_bytes = cursor.length - cursor.index + 1
-    let out_buf = mem.make_zero(max_bytes)
+    let total = cursor.length
+    let p = cursor.src_ptr
+    let start_idx = cursor.index
+
+    // Fast path: scan for closing quote without escapes or control characters.
+    var scan = start_idx
+    var has_escape = false
+    while scan < total {
+        let ch = mem.read8(p + scan)
+        if ch == 34 {
+            cursor.index = scan + 1
+            return string_substring(cursor.source, start_idx, scan - start_idx)
+        }
+        if ch == 92 {
+            has_escape = true
+            break
+        }
+        if ch < 32 {
+            json_fail(cursor)
+            return 0 as str
+        }
+        scan++
+    }
+
+    if !has_escape {
+        json_fail(cursor)
+        return 0 as str
+    }
+
+    let max_bytes = total - start_idx + 1
+    let out_buf = malloc(max_bytes)
     if out_buf == 0 {
         json_fail(cursor)
-        return 0
+        return 0 as str
     }
 
-    var out_idx = 0
-    while cursor.index < cursor.length {
-        let ch = json_take(cursor)
+    var out_idx = scan - start_idx
+    if out_idx > 0 {
+        memcpy(out_buf, p + start_idx, out_idx)
+    }
+    cursor.index = scan
+
+    while cursor.index < total {
+        let ch = mem.read8(p + cursor.index)
+        cursor.index = cursor.index + 1
         if ch == 34 {
             mem.write8(out_buf + out_idx, 0)
             let out = make_string(out_buf)
@@ -1528,8 +1778,15 @@ function str json_parse_string_raw(JsonCursor cursor) {
         }
 
         if ch == 92 {
-            let esc = json_take(cursor)
-            if esc == 34 {
+            if cursor.index >= total {
+                free(out_buf)
+                json_fail(cursor)
+                return 0 as str
+            }
+            let esc = mem.read8(p + cursor.index)
+            cursor.index = cursor.index + 1
+     )SBJSON"
+            R"SBJSON(       if esc == 34 {
                 mem.write8(out_buf + out_idx, 34)
                 out_idx++
             } else if esc == 92 {
@@ -1557,38 +1814,36 @@ function str json_parse_string_raw(JsonCursor cursor) {
                 var codepoint = json_hex4(cursor)
                 if codepoint < 0 {
                     free(out_buf)
-                    return 0
+                    return 0 as str
                 }
 
-                if codepoint >= 55296 and codepoint <= 56319 and json_peek(cursor) == 92 and json_peek_offset(cursor, 1) == 117 {
-                    var current = cursor
-                    current.index = current.index + 2
+                if codepoint >= 55296 and codepoint <= 56319 and cursor.index + 1 < total and mem.read8(p + cursor.index) == 92 and mem.read8(p + cursor.index + 1) == 117 {
+                    cursor.index = cursor.index + 2
                     let low = json_hex4(cursor)
                     if low >= 56320 and low <= 57343 {
                         codepoint = 65536 + ((codepoint - 55296) << 10) + (low - 56320)
                     } else {
                         free(out_buf)
                         json_fail(cursor)
-                        return 0
+                        return 0 as str
                     }
                 } else if codepoint >= 56320 and codepoint <= 57343 {
                     free(out_buf)
                     json_fail(cursor)
-                    return 0
+                    return 0 as str
                 }
 
-                out_idx = json_write_utf8(out_buf, out_idx, codepo)SBJSON"
-            R"SBJSON(int)
+                out_idx = json_write_utf8(out_buf, out_idx, codepoint)
             } else {
                 free(out_buf)
                 json_fail(cursor)
-                return 0
+                return 0 as str
             }
         } else {
             if ch < 32 {
                 free(out_buf)
                 json_fail(cursor)
-                return 0
+                return 0 as str
             }
             mem.write8(out_buf + out_idx, ch)
             out_idx++
@@ -1597,91 +1852,73 @@ function str json_parse_string_raw(JsonCursor cursor) {
 
     free(out_buf)
     json_fail(cursor)
-    return 0
+    return 0 as str
 }
 
 function str json_parse_number_raw(JsonCursor cursor) {
     if cursor == 0 {
-        return 0
+        return 0 as str
     }
 
-    let source_text = cursor.source
+    let p = cursor.src_ptr
     let total = cursor.length
     var idx = cursor.index
     let start_idx = idx
 
-    if idx < total and char_at(source_text, idx) == 45 {
+    if idx < total and mem.read8(p + idx) == 45 {
         idx++
     }
 
     if idx >= total {
         json_fail(cursor)
-        return 0
+        return 0 as str
     }
 
-    let first = char_at(source_text, idx)
+    let first = mem.read8(p + idx)
     if first == 48 {
         idx++
     } else if ascii_is_digit(first) {
-        while idx < total and ascii_is_digit(char_at(source_text, idx)) {
+        while idx < total and ascii_is_digit(mem.read8(p + idx)) {
             idx++
         }
     } else {
         json_fail(cursor)
-        return 0
+        return 0 as str
     }
 
-    if idx < total and char_at(source_text, idx) == 46 {
+    if idx < total and mem.read8(p + idx) == 46 {
         idx++
-        if idx >= total or !ascii_is_digit(char_at(source_text, idx)) {
+        if idx >= total or !ascii_is_digit(mem.read8(p + idx)) {
             json_fail(cursor)
-            return 0
+            return 0 as str
         }
-        while idx < total and ascii_is_digit(char_at(source_text, idx)) {
+        while idx < total and ascii_is_digit(mem.read8(p + idx)) {
             idx++
         }
     }
 
     if idx < total {
-        let exp_ch = char_at(source_text, idx)
+        let exp_ch = mem.read8(p + idx)
         if exp_ch == 101 or exp_ch == 69 {
             idx++
             if idx < total {
-                let sign_ch = char_at(source_text, idx)
+                let sign_ch = mem.read8(p + idx)
                 if sign_ch == 43 or sign_ch == 45 {
                     idx++
                 }
             }
-            if idx >= total or !ascii_is_digit(char_at(source_text, idx)) {
+            if idx >= total or !ascii_is_digit(mem.read8(p + idx)) {
                 json_fail(cursor)
-                return 0
+                return 0 as str
             }
-            while idx < total and ascii_is_digit(char_at(source_text, idx)) {
+            while idx < total and ascii_is_digit(mem.read8(p + idx)) {
                 idx++
             }
         }
     }
 
-    let out_len = idx - start_idx
-    let raw_buf = mem.make_zero(out_len + 1)
-    if raw_buf == 0 {
-        json_fail(cursor)
-        return 0
-    }
-
-    var i = 0
-    while i < out_len {
-        mem.write8(raw_buf + i, char_at(source_text, start_idx + i))
-        i++
-    }
-    mem.write8(raw_buf + out_len, 0)
-
-    var current = cursor
-    current.index = idx
-
-    let out = make_string(raw_buf)
-    free(raw_buf)
-    return out
+    cursor.index = idx
+    return string_substring(cursor.source, start_idx, idx - start_idx)
 }
 
 function void json_append_child(JsonValue parent, JsonValue child) {
@@ -1689,34 +1926,36 @@ function void json_append_child(JsonValue parent, JsonValue child) {
         return
     }
 
-    var target = parent
-    if target.child == 0 {
-        target.child = child
-        target.count = 1
+    if parent.child == 0 {
+        parent.child = child as ptr
+        parent.tail = child as ptr
+        parent.count = 1
         return
     }
 
-    var last: JsonValue = target.child
-    while last.next != 0 {
-        last = last.next
-    }
-    last.next = child
-    target.count = target.count + 1
+    let last = parent.tail as JsonValue
+    last.next = child as ptr
+    parent.tail = child as ptr
+    parent.count = parent.count + 1
 }
 
 function JsonValue json_parse_value(JsonCursor cursor) {
     json_skip_ws_cursor(cursor)
     if !json_cursor_is_ok(cursor) {
-        return 0
+        return 0 as JsonValue
     }
 
     let ch = json_peek(cursor)
     if ch == 34 {
         let value_node = json_new(JSON_KIND_STRING)
+        if value_node == 0 {
+            json_fail(cursor)
+            return 0 as JsonValue
+        }
         let decoded = json_parse_string_raw(cursor)
         if decoded == 0 {
             json_free(value_node)
-            return 0
+            return 0 as JsonValue
         }
         json_set_text(value_node, decoded)
         return value_node
@@ -1725,6 +1964,10 @@ function JsonValue json_parse_value(JsonCursor cursor) {
     if ch == 123 {
         json_take(cursor)
         let obj = json_new(JSON_KIND_OBJECT)
+        if obj == 0 {
+            json_fail(cursor)
+            return 0 as JsonValue
+        }
         json_skip_ws_cursor(cursor)
         if json_peek(cursor) == 125 {
             json_take(cursor)
@@ -1737,27 +1980,27 @@ function JsonValue json_parse_value(JsonCursor cursor) {
             if json_peek(cursor) != 34 {
                 json_free(obj)
                 json_fail(cursor)
-                return 0
+                return 0 as JsonValue
             }
 
             let key_name = json_parse_string_raw(cursor)
             if key_name == 0 {
                 json_free(obj)
-                return 0
+                return 0 as JsonValue
             }
 
             json_skip_ws_cursor(cursor)
             if !json_consume(cursor, 58) {
                 free(key_name)
                 json_free(obj)
-                return 0
+                return 0 as JsonValue
             }
 
             let child = json_parse_value(cursor)
             if child == 0 {
                 free(key_name)
                 json_free(obj)
-                return 0
+                return 0 as JsonValue
             }
 
             json_set_key(child, key_name)
@@ -1773,7 +2016,7 @@ function JsonValue json_parse_value(JsonCursor cursor) {
             } else {
                 json_free(obj)
                 json_fail(cursor)
-                return 0
+                return 0 as JsonValue
             }
         }
 
@@ -1782,12 +2025,16 @@ function JsonValue json_parse_value(JsonCursor cursor) {
         }
 
         json_free(obj)
-        return 0
+        return 0 as JsonValue
     }
 
     if ch == 91 {
         json_take(cursor)
         let arr = json_new(JSON_KIND_ARRAY)
+        if arr == 0 {
+            json_fail(cursor)
+            return 0 as JsonValue
+        }
         json_skip_ws_cursor(cursor)
         if json_peek(cursor) == 93 {
             json_take(cursor)
@@ -1799,7 +2046,7 @@ function JsonValue json_parse_value(JsonCursor cursor) {
             let child = json_parse_value(cursor)
             if child == 0 {
                 json_free(arr)
-                return 0
+                return 0 as JsonValue
             }
 
             json_append_child(arr, child)
@@ -1813,7 +2060,7 @@ function JsonValue json_parse_value(JsonCursor cursor) {
             } else {
                 json_free(arr)
                 json_fail(cursor)
-                return 0
+                return 0 as JsonValue
             }
         }
 
@@ -1822,66 +2069,66 @@ function JsonValue json_parse_value(JsonCursor cursor) {
         }
 
         json_free(arr)
-        return 0
+        return 0 as JsonValue
     }
 
     if ch == 116 {
-        if json_peek_offset(cursor, 0) != 116 or json_peek_offset(cursor, 1) != 114 or json_peek_offset(cursor, 2) != 117 or json_peek_offset(cursor, 3) != 101 {
+        if !json_match_word(cursor, "true") {
             json_fail(cursor)
-            return 0
+            return 0 as JsonValue
         }
-        json_take(cursor)
-        json_take(cursor)
-        json_take(cursor)
-        json_take(cursor)
-        var value_node = json_new(JSON_KIND_BOOL)
-        value_node.bool_value = 1
+        let value_node = json_new(JSON_KIND_BOOL)
+        if value_node != 0 {
+            value_node.bool_value = 1
+        }
         return value_node
     }
 
     if ch == 102 {
-        if json_peek_offset(cursor, 0) != 102 or json_peek_offset(cursor, 1) != 97 or json_peek_offset(cursor, 2) != 108 or json_peek_offset(cursor, 3) != 115 or json_peek_offset(cursor, 4) != 101 {
+        if !json_match_word(cur)SBJSON"
+            R"SBJSON(sor, "false") {
             json_fail(cursor)
-            return 0
+            return 0 as JsonValue
         }
-        json_take(cursor)
-        json_take(cursor)
-        json_take(cursor)
-        json_take(cursor)
-        json_take(cursor)
-        var value_node = json_new(JSON_KIND_BOOL)
-        value_node.bool_value = 0
+        let value_node = json_new(JSON_KIND_BOOL)
+        if value_node != 0 {
+            value_node.bool_value = 0
+        }
         return value_node
     }
 
     if ch == 110 {
-        if json_peek_offset(cursor, 0) != 110 or json_peek_offset(cursor, 1) != 117 or json_peek_offset(cursor, 2) != 108 or json_peek_offset(cursor, 3) != 108 {
+        if !json_match_word(cursor, "null") {
             json_fail(cursor)
-            return 0
+            return 0 as JsonValue
         }
-        json_take(cursor)
-        json_take(cursor)
-        json_take(cursor)
-        json_take(cursor)
         return json_new(JSON_KIND_NULL)
     }
 
     if ch == 45 or ascii_is_digit(ch) {
         let raw = json_parse_number_raw(cursor)
         if raw == 0 {
-            return 0
+            return 0 as JsonValue
         }
         let value_node = json_new(JSON_KIND_NUMBER)
+        if value_node == 0 {
+            free(raw)
+            json_fail(cursor)
+            return 0 as JsonValue
+        }
         json_set_text(value_node, raw)
         return value_node
     }
 
     json_fail(cursor)
-    return 0
+    return 0 as JsonValue
 }
 
 function JsonValue json_parse(str source) {
     let cursor = json_cursor_new(source)
+    if cursor == 0 {
+        return 0 as JsonValue
+    }
     let root = json_parse_value(cursor)
     json_skip_ws_cursor(cursor)
     if root == 0 or !json_cursor_is_ok(cursor) or cursor.index != cursor.length {
@@ -1889,7 +2136,7 @@ function JsonValue json_parse(str source) {
             json_free(root)
         }
         free(cursor)
-        return 0
+        return 0 as JsonValue
     }
     free(cursor)
     return root
@@ -1900,15 +2147,14 @@ function void json_free(JsonValue value_node) {
         return
     }
 
-    var child: JsonValue = value_node.child
+    var child = value_node.child as JsonValue
     while child != 0 {
-        let next_child: JsonValue = child.next
+        let next_child = child.next as JsonValue
         json_free(child)
         child = next_child
     }
 
-    if value_node.key)SBJSON"
-            R"SBJSON( != 0 {
+    if value_node.key != 0 {
         free(value_node.key)
     }
     if value_node.text != 0 {
@@ -1921,75 +2167,66 @@ function int json_kind(JsonValue value_node) {
     if value_node == 0 {
         return JSON_KIND_NULL
     }
-    return mem.read32(value_node)
+    return value_node.kind
 }
 
 function bool json_is_null(JsonValue value_node) {
-    let kind = json_kind(value_node)
-    return kind == JSON_KIND_NULL
+    return json_kind(value_node) == JSON_KIND_NULL
 }
 
 function bool json_is_bool(JsonValue value_node) {
-    let kind = json_kind(value_node)
-    return kind == JSON_KIND_BOOL
+    return json_kind(value_node) == JSON_KIND_BOOL
 }
 
 function bool json_is_number(JsonValue value_node) {
-    let kind = json_kind(value_node)
-    return kind == JSON_KIND_NUMBER
+    return json_kind(value_node) == JSON_KIND_NUMBER
 }
 
 function bool json_is_string(JsonValue value_node) {
-    let kind = json_kind(value_node)
-    return kind == JSON_KIND_STRING
+    return json_kind(value_node) == JSON_KIND_STRING
 }
 
 function bool json_is_array(JsonValue value_node) {
-    let kind = json_kind(value_node)
-    return kind == JSON_KIND_ARRAY
+    return json_kind(value_node) == JSON_KIND_ARRAY
 }
 
 function bool json_is_object(JsonValue value_node) {
-    let kind = json_kind(value_node)
-    return kind == JSON_KIND_OBJECT
+    return json_kind(value_node) == JSON_KIND_OBJECT
 }
 
 function bool json_bool_value(JsonValue value_node, bool fallback) {
     if !json_is_bool(value_node) {
         return fallback
     }
-    return mem.read32(value_node + JSON_OFFSET_BOOL) != 0
+    return value_node.bool_value != 0
 }
 
 function str json_key(JsonValue value_node) {
-    if value_node == 0 {
+    if value_node == 0 or value_node.key == 0 {
         return json_owned_empty()
     }
-    let raw_key: str = mem.read(value_node + JSON_OFFSET_KEY)
-    return text_clone(raw_key)
+    return text_clone(value_node.key)
 }
 
 function str json_string(JsonValue value_node) {
-    if !json_is_string(value_node) {
+    if !json_is_string(value_node) or value_node.text == 0 {
         return json_owned_empty()
     }
-    let raw_text: str = mem.read(value_node + JSON_OFFSET_TEXT)
-    return text_clone(raw_text)
+    return text_clone(value_node.text)
 }
 
 function str json_number_text(JsonValue value_node) {
-    if !json_is_number(value_node) {
+    if !json_is_number(value_node) or value_node.text == 0 {
         return json_owned_empty()
     }
-    let raw_text: str = mem.read(value_node + JSON_OFFSET_TEXT)
-    return text_clone(raw_text)
+    return text_clone(value_node.text)
 }
 
 function int json_int(JsonValue value_node, int fallback) {
-    if !json_is_number(value_node) {
+    if !json_is_number(value_node) or value_node.text == 0 {
         return fallback
     }
-    let raw_text: str = mem.read(value_node + JSON_OFFSET_TEXT)
+    let raw_text = value_node.text
     if text_contains_char(raw_text, 46) or text_contains_char(raw_text, 101) or text_contains_char(raw_text, 69) {
         return fallback
     }
@@ -2000,64 +2237,66 @@ function int json_count(JsonValue value_node) {
     if value_node == 0 {
         return 0
     }
-    return mem.read32(value_node + JSON_OFFSET_COUNT)
+    return value_node.count
 }
 
 function int json_array_len(JsonValue value_node) {
     if !json_is_array(value_node) {
         return 0
     }
-    return mem.read32(value_node + JSON_OFFSET_COUNT)
+    return value_node.count
 }
 
 function JsonValue json_child(JsonValue value_node) {
     if value_node == 0 {
-        return 0
+        return 0 as JsonValue
     }
-    let child: JsonValue = mem.read(value_node + JSON_OFFSET_CHILD)
-    return child
+    return value_node.child as JsonValue
 }
 
 function JsonValue json_next(JsonValue value_node) {
     if value_node == 0 {
-        return 0
+        return 0 as JsonValue
     }
-    let next_value: JsonValue = mem.read(value_node + JSON_OFFSET_NEXT)
-    return next_value
+    return value_node.next as JsonValue
 }
 
 function JsonValue json_array_at(JsonValue value_node, int index) {
-    if !json_is_array(value_node) or index < 0 {
-        return 0
+    if !json_is_array(value_node) or index < 0 or index >= value_node.count {
+        return 0 as JsonValue
     }
 
-    var item: JsonValue = mem.read(value_node + JSON_OFFSET_CHILD)
+    var item = value_node.child as JsonValue
     var i = 0
     while item != 0 {
         if i == index {
             return item
         }
-        item = mem.read(item + JSON_OFFSET_NEXT)
+        item = item.next as JsonValue
         i++
     }
-    return 0
+    return 0 as JsonValue
 }
 
 function JsonValue json_object_get(JsonValue value_node, str key_name) {
-    if !json_is_object(value_node) {
-        return 0
+    if !json_is_object(value_node) or key_name == 0 {
+        return 0 as JsonValue
     }
 
-    var item: JsonValue = mem.read(value_node + JSON_OFFSET_CHILD)
+    let key_len = string_length(key_name)
+    let key_ptr = key_name as ptr
+    var item = value_node.child as JsonValue
     while item != 0 {
-        let item_key: str = mem.read(item + JSON_OFFSET_KEY)
-        let matches = string_equals(item_key, key_name)
-        if matches != 0 {
-            return item
+        if item.key != 0 {
+            if string_length(item.key) == key_len {
+                if key_len == 0 or memcmp(item.key as ptr, key_ptr, key_len) == 0 {
+                    return item
+                }
+            }
         }
-        item = mem.read(item + JSON_OFFSET_NEXT)
+        item = item.next as JsonValue
     }
-    return 0
+    return 0 as JsonValue
 }
 
 function bool json_object_has(JsonValue value_node, str key_name) {
@@ -2065,7 +2304,7 @@ function bool json_object_has(JsonValue value_node, str key_name) {
 }
 
 function int json_hex_char(int nibble) {
-    return char_at("0123456789ABCDEF", nibble & 15)
+    return ascii_hex_nibble_char(nibble & 15)
 }
 
 function int json_write_escape_u00(ptr out_buf, int out_idx, int ch) {
@@ -2079,16 +2318,20 @@ function int json_write_escape_u00(ptr out_buf, int out_idx, int ch) {
 }
 
 function str json_escape_string_inner(str raw_text) {
+    if raw_text == 0 {
+        return json_owned_empty()
+    }
     let source_len = string_length(raw_text)
     let out_buf = mem.make_zero(source_len * 6 + 1)
     if out_buf == 0 {
         return json_owned_empty()
     }
 
+    let p = raw_text as ptr
     var out_idx = 0
     var i = 0
     while i < source_len {
-        let ch = char_at(raw_text, i)
+        let ch = mem.read8(p + i)
         if ch == 34 {
             mem.write8(out_buf + out_idx + 0, 92)
             mem.write8(out_buf + out_idx + 1, 34)
@@ -2152,47 +2395,269 @@ function str json_append_take(str left, str right) {
     return out
 }
 
-function str json_stringify(JsonValue value_node) {
-    return text_clone("null")
+internal function bool json_bu)SBJSON"
+            R"SBJSON(f_reserve(JsonStrBuf buf, int extra) {
+    let needed = buf.len + extra + 1
+    if needed <= buf.cap {
+        return true
+    }
+    var new_cap = buf.cap
+    if new_cap < 64 {
+        new_cap = 64
+    }
+    while new_cap < needed {
+        new_cap = new_cap * 2
+    }
+    let next_data = malloc(new_cap)
+    if next_data == 0 {
+        return false
+    }
+    if buf.data != 0 && buf.len > 0 {
+        memcpy(next_data, buf.data, buf.len)
+    }
+    if buf.data != 0 {
+        free(buf.data)
+    }
+    buf.data = next_data
+    buf.cap = new_cap
+    return true
 }
 
-// Compatibility helpers for the earlier tiny json surface.
-
-function int json_skip_ws(str source, int start_idx) {
-    let cursor = json_cursor_at(source, start_idx)
-    if cursor == 0 {
-        return start_idx
+internal function void json_buf_push_byte(JsonStrBuf buf, int ch) {
+    if !json_buf_reserve(buf, 1) {
+        return
     }
+    mem.write8(buf.data + buf.len, ch)
+    buf.len = buf.len + 1
+}
 
-    json_skip_ws_cursor(cursor)
-    let out = cursor.index
-    free(cursor)
+internal function void json_buf_push_str(JsonStrBuf buf, str text_val) {
+    if text_val == 0 {
+        return
+    }
+    let slen = string_length(text_val)
+    if slen <= 0 {
+        return
+    }
+    if !json_buf_reserve(buf, slen) {
+        return
+    }
+    memcpy(buf.data + buf.len, text_val as ptr, slen)
+    buf.len = buf.len + slen
+}
+
+internal function void json_buf_push_escaped(JsonStrBuf buf, str raw_text) {
+    json_buf_push_byte(buf, 34)
+    if raw_text != 0 {
+        let slen = string_length(raw_text)
+        if slen > 0 and json_buf_reserve(buf, slen * 6) {
+            let p = raw_text as ptr
+            var out_idx = buf.len
+            let dst = buf.data
+            var i = 0
+            while i < slen {
+                let ch = mem.read8(p + i)
+                if ch == 34 {
+                    mem.write8(dst + out_idx, 92)
+                    mem.write8(dst + out_idx + 1, 34)
+                    out_idx += 2
+                } else if ch == 92 {
+                    mem.write8(dst + out_idx, 92)
+                    mem.write8(dst + out_idx + 1, 92)
+                    out_idx += 2
+                } else if ch == 8 {
+                    mem.write8(dst + out_idx, 92)
+                    mem.write8(dst + out_idx + 1, 98)
+                    out_idx += 2
+                } else if ch == 12 {
+                    mem.write8(dst + out_idx, 92)
+                    mem.write8(dst + out_idx + 1, 102)
+                    out_idx += 2
+                } else if ch == 10 {
+                    mem.write8(dst + out_idx, 92)
+                    mem.write8(dst + out_idx + 1, 110)
+                    out_idx += 2
+                } else if ch == 13 {
+                    mem.write8(dst + out_idx, 92)
+                    mem.write8(dst + out_idx + 1, 114)
+                    out_idx += 2
+                } else if ch == 9 {
+                    mem.write8(dst + out_idx, 92)
+                    mem.write8(dst + out_idx + 1, 116)
+                    out_idx += 2
+                } else if ch < 32 {
+                    out_idx = json_write_escape_u00(dst, out_idx, ch)
+                } else {
+                    mem.write8(dst + out_idx, ch)
+                    out_idx++
+                }
+                i++
+            }
+            buf.len = out_idx
+        }
+    }
+    json_buf_push_byte(buf, 34)
+}
+
+internal function void json_stringify_into(JsonStrBuf buf, JsonValue value_node) {
+    if value_node == 0 {
+        json_buf_push_str(buf, "null")
+        return
+    }
+    let k = value_node.kind
+    if k == JSON_KIND_NULL {
+        json_buf_push_str(buf, "null")
+        return
+    }
+    if k == JSON_KIND_BOOL {
+        if value_node.bool_value != 0 {
+            json_buf_push_str(buf, "true")
+        } else {
+            json_buf_push_str(buf, "false")
+        }
+        return
+    }
+    if k == JSON_KIND_NUMBER {
+        if value_node.text != 0 and string_length(value_node.text) > 0 {
+            json_buf_push_str(buf, value_node.text)
+        } else {
+            json_buf_push_str(buf, "0")
+        }
+        return
+    }
+    if k == JSON_KIND_STRING {
+        json_buf_push_escaped(buf, value_node.text)
+        return
+    }
+    if k == JSON_KIND_ARRAY {
+        json_buf_push_byte(buf, 91)
+        var item = value_node.child as JsonValue
+        var first = true
+        while item != 0 {
+            if !first {
+                json_buf_push_byte(buf, 44)
+            }
+            first = false
+            json_stringify_into(buf, item)
+            item = item.next as JsonValue
+        }
+        json_buf_push_byte(buf, 93)
+        return
+    }
+    if k == JSON_KIND_OBJECT {
+        json_buf_push_byte(buf, 123)
+        var item = value_node.child as JsonValue
+        var first = true
+        while item != 0 {
+            if !first {
+                json_buf_push_byte(buf, 44)
+            }
+            first = false
+            json_buf_push_escaped(buf, item.key)
+            json_buf_push_byte(buf, 58)
+            json_stringify_into(buf, item)
+            item = item.next as JsonValue
+        }
+        json_buf_push_byte(buf, 125)
+        return
+    }
+    json_buf_push_str(buf, "null")
+}
+
+function str json_stringify(JsonValue value_node) {
+    if value_node == 0 {
+        return text_clone("null")
+    }
+    let buf = malloc(24) as JsonStrBuf
+    if buf == 0 {
+        return text_clone("null")
+    }
+    buf.data = malloc(128)
+    buf.len = 0
+    if buf.data != 0 {
+        buf.cap = 128
+    } else {
+        buf.cap = 0
+    }
+    json_stringify_into(buf, value_node)
+    if buf.data == 0 {
+        free(buf)
+        return text_clone("null")
+    }
+    mem.write8(buf.data + buf.len, 0)
+    let out = make_string(buf.data)
+    free(buf.data)
+    free(buf)
     return out
 }
 
+// Compatibility helpers for quick raw-text JSON lookup.
+
+function int json_skip_ws(str source, int start_idx) {
+    if source == 0 {
+        return start_idx
+    }
+    let total = string_length(source)
+    let p = source as ptr
+    var idx = start_idx
+    if idx < 0 {
+        idx = 0
+    }
+    while idx < total {
+        if !ascii_is_space(mem.read8(p + idx)) {
+            break
+        }
+        idx++
+    }
+    return idx
+}
+
 function int json_find_key(str source, str key_name) {
+    if source == 0 or key_name == 0 {
+        return -1
+    }
     let source_len = string_length(source)
     let key_len = string_length(key_name)
     if key_len <= 0 or source_len < key_len + 2 {
         return -1
     }
 
+    let p = source as ptr
+    let kp = key_name as ptr
     var i = 0
-    while i <= source_len - key_len - 2 {
-        if char_at(source, i) == 34 {
-            var matches = true
-            var j = 0
-            while j < key_len {
-                if char_at(source, i + 1 + j) != char_at(key_name, j) {
-                    matches = false
+    while i < source_len {
+        let ch = mem.read8(p + i)
+        if ch == 34 {
+            let str_start = i
+            var j = i + 1
+            while j < source_len {
+                let c = mem.read8(p + j)
+                if c == 92 {
+                    j = j + 2
+                    continue
+                }
+                if c == 34 {
                     break
                 }
                 j++
             }
-
-            if matches and char_at(source, i + 1 + key_len) == 34 {
-                return i
+            if j >= source_len {
+                return -1
             }
+            let inner_len = j - str_start - 1
+            if inner_len == key_len {
+                if memcmp(p + str_start + 1, kp, key_len) == 0 {
+                    var after = j + 1
+                    while after < source_len and ascii_is_space(mem.read8(p + after)) {
+                        after++
+                    }
+                    if after < source_len and mem.read8(p + after) == 58 {
+                        return str_start
+                    }
+                }
+            }
+            i = j + 1
+            continue
         }
         i++
     }
@@ -2207,9 +2672,10 @@ function int json_find_value_start(str source, str key_name) {
     }
 
     let len = string_length(source)
-    var idx = key_idx
+    let p = source as ptr
+    var idx = key_idx + 1 + string_length(key_name) + 1
     while idx < len {
-        if char_at(source, idx) == 58 {
+        if mem.read8(p + idx) == 58 {
             return json_skip_ws(source, idx + 1)
         }
         idx++
@@ -2217,10 +2683,9 @@ function int json_find_value_start(str source, str key_name) {
     return -1
 }
 
-function str json_get_string(s)SBJSON"
-            R"SBJSON(tr source, str key_name) {
+function str json_get_string(str source, str key_name) {
     let start = json_find_value_start(source, key_name)
-    if start < 0 or char_at(source, start) != 34 {
+    if start < 0 or mem.read8((source as ptr) + start) != 34 {
         return json_owned_empty()
     }
 
@@ -2231,7 +2696,8 @@ function str json_get_string(s)SBJSON"
     let out = json_parse_string_raw(cursor)
     free(cursor)
     if out == 0 {
-        return json_owned_empty()
+  )SBJSON"
+            R"SBJSON(      return json_owned_empty()
     }
     return out
 }
@@ -2268,11 +2734,12 @@ function bool json_get_bool(str source, str key_name, bool fallback) {
         return fallback
     }
 
-    if char_at(source, start + 0) == 116 and char_at(source, start + 1) == 114 and char_at(source, start + 2) == 117 and char_at(source, start + 3) == 101 {
+    let len = string_length(source)
+    let p = (source as ptr) + start
+    if start + 4 <= len and memcmp(p, "true" as ptr, 4) == 0 {
         return true
     }
-
-    if char_at(source, start + 0) == 102 and char_at(source, start + 1) == 97 and char_at(source, start + 2) == 108 and char_at(source, start + 3) == 115 and char_at(source, start + 4) == 101 {
+    if start + 5 <= len and memcmp(p, "false" as ptr, 5) == 0 {
         return false
     }
 
@@ -2283,21 +2750,35 @@ function bool json_has_key(str source, str key_name) {
     return json_find_value_start(source, key_name) >= 0
 }
 )SBJSON"},
-        {"mem", R"SBMEM(// Memory convenience wrappers built on top of the compiler builtins.
+        {"mem", R"SBMEM(// Memory operations and typed read/write helpers over compiler builtins.
 
 function ptr make(int size) {
+    if size <= 0 {
+        return malloc(1)
+    }
     return malloc(size)
 }
 
 function ptr make_zero(int size) {
-    let block = malloc(size)
-    memset(block, 0, size)
+    var alloc_size = size
+    if alloc_size <= 0 {
+        alloc_size = 1
+    }
+    let block = malloc(alloc_size)
+    if block != 0 {
+        memset(block, 0, alloc_size)
+    }
     return block
 }
 
 function ptr make_copy(ptr src, int size) {
+    if size <= 0 {
+        return make_zero(1)
+    }
     let block = malloc(size)
-    memcpy(block, src, size)
+    if block != 0 && src != 0 {
+        memcpy(block, src, size)
+    }
     return block
 }
 
@@ -2349,36 +2830,88 @@ function void write64(ptr location, i64 cell) {
 }
 
 function void text(ptr dst, str text_value) {
+    if dst == 0 || text_value == 0 {
+        return
+    }
     let len = string_length(text_value)
-    var i = 0
-    while i < len {
-        write8(dst + i, char_at(text_value, i))
-        i++
+    if len > 0 {
+        memcpy(dst, text_value as ptr, len)
     }
 }
 
 function void textz(ptr dst, str text_value) {
-    text(dst, text_value)
-    write8(dst + string_length(text_value), 0)
+    if dst == 0 {
+        return
+    }
+    if text_value == 0 {
+        mem_write_i8(dst, 0)
+        return
+    }
+    let len = string_length(text_value)
+    if len > 0 {
+        memcpy(dst, text_value as ptr, len)
+    }
+    mem_write_i8(dst + len, 0)
 }
 
 function void zero(ptr dst, int size) {
+    if dst == 0 || size <= 0 {
+        return
+    }
     memset(dst, 0, size)
 }
 
 function void fill(ptr dst, int byte_value, int size) {
+    if dst == 0 || size <= 0 {
+        return
+    }
     memset(dst, byte_value, size)
 }
 
 function void copy(ptr dst, ptr src, int size) {
+    if dst == 0 || src == 0 || size <= 0 || dst == src {
+        return
+    }
     memcpy(dst, src, size)
 }
 
+function void move(ptr dst, ptr src, int size) {
+    if dst == 0 || src == 0 || size <= 0 || dst == src {
+        return
+    }
+    if dst < src || dst >= src + size {
+        memcpy(dst, src, size)
+        return
+    }
+    var remaining = size
+    while remaining >= 8 {
+        remaining -= 8
+        mem_write(dst + remaining, mem_read(src + remaining))
+    }
+    while remaining > 0 {
+        remaining -= 1
+        mem_write_i8(dst + remaining, mem_read_i8(src + remaining))
+    }
+}
+
 function void copy_cells(ptr dst, ptr src, int cells) {
+    if dst == 0 || src == 0 || cells <= 0 || dst == src {
+        return
+    }
     memcpy(dst, src, cells * 8)
 }
 
+function void move_cells(ptr dst, ptr src, int cells) {
+    if cells <= 0 {
+        return
+    }
+    move(dst, src, cells * 8)
+}
+
 function int compare(ptr a, ptr b, int size) {
+    if size <= 0 || a == b {
+        return 0
+    }
     return memcmp(a, b, size)
 }
 
@@ -2422,8 +2955,16 @@ function void mem_copy(ptr dst, ptr src, int size) {
     copy(dst, src, size)
 }
 
+function void mem_move(ptr dst, ptr src, int size) {
+    move(dst, src, size)
+}
+
 function void mem_copy_cells(ptr dst, ptr src, int cells) {
     copy_cells(dst, src, cells)
+}
+
+function void mem_move_cells(ptr dst, ptr src, int cells) {
+    move_cells(dst, src, cells)
 }
 
 function int mem_compare(ptr a, ptr b, int size) {
@@ -2434,41 +2975,46 @@ function ptr mem_dup(ptr src, int size) {
     return dup(src, size)
 }
 
-function ptr mem_offset(ptr base, int offset) {
-    return offset(base, offset)
+function ptr mem_offset(ptr base, int delta) {
+    return offset(base, delta)
 }
 
-function ptr mem_end(ptr base, int offset) {
-    return after(base, offset)
+function ptr mem_end(ptr base, int delta) {
+    return after(base, delta)
 }
 )SBMEM"},
-        {"option", R"SBOPTION(// Specialized optional value wrappers.
+        {"option", R"SBOPTION(// Specialized optional value wrappers backed by zero-copy views.
 // Sable does not have generics yet, so we keep the most useful payload shapes.
 
-struct OptI64 {
-    has_value: i64,
-    item: i64,
+enum OptOffset {
+    HasValue = 0,
+    Item = 8,
 }
 
-struct OptPtr {
-    has_value: i64,
-    item: ptr,
+view OptI64 {
+    has_value: i64 @ OptOffset.HasValue
+    item: i64 @ OptOffset.Item
 }
 
-struct OptStr {
-    has_value: i64,
-    item: str,
+view OptPtr {
+    has_value: i64 @ OptOffset.HasValue
+    item: ptr @ OptOffset.Item
 }
 
-struct OptBool {
-    has_value: i64,
-    item: i64,
+view OptStr {
+    has_value: i64 @ OptOffset.HasValue
+    item: str @ OptOffset.Item
+}
+
+view OptBool {
+    has_value: i64 @ OptOffset.HasValue
+    item: i64 @ OptOffset.Item
 }
 
 function OptI64 opt_i64_some(i64 item) {
-    var opt: OptI64 = malloc(16)
+    let opt = malloc(16) as OptI64
     if opt == 0 {
-        return 0
+        return 0 as OptI64
     }
     opt.has_value = 1
     opt.item = item
@@ -2476,9 +3022,9 @@ function OptI64 opt_i64_some(i64 item) {
 }
 
 function OptI64 opt_i64_none() {
-    var opt: OptI64 = malloc(16)
+    let opt = malloc(16) as OptI64
     if opt == 0 {
-        return 0
+        return 0 as OptI64
     }
     opt.has_value = 0
     opt.item = 0
@@ -2486,22 +3032,28 @@ function OptI64 opt_i64_none() {
 }
 
 function bool opt_i64_is_some(OptI64 opt) {
+    if opt == 0 {
+        return false
+    }
     return opt.has_value != 0
 }
 
 function bool opt_i64_is_none(OptI64 opt) {
+    if opt == 0 {
+        return true
+    }
     return opt.has_value == 0
 }
 
 function i64 opt_i64_unwrap(OptI64 opt) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return 0
 }
 
 function i64 opt_i64_unwrap_or(OptI64 opt, i64 fallback) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return fallback
@@ -2514,9 +3066,9 @@ function void opt_i64_free(OptI64 opt) {
 }
 
 function OptPtr opt_ptr_some(ptr item_ptr) {
-    var opt: OptPtr = malloc(16)
+    let opt = malloc(16) as OptPtr
     if opt == 0 {
-        return 0
+        return 0 as OptPtr
     }
     opt.has_value = 1
     opt.item = item_ptr
@@ -2524,9 +3076,9 @@ function OptPtr opt_ptr_some(ptr item_ptr) {
 }
 
 function OptPtr opt_ptr_none() {
-    var opt: OptPtr = malloc(16)
+    let opt = malloc(16) as OptPtr
     if opt == 0 {
-        return 0
+        return 0 as OptPtr
     }
     opt.has_value = 0
     opt.item = 0
@@ -2534,22 +3086,28 @@ function OptPtr opt_ptr_none() {
 }
 
 function bool opt_ptr_is_some(OptPtr opt) {
+    if opt == 0 {
+        return false
+    }
     return opt.has_value != 0
 }
 
 function bool opt_ptr_is_none(OptPtr opt) {
+    if opt == 0 {
+        return true
+    }
     return opt.has_value == 0
 }
 
 function ptr opt_ptr_unwrap(OptPtr opt) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return 0
 }
 
 function ptr opt_ptr_unwrap_or(OptPtr opt, ptr fallback) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return fallback
@@ -2562,9 +3120,9 @@ function void opt_ptr_free(OptPtr opt) {
 }
 
 function OptStr opt_str_some(str text_value) {
-    var opt: OptStr = malloc(16)
+    let opt = malloc(16) as OptStr
     if opt == 0 {
-        return 0
+        return 0 as OptStr
     }
     opt.has_value = 1
     opt.item = text_value
@@ -2572,9 +3130,9 @@ function OptStr opt_str_some(str text_value) {
 }
 
 function OptStr opt_str_none() {
-    var opt: OptStr = malloc(16)
+    let opt = malloc(16) as OptStr
     if opt == 0 {
-        return 0
+        return 0 as OptStr
     }
     opt.has_value = 0
     opt.item = ""
@@ -2582,22 +3140,28 @@ function OptStr opt_str_none() {
 }
 
 function bool opt_str_is_some(OptStr opt) {
+    if opt == 0 {
+        return false
+    }
     return opt.has_value != 0
 }
 
 function bool opt_str_is_none(OptStr opt) {
+    if opt == 0 {
+        return true
+    }
     return opt.has_value == 0
 }
 
 function str opt_str_unwrap(OptStr opt) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return ""
 }
 
 function str opt_str_unwrap_or(OptStr opt, str fallback) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item
     }
     return fallback
@@ -2610,19 +3174,23 @@ function void opt_str_free(OptStr opt) {
 }
 
 function OptBool opt_bool_some(bool flag) {
-    var opt: OptBool = malloc(16)
+    let opt = malloc(16) as OptBool
     if opt == 0 {
-        return 0
+        return 0 as OptBool
     }
     opt.has_value = 1
-    opt.item = flag
+    if flag {
+        opt.item = 1
+    } else {
+        opt.item = 0
+    }
     return opt
 }
 
 function OptBool opt_bool_none() {
-    var opt: OptBool = malloc(16)
+    let opt = malloc(16) as OptBool
     if opt == 0 {
-        return 0
+        return 0 as OptBool
     }
     opt.has_value = 0
     opt.item = 0
@@ -2630,22 +3198,28 @@ function OptBool opt_bool_none() {
 }
 
 function bool opt_bool_is_some(OptBool opt) {
+    if opt == 0 {
+        return false
+    }
     return opt.has_value != 0
 }
 
 function bool opt_bool_is_none(OptBool opt) {
+    if opt == 0 {
+        return true
+    }
     return opt.has_value == 0
 }
 
 function bool opt_bool_unwrap(OptBool opt) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item != 0
     }
     return false
 }
 
 function bool opt_bool_unwrap_or(OptBool opt, bool fallback) {
-    if opt.has_value != 0 {
+    if opt != 0 and opt.has_value != 0 {
         return opt.item != 0
     }
     return fallback
@@ -2879,16 +3453,21 @@ function void owned_block_reset(*OwnedBlock block, ptr value_ptr, int size, bool
     block.owned = take_ownership
 }
 )SBOWNER"},
-        {"path", R"SBPATH(import text
+        {"path", R"SBPATH(import mem
+import text
 
 // Lightweight path helpers for common tooling tasks.
 // Ownership:
 // - path_join2/path_basename/path_dirname/path_ext/path_stem return heap strings; caller must free.
 
 function int path_last_sep(str source) {
+    if source == 0 {
+        return -1
+    }
+    let p = source as ptr
     var i = string_length(source) - 1
     while i >= 0 {
-        let ch = char_at(source, i)
+        let ch = mem.read8(p + i)
         if ch == 47 or ch == 92 {
             return i
         }
@@ -2905,7 +3484,8 @@ function str path_join2(str left, str right) {
         return text_clone(left)
     }
 
-    let last = char_at(left, string_length(left) - 1)
+    let left_len = string_length(left)
+    let last = mem.read8((left as ptr) + left_len - 1)
     if last == 47 or last == 92 {
         return string_append(left, right)
     }
@@ -2932,26 +3512,31 @@ function str path_dirname(str source) {
 }
 
 function str path_ext(str source) {
-    let base = path_basename(source)
-    let dot = text_rfind_char(base, 46)
-    if dot < 0 {
-        free(base)
-        return text_clone("")
+    let base_start = path_last_sep(source) + 1
+    let total = string_length(source)
+    let p = source as ptr
+    var dot = total - 1
+    while dot >= base_start {
+        if mem.read8(p + dot) == 46 {
+            return string_substring(source, dot + 1, total - dot - 1)
+        }
+        dot--
     }
-    let out = string_substring(base, dot + 1, string_length(base) - dot - 1)
-    free(base)
-    return out
+    return text_clone("")
 }
 
 function str path_stem(str source) {
-    let base = path_basename(source)
-    let dot = text_rfind_char(base, 46)
-    if dot < 0 {
-        return base
+    let base_start = path_last_sep(source) + 1
+    let total = string_length(source)
+    let p = source as ptr
+    var dot = total - 1
+    while dot >= base_start {
+        if mem.read8(p + dot) == 46 {
+            return string_substring(source, base_start, dot - base_start)
+        }
+        dot--
     }
-    let out = string_substring(base, 0, dot)
-    free(base)
-    return out
+    return string_substring(source, base_start, total - base_start)
 }
 )SBPATH"},
         {"prelude", R"SBPRELUDE(import ascii
@@ -3016,25 +3601,27 @@ function void process_exit(int code) {
 )SBPROCESS"},
         {"rand", R"SBRAND(import time
 
-// Small deterministic random helpers for gameplay, tooling, and tests.
+// Fast deterministic PRNG (SplitMix64 seeding + Xorshift64* mixing).
 
 var rand_state: int = 0
 
 function int rand_seed(int seed) {
-    if seed == 0 {
-        seed = 1
+    var z = seed
+    if z == 0 {
+        z = 1
     }
-    rand_state = seed
+    z = (z ^ (z >> 30)) * -4658895280553007687
+    z = (z ^ (z >> 27)) * -7723592293110705685
+    z = z ^ (z >> 31)
+    if z == 0 {
+        z = 1
+    }
+    rand_state = z
     return rand_state
 }
 
 function int rand_seed_auto() {
-    var seed = time_tick_ms()
-    if seed == 0 {
-        seed = 1
-    }
-    rand_state = seed
-    return rand_state
+    return rand_seed(time_tick_ms() ^ 0x9E3779B97F4A7C15)
 }
 
 function int rand_next() {
@@ -3042,16 +3629,16 @@ function int rand_next() {
         rand_seed_auto()
     }
 
-    // xorshift32-style update on the low 32 bits
     var x = rand_state
-    x = x ^ (x << 13)
-    x = x ^ (x >> 17)
-    x = x ^ (x << 5)
-    if x < 0 {
-        x = -x
+    x = x ^ (x >> 12)
+    x = x ^ (x << 25)
+    x = x ^ (x >> 27)
+    if x == 0 {
+        x = 1
     }
     rand_state = x
-    return x
+    let mixed = x * 0x2545F4914F6CDD1D
+    return mixed & 0x7FFFFFFFFFFFFFFF
 }
 
 function int rand_range(int low, int high) {
@@ -3073,40 +3660,52 @@ function int rand_pick2(int a, int b) {
     return b
 }
 )SBRAND"},
-        {"result", R"SBRESULT(// Result wrappers with a small error record.
-// These are intentionally specialized instead of generic.
+        {"result", R"SBRESULT(// Result wrappers with a small error record backed by zero-copy views.
 
-struct ResI64 {
-    ok: i64,
-    item: i64,
-    error_code: i64,
-    error: str,
+enum ResOffset {
+    Ok = 0,
+    Item = 8,
+    ErrorCode = 16,
+    Error = 24,
 }
 
-struct ResPtr {
-    ok: i64,
-    item: ptr,
-    error_code: i64,
-    error: str,
+enum ResVoidOffset {
+    Ok = 0,
+    ErrorCode = 8,
+    Error = 16,
 }
 
-struct ResStr {
-    ok: i64,
-    item: str,
-    error_code: i64,
-    error: str,
+view ResI64 {
+    ok: i64 @ ResOffset.Ok
+    item: i64 @ ResOffset.Item
+    error_code: i64 @ ResOffset.ErrorCode
+    error: str @ ResOffset.Error
 }
 
-struct ResVoid {
-    ok: i64,
-    error_code: i64,
-    error: str,
+view ResPtr {
+    ok: i64 @ ResOffset.Ok
+    item: ptr @ ResOffset.Item
+    error_code: i64 @ ResOffset.ErrorCode
+    error: str @ ResOffset.Error
+}
+
+view ResStr {
+    ok: i64 @ ResOffset.Ok
+    item: str @ ResOffset.Item
+    error_code: i64 @ ResOffset.ErrorCode
+    error: str @ ResOffset.Error
+}
+
+view ResVoid {
+    ok: i64 @ ResVoidOffset.Ok
+    error_code: i64 @ ResVoidOffset.ErrorCode
+    error: str @ ResVoidOffset.Error
 }
 
 function ResI64 res_i64_ok(i64 item) {
-    var result: ResI64 = malloc(32)
+    let result = malloc(32) as ResI64
     if result == 0 {
-        return 0
+        return 0 as ResI64
     }
     result.ok = 1
     result.item = item
@@ -3116,9 +3715,9 @@ function ResI64 res_i64_ok(i64 item) {
 }
 
 function ResI64 res_i64_err(i64 code, str message) {
-    var result: ResI64 = malloc(32)
+    let result = malloc(32) as ResI64
     if result == 0 {
-        return 0
+        return 0 as ResI64
     }
     result.ok = 0
     result.item = 0
@@ -3128,32 +3727,44 @@ function ResI64 res_i64_err(i64 code, str message) {
 }
 
 function bool res_i64_is_ok(ResI64 result) {
+    if result == 0 {
+        return false
+    }
     return result.ok != 0
 }
 
 function bool res_i64_is_err(ResI64 result) {
+    if result == 0 {
+        return true
+    }
     return result.ok == 0
 }
 
 function i64 res_i64_unwrap(ResI64 result) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return 0
 }
 
 function i64 res_i64_unwrap_or(ResI64 result, i64 fallback) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return fallback
 }
 
 function i64 res_i64_error_code(ResI64 result) {
+    if result == 0 {
+        return 0
+    }
     return result.error_code
 }
 
 function str res_i64_error(ResI64 result) {
+    if result == 0 {
+        return ""
+    }
     return result.error
 }
 
@@ -3164,9 +3775,9 @@ function void res_i64_free(ResI64 result) {
 }
 
 function ResPtr res_ptr_ok(ptr item_ptr) {
-    var result: ResPtr = malloc(32)
+    let result = malloc(32) as ResPtr
     if result == 0 {
-        return 0
+        return 0 as ResPtr
     }
     result.ok = 1
     result.item = item_ptr
@@ -3176,9 +3787,9 @@ function ResPtr res_ptr_ok(ptr item_ptr) {
 }
 
 function ResPtr res_ptr_err(i64 code, str message) {
-    var result: ResPtr = malloc(32)
+    let result = malloc(32) as ResPtr
     if result == 0 {
-        return 0
+        return 0 as ResPtr
     }
     result.ok = 0
     result.item = 0
@@ -3188,28 +3799,44 @@ function ResPtr res_ptr_err(i64 code, str message) {
 }
 
 function bool res_ptr_is_ok(ResPtr result) {
+    if result == 0 {
+        return false
+    }
     return result.ok != 0
 }
 
+function bool res_ptr_is_err(ResPtr result) {
+    if result == 0 {
+        return true
+    }
+    return result.ok == 0
+}
+
 function ptr res_ptr_unwrap(ResPtr result) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return 0
 }
 
 function ptr res_ptr_unwrap_or(ResPtr result, ptr fallback) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return fallback
 }
 
 function i64 res_ptr_error_code(ResPtr result) {
+    if result == 0 {
+        return 0
+    }
     return result.error_code
 }
 
 function str res_ptr_error(ResPtr result) {
+    if result == 0 {
+        return ""
+    }
     return result.error
 }
 
@@ -3220,9 +3847,9 @@ function void res_ptr_free(ResPtr result) {
 }
 
 function ResStr res_str_ok(str text_value) {
-    var result: ResStr = malloc(32)
+    let result = malloc(32) as ResStr
     if result == 0 {
-        return 0
+        return 0 as ResStr
     }
     result.ok = 1
     result.item = text_value
@@ -3232,9 +3859,9 @@ function ResStr res_str_ok(str text_value) {
 }
 
 function ResStr res_str_err(i64 code, str message) {
-    var result: ResStr = malloc(32)
+    let result = malloc(32) as ResStr
     if result == 0 {
-        return 0
+        return 0 as ResStr
     }
     result.ok = 0
     result.item = ""
@@ -3244,28 +3871,44 @@ function ResStr res_str_err(i64 code, str message) {
 }
 
 function bool res_str_is_ok(ResStr result) {
+    if result == 0 {
+        return false
+    }
     return result.ok != 0
 }
 
+function bool res_str_is_err(ResStr result) {
+    if result == 0 {
+        return true
+    }
+    return result.ok == 0
+}
+
 function str res_str_unwrap(ResStr result) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return ""
 }
 
 function str res_str_unwrap_or(ResStr result, str fallback) {
-    if result.ok != 0 {
+    if result != 0 and result.ok != 0 {
         return result.item
     }
     return fallback
 }
 
 function i64 res_str_error_code(ResStr result) {
+    if result == 0 {
+        return 0
+    }
     return result.error_code
 }
 
 function str res_str_error(ResStr result) {
+    if result == 0 {
+        return ""
+    }
     return result.error
 }
 
@@ -3276,9 +3919,9 @@ function void res_str_free(ResStr result) {
 }
 
 function ResVoid res_void_ok() {
-    var result: ResVoid = malloc(24)
+    let result = malloc(24) as ResVoid
     if result == 0 {
-        return 0
+        return 0 as ResVoid
     }
     result.ok = 1
     result.error_code = 0
@@ -3287,9 +3930,9 @@ function ResVoid res_void_ok() {
 }
 
 function ResVoid res_void_err(i64 code, str message) {
-    var result: ResVoid = malloc(24)
+    let result = malloc(24) as ResVoid
     if result == 0 {
-        return 0
+        return 0 as ResVoid
     }
     result.ok = 0
     result.error_code = code
@@ -3298,18 +3941,30 @@ function ResVoid res_void_err(i64 code, str message) {
 }
 
 function bool res_void_is_ok(ResVoid result) {
+    if result == 0 {
+        return false
+    }
     return result.ok != 0
 }
 
 function bool res_void_is_err(ResVoid result) {
+    if result == 0 {
+        return true
+    }
     return result.ok == 0
 }
 
 function i64 res_void_error_code(ResVoid result) {
+    if result == 0 {
+        return 0
+    }
     return result.error_code
 }
 
 function str res_void_error(ResVoid result) {
+    if result == 0 {
+        return ""
+    }
     return result.error
 }
 
@@ -3319,95 +3974,12 @@ function void res_void_free(ResVoid result) {
     }
 }
 )SBRESULT"},
-        {"simd", R"SBSIMD(// Explicit SIMD helpers over raw pointer buffers.
-// The public surface prefers language-friendly names like intx8 and longx8.
-// Raw width-flavored aliases stay available for compatibility and low-level work.
+        {"text", R"SBTEXT(import mem
+import ascii
 
-function bool has_avx2() {
-    return simd_has_avx2() != 0
-}
-
-function bool has_avx512f() {
-    return simd_has_avx512f() != 0
-}
-
-function bool has_avx512dq() {
-    return simd_has_avx512dq() != 0
-}
-
-function void intx8_add(ptr dst, ptr a, ptr b) {
-    simd_i32x8_add(dst, a, b)
-}
-
-function void intx8_sub(ptr dst, ptr a, ptr b) {
-    simd_i32x8_sub(dst, a, b)
-}
-
-function void intx8_mul(ptr dst, ptr a, ptr b) {
-    simd_i32x8_mul(dst, a, b)
-}
-
-function void longx4_add(ptr dst, ptr a, ptr b) {
-    simd_i64x4_add(dst, a, b)
-}
-
-function void longx4_sub(ptr dst, ptr a, ptr b) {
-    simd_i64x4_sub(dst, a, b)
-}
-
-function void intx8_splat(ptr dst, int lane_value) {
-    simd_i32x8_splat(dst, lane_value)
-}
-
-function void longx4_splat(ptr dst, long lane_value) {
-    simd_i64x4_splat(dst, lane_value)
-}
-
-function void intx16_add(ptr dst, ptr a, ptr b) {
-    simd_i32x16_add(dst, a, b)
-}
-
-function void intx16_sub(ptr dst, ptr a, ptr b) {
-    simd_i32x16_sub(dst, a, b)
-}
-
-function void intx16_mul(ptr dst, ptr a, ptr b) {
-    simd_i32x16_mul(dst, a, b)
-}
-
-function void longx8_add(ptr dst, ptr a, ptr b) {
-    simd_i64x8_add(dst, a, b)
-}
-
-function void longx8_sub(ptr dst, ptr a, ptr b) {
-    simd_i64x8_sub(dst, a, b)
-}
-
-function void intx16_splat(ptr dst, int lane_value) {
-    simd_i32x16_splat(dst, lane_value)
-}
-
-function void longx8_splat(ptr dst, long lane_value) {
-    simd_i64x8_splat(dst, lane_value)
-}
-
-// Compatibility aliases for the lower-level width-flavored names.
-function void i32x8_add(ptr dst, ptr a, ptr b) { intx8_add(dst, a, b) }
-function void i32x8_sub(ptr dst, ptr a, ptr b) { intx8_sub(dst, a, b) }
-function void i32x8_mul(ptr dst, ptr a, ptr b) { intx8_mul(dst, a, b) }
-function void i64x4_add(ptr dst, ptr a, ptr b) { longx4_add(dst, a, b) }
-function void i64x4_sub(ptr dst, ptr a, ptr b) { longx4_sub(dst, a, b) }
-function void i32x8_splat(ptr dst, int lane_value) { intx8_splat(dst, lane_value) }
-function void i64x4_splat(ptr dst, long lane_value) { longx4_splat(dst, lane_value) }
-function void i32x16_add(ptr dst, ptr a, ptr b) { intx16_add(dst, a, b) }
-function void i32x16_sub(ptr dst, ptr a, ptr b) { intx16_sub(dst, a, b) }
-function void i32x16_mul(ptr dst, ptr a, ptr b) { intx16_mul(dst, a, b) }
-function void i64x8_add(ptr dst, ptr a, ptr b) { longx8_add(dst, a, b) }
-function void i64x8_sub(ptr dst, ptr a, ptr b) { longx8_sub(dst, a, b) }
-function void i32x16_splat(ptr dst, int lane_value) { intx16_splat(dst, lane_value) }
-function void i64x8_splat(ptr dst, long lane_value) { longx8_splat(dst, lane_value) }
-)SBSIMD"},
-        {"text", R"SBTEXT(// Text helpers layered over the builtin string primitives.
+// High-speed O(N) text helpers layered over direct memory scans and single-pass builders.
+// Ownership:
+// - text_clone/text_slice/text_prefix/text_suffix/text_trim*/text_join*/text_repeat/text_pad*/text_surround return heap strings; caller must free.
 
 function int text_len(str text) {
     return string_length(text)
@@ -3422,6 +3994,9 @@ function bool text_eq(str a, str b) {
 }
 
 function str text_clone(str text) {
+    if text == 0 {
+        return string_substring("", 0, 0)
+    }
     return string_substring(text, 0, string_length(text))
 }
 
@@ -3434,6 +4009,9 @@ function str text_prefix(str text, int length) {
 }
 
 function str text_suffix(str text, int length) {
+    if length <= 0 {
+        return string_substring("", 0, 0)
+    }
     let total = string_length(text)
     if length >= total {
         return text_clone(text)
@@ -3442,51 +4020,51 @@ function str text_suffix(str text, int length) {
 }
 
 function int text_char_at(str text, int index) {
-    return char_at(text, index)
+    if text == 0 || index < 0 {
+        return 0
+    }
+    let len = string_length(text)
+    if index >= len {
+        return 0
+    }
+    return mem.read8((text as ptr) + index)
 }
 
 function bool text_starts_with(str text, str prefix) {
-    let text_len_val = string_length(text)
     let prefix_len = string_length(prefix)
+    if prefix_len == 0 {
+        return true
+    }
+    let text_len_val = string_length(text)
     if prefix_len > text_len_val {
         return false
     }
-
-    var i = 0
-    while i < prefix_len {
-        if char_at(text, i) != char_at(prefix, i) {
-            return false
-        }
-        i++
-    }
-
-    return true
+    return memcmp(text as ptr, prefix as ptr, prefix_len) == 0
 }
 
 function bool text_ends_with(str text, str suffix) {
-    let text_len_val = string_length(text)
     let suffix_len = string_length(suffix)
+    if suffix_len == 0 {
+        return true
+    }
+    let text_len_val = string_length(text)
     if suffix_len > text_len_val {
         return false
     }
-
     let start = text_len_val - suffix_len
-    var i = 0
-    while i < suffix_len {
-        if char_at(text, start + i) != char_at(suffix, i) {
-            return false
-        }
-        i++
-    }
-
-    return true
+    return memcmp((text as ptr) + start, suffix as ptr, suffix_len) == 0
 }
 
 function int text_find_char(str text, int ch) {
+    if text == 0 {
+        return -1
+    }
     let len = string_length(text)
+    let p = text as ptr
+    let target = ch & 255
     var i = 0
     while i < len {
-        if char_at(text, i) == ch {
+        if mem.read8(p + i) == target {
             return i
         }
         i++
@@ -3495,9 +4073,14 @@ function int text_find_char(str text, int ch) {
 }
 
 function int text_rfind_char(str text, int ch) {
+    if text == 0 {
+        return -1
+    }
+    let p = text as ptr
+    let target = ch & 255
     var i = string_length(text) - 1
     while i >= 0 {
-        if char_at(text, i) == ch {
+        if mem.read8(p + i) == target {
             return i
         }
         i--
@@ -3506,11 +4089,16 @@ function int text_rfind_char(str text, int ch) {
 }
 
 function int text_count_char(str text, int ch) {
+    if text == 0 {
+        return 0
+    }
     let len = string_length(text)
+    let p = text as ptr
+    let target = ch & 255
     var count = 0
     var i = 0
     while i < len {
-        if char_at(text, i) == ch {
+        if mem.read8(p + i) == target {
             count++
         }
         i++
@@ -3532,23 +4120,31 @@ function int text_find(str text, str needle) {
         return -1
     }
 
-    var i = 0
-    while i <= text_len_val - needle_len {
-        var j = 0
-        var matched = true
-        while j < needle_len {
-            if char_at(text, i + j) != char_at(needle, j) {
-                matched = false
-                break
+    let hay = text as ptr
+    let ndl = needle as ptr
+    let first = mem.read8(ndl)
+    if needle_len == 1 {
+        var i = 0
+        while i < text_len_val {
+            if mem.read8(hay + i) == first {
+                return i
             }
-            j++
+            i++
         }
-        if matched {
-            return i
+        return -1
+    }
+
+    let limit = text_len_val - needle_len
+    let rest_len = needle_len - 1
+    var i = 0
+    while i <= limit {
+        if mem.read8(hay + i) == first {
+            if memcmp(hay + i + 1, ndl + 1, rest_len) == 0 {
+                return i
+            }
         }
         i++
     }
-
     return -1
 }
 
@@ -3557,10 +4153,14 @@ function bool text_contains(str text, str needle) {
 }
 
 function bool text_is_blank(str text) {
+    if text == 0 {
+        return true
+    }
     let len = string_length(text)
+    let p = text as ptr
     var i = 0
     while i < len {
-        if !is_whitespace(char_at(text, i)) {
+        if !ascii_is_space(mem.read8(p + i)) {
             return false
         }
         i++
@@ -3570,9 +4170,10 @@ function bool text_is_blank(str text) {
 
 function str text_trim_left(str text) {
     let len = string_length(text)
+    let p = text as ptr
     var start = 0
     while start < len {
-        if !is_whitespace(char_at(text, start)) {
+        if !ascii_is_space(mem.read8(p + start)) {
             break
         }
         start++
@@ -3581,9 +4182,10 @@ function str text_trim_left(str text) {
 }
 
 function str text_trim_right(str text) {
+    let p = text as ptr
     var stop = string_length(text)
     while stop > 0 {
-        if !is_whitespace(char_at(text, stop - 1)) {
+        if !ascii_is_space(mem.read8(p + stop - 1)) {
             break
         }
         stop--
@@ -3592,7 +4194,23 @@ function str text_trim_right(str text) {
 }
 
 function str text_trim(str text) {
-    return text_trim_right(text_trim_left(text))
+    let len = string_length(text)
+    let p = text as ptr
+    var start = 0
+    while start < len {
+        if !ascii_is_space(mem.read8(p + start)) {
+            break
+        }
+        start++
+    }
+    var stop = len
+    while stop > start {
+        if !ascii_is_space(mem.read8(p + stop - 1)) {
+            break
+        }
+        stop--
+    }
+    return string_substring(text, start, stop - start)
 }
 
 function str text_join2(str left, str right) {
@@ -3600,32 +4218,74 @@ function str text_join2(str left, str right) {
 }
 
 function str text_join3(str a, str b, str c) {
-    let ab = string_append(a, b)
-    let abc = string_append(ab, c)
-    free(ab)
-    return abc
+    let la = string_length(a)
+    let lb = string_length(b)
+    let lc = string_length(c)
+    let total = la + lb + lc
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return string_substring("", 0, 0)
+    }
+    if la > 0 { memcpy(buf, a as ptr, la) }
+    if lb > 0 { memcpy(buf + la, b as ptr, lb) }
+    if lc > 0 { memcpy(buf + la + lb, c as ptr, lc) }
+    mem.write8(buf + total, 0)
+    let out = make_string(buf)
+    free(buf)
+    return out
 }
 
 function str text_join4(str a, str b, str c, str d) {
-    let abc = text_join3(a, b, c)
-    let abcd = string_append(abc, d)
-    free(abc)
-    return abcd
+    let la = string_length(a)
+    let lb = string_length(b)
+    let lc = string_length(c)
+    let ld = string_length(d)
+    let total = la + lb + lc + ld
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return string_substring("", 0, 0)
+    }
+    var pos = 0
+    if la > 0 { memcpy(buf, a as ptr, la); pos += la }
+    if lb > 0 { memcpy(buf + pos, b as ptr, lb); pos += lb }
+    if lc > 0 { memcpy(buf + pos, c as ptr, lc); pos += lc }
+    if ld > 0 { memcpy(buf + pos, d as ptr, ld); pos += ld }
+    mem.write8(buf + pos, 0)
+    let out = make_string(buf)
+    free(buf)
+    return out
 }
 
 function str text_repeat(str text, int count) {
     if count <= 0 {
-        return string_substring(text, 0, 0)
+        return string_substring("", 0, 0)
+    }
+    let len = string_length(text)
+    if len == 0 {
+        return string_substring("", 0, 0)
+    }
+    if count == 1 {
+        return text_clone(text)
     }
 
-    var out = text_clone(text)
-    var i = 1
-    while i < count {
-        let next = string_append(out, text)
-        free(out)
-        out = next
-        i++
+    let total = len * count
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return string_substring("", 0, 0)
     }
+
+    memcpy(buf, text as ptr, len)
+    var filled = len
+    while filled * 2 <= total {
+        memcpy(buf + filled, buf, filled)
+        filled *= 2
+    }
+    if filled < total {
+        memcpy(buf + filled, buf, total - filled)
+    }
+    mem.write8(buf + total, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }
 
@@ -3634,11 +4294,34 @@ function str text_pad_left(str text, int width, str fill) {
     if len >= width {
         return text_clone(text)
     }
-
-    let pad = text_repeat(fill, width - len)
-    let out = string_append(pad, text)
-    free(pad)
-    return out
+    let fill_len = string_length(fill)
+    if fill_len == 0 {
+        return text_clone(text)
+    }
+    let reps = width - len
+    let pad_bytes = fill_len * reps
+    let total = pad_bytes + len
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return text_clone(text)
+    }
+    memcpy(buf, fill as ptr, fill_len)
+    var filled = fill_len
+    while filled * 2 <= pad_bytes {
+        memcpy(buf + filled, buf, filled)
+        filled *= 2
+    }
+    if filled < pad_bytes {
+        memcpy(buf + filled, buf, pad_bytes - filled)
+    }
+    if len > 0 {
+        memcpy(buf + pad_bytes, text as ptr, len)
+    }
+    mem.write8(buf + total, 0)
+    let out = make_string(buf)
+    free(buf)
+    return out)SBTEXT"
+            R"SBTEXT(
 }
 
 function str text_pad_right(str text, int width, str fill) {
@@ -3646,18 +4329,38 @@ function str text_pad_right(str text, int width, str fill) {
     if len >= width {
         return text_clone(text)
     }
-
-    let pad = text_repeat(fill, width - len)
-    let out = string_append(text, pad)
-    free(pad)
+    let fill_len = string_length(fill)
+    if fill_len == 0 {
+        return text_clone(text)
+    }
+    let reps = width - len
+    let pad_bytes = fill_len * reps
+    let total = len + pad_bytes
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return text_clone(text)
+    }
+    if len > 0 {
+        memcpy(buf, text as ptr, len)
+    }
+    let pad_dst = buf + len
+    memcpy(pad_dst, fill as ptr, fill_len)
+    var filled = fill_len
+    while filled * 2 <= pad_bytes {
+        memcpy(pad_dst + filled, pad_dst, filled)
+        filled *= 2
+    }
+    if filled < pad_bytes {
+        memcpy(pad_dst + filled, pad_dst, pad_bytes - filled)
+    }
+    mem.write8(buf + total, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }
 
 function str text_surround(str text, str left, str right) {
-    let inner = string_append(left, text)
-    let out = string_append(inner, right)
-    free(inner)
-    return out
+    return text_join3(left, text, right)
 }
 )SBTEXT"},
         {"time", R"SBTIME(// Time and delay helpers layered over the native builtins.
@@ -3687,11 +4390,11 @@ function bool time_after_ms(int start_tick, int duration_ms) {
 )SBTIME"},
         {"vec", R"SBVEC(import mem
 
-// A growable vector layered over the builtin array storage.
-// The vector owns its backing array when created via vec_new or vec_copy.
-// vec_from_array adopts the passed array pointer and will free it in vec_free.
-// Mutating operations return an updated Vec instead of writing through *Vec because
-// plain by-value updates are more reliable in the current host compiler/runtime.
+// Growable vector layered over the builtin array storage.
+// Builtin array layout:
+//   data - 16 => logical length
+//   data -  8 => capacity
+//   data      => contiguous 8-byte cells
 
 struct Vec {
     data: ptr,
@@ -3711,13 +4414,14 @@ function Vec vec_new(int capacity) {
     }
 
     let store = array_new(capacity)
-    let vec = Vec {
+    if store != 0 {
+        mem.write(store - 16, 0)
+    }
+    return Vec {
         data: store,
         size: 0,
         cap: capacity,
     }
-    vec_sync_len(vec)
-    return vec
 }
 
 function Vec vec_from_array(ptr data) {
@@ -3725,11 +4429,6 @@ function Vec vec_from_array(ptr data) {
         return vec_new(4)
     }
 
-    // Builtin array layout per the shipped docs:
-    //   data - 16 => logical length
-    //   data -  8 => capacity
-    //   data      => first 8-byte cell
-    // This wrapper is only valid for pointers returned by the builtin array layer.
     let used = array_len(data)
     var capacity = mem.read(data - 8)
     if capacity < used {
@@ -3738,13 +4437,12 @@ function Vec vec_from_array(ptr data) {
     if capacity < 4 {
         capacity = 4
     }
-    let vec = Vec {
+    mem.write(data - 16, used)
+    return Vec {
         data: data,
         size: used,
         cap: capacity,
     }
-    vec_sync_len(vec)
-    return vec
 }
 
 function Vec vec_from_array_copy(ptr data) {
@@ -3754,8 +4452,8 @@ function Vec vec_from_array_copy(ptr data) {
 
     let used = array_len(data)
     var out = vec_new(used)
-    if used > 0 {
-        mem_copy_cells(out.data, data, used)
+    if used > 0 && out.data != 0 {
+        mem.copy_cells(out.data, data, used)
         mem.write(out.data - 16, used)
         out.size = used
     }
@@ -3779,26 +4477,28 @@ function bool vec_is_empty(Vec vec) {
 }
 
 function i64 vec_get(Vec vec, int idx) {
-    let used = vec.size
-    if idx < 0 || idx >= used {
+    if idx < 0 || idx >= vec.size || vec.data == 0 {
         return 0
     }
-    return array_get(vec.data, idx)
+    let arr = vec.data as *i64
+    return arr[idx]
 }
 
 function i64 vec_first(Vec vec) {
-    if vec.size <= 0 {
+    if vec.size <= 0 || vec.data == 0 {
         return 0
     }
-    return array_get(vec.data, 0)
+    let arr = vec.data as *i64
+    return arr[0]
 }
 
 function i64 vec_last(Vec vec) {
     let used = vec.size
-    if used <= 0 {
+    if used <= 0 || vec.data == 0 {
         return 0
     }
-    return array_get(vec.data, used - 1)
+    let arr = vec.data as *i64
+    return arr[used - 1]
 }
 
 function i64 vec_peek_last(Vec vec) {
@@ -3818,20 +4518,22 @@ function Vec vec_reserve(Vec vec, int min_capacity) {
     var previous = 0
     while current < min_capacity {
         previous = current
-        current = current + current / 2
+        current = current + (current >> 1)
         if current <= previous {
             current = previous + 1
         }
     }
 
     let next_data = array_new(current)
+    if next_data == 0 {
+        return vec
+    }
     let used = vec.size
     let old_data = vec.data
     if old_data != 0 && used > 0 {
-        // Vec stores fixed 8-byte cells, so a bulk copy is safe here.
-        mem_copy_cells(next_data, old_data, used)
-        mem.write(next_data - 16, used)
+        mem.copy_cells(next_data, old_data, used)
     }
+    mem.write(next_data - 16, used)
 
     if old_data != 0 {
         array_free(old_data)
@@ -3839,7 +4541,6 @@ function Vec vec_reserve(Vec vec, int min_capacity) {
 
     vec.data = next_data
     vec.cap = current
-    vec_sync_len(vec)
     return vec
 }
 
@@ -3847,25 +4548,25 @@ function Vec vec_push(Vec vec, i64 item) {
     let used = vec.size
     if used >= vec.cap {
         vec = vec_reserve(vec, used + 1)
+        if vec.cap <= used {
+            return vec
+        }
     }
 
-    let data = vec.data
-    array_set(data, used, item)
+    var arr = vec.data as *i64
+    arr[used] = item
     vec.size = used + 1
-    vec_sync_len(vec)
+    mem.write(vec.data - 16, used + 1)
     return vec
 }
 
 function i64 vec_pop_value(Vec vec) {
     let used = vec.size
-    if used <= 0 {
+    if used <= 0 || vec.data == 0 {
         return 0
     }
-
-    let idx = used - 1
-    let data = vec.data
-    let item = array_get(data, idx)
-    return item
+    let arr = vec.data as *i64
+    return arr[used - 1]
 }
 
 function Vec vec_drop_last(Vec vec) {
@@ -3883,13 +4584,11 @@ function Vec vec_pop(Vec vec) {
 }
 
 function Vec vec_set(Vec vec, int idx, i64 item) {
-    let used = vec.size
-    if idx < 0 || idx >= used {
+    if idx < 0 || idx >= vec.size || vec.data == 0 {
         return vec
     }
-    let data = vec.data
-    array_set(data, idx, item)
-    vec_sync_len(vec)
+    var arr = vec.data as *i64
+    arr[idx] = item
     return vec
 }
 
@@ -3901,8 +4600,12 @@ function Vec vec_clear(Vec vec) {
 
 function i64 vec_index_of(Vec vec, i64 target) {
     let used = vec.size
+    if used <= 0 || vec.data == 0 {
+        return -1
+    }
+    let arr = vec.data as *i64
     for i in range(0, used) {
-        if array_get(vec.data, i) == target {
+        if arr[i] == target {
             return i
         }
     }
@@ -3915,13 +4618,16 @@ function bool vec_contains(Vec vec, i64 target) {
 
 function Vec vec_append(Vec vec, Vec other) {
     let other_used = other.size
-    if other_used <= 0 {
+    if other_used <= 0 || other.data == 0 {
         return vec
     }
 
     let used = vec.size
     vec = vec_reserve(vec, used + other_used)
-    mem_copy_cells(vec.data + used * 8, other.data, other_used)
+    if vec.cap < used + other_used {
+        return vec
+    }
+    mem.copy_cells(vec.data + used * 8, other.data, other_used)
     vec.size = used + other_used
     vec_sync_len(vec)
     return vec
@@ -3929,16 +4635,13 @@ function Vec vec_append(Vec vec, Vec other) {
 
 function Vec vec_remove_at(Vec vec, int idx) {
     let used = vec.size
-    if idx < 0 || idx >= used {
+    if idx < 0 || idx >= used || vec.data == 0 {
         return vec
     }
 
     let stop = used - 1
-    // Shift left one element at a time because this overlaps in-place and the
-    // current stdlib only exposes copy helpers that behave like memcpy, not memmove.
-    for i in range(idx, stop) {
-        let next_item = array_get(vec.data, i + 1)
-        array_set(vec.data, i, next_item)
+    if idx < stop {
+        mem.move_cells(vec.data + idx * 8, vec.data + (idx + 1) * 8, stop - idx)
     }
     vec.size = stop
     vec_sync_len(vec)
@@ -3947,14 +4650,14 @@ function Vec vec_remove_at(Vec vec, int idx) {
 
 function Vec vec_swap_remove(Vec vec, int idx) {
     let used = vec.size
-    if idx < 0 || idx >= used {
+    if idx < 0 || idx >= used || vec.data == 0 {
         return vec
     }
 
     let last_idx = used - 1
     if idx < last_idx {
-        let last_item = array_get(vec.data, last_idx)
-        array_set(vec.data, idx, last_item)
+        var arr = vec.data as *i64
+        arr[idx] = arr[last_idx]
     }
     vec.size = last_idx
     vec_sync_len(vec)
@@ -3973,25 +4676,27 @@ function Vec vec_shrink_to_fit(Vec vec) {
 
     let old_data = vec.data
     let next_data = array_new(target)
-    if old_data != 0 && used > 0 {
-        mem_copy_cells(next_data, old_data, used)
-        mem.write(next_data - 16, used)
+    if next_data == 0 {
+        return vec
     }
+    if old_data != 0 && used > 0 {
+        mem.copy_cells(next_data, old_data, used)
+    }
+    mem.write(next_data - 16, used)
     if old_data != 0 {
         array_free(old_data)
     }
 
     vec.data = next_data
     vec.cap = target
-    vec_sync_len(vec)
     return vec
 }
 
 function Vec vec_copy(Vec vec) {
     let used = vec.size
     var copy = vec_new(vec.cap)
-    if used > 0 {
-        mem_copy_cells(copy.data, vec.data, used)
+    if used > 0 && vec.data != 0 && copy.data != 0 {
+        mem.copy_cells(copy.data, vec.data, used)
         mem.write(copy.data - 16, used)
         copy.size = used
     }
@@ -4001,8 +4706,10 @@ function Vec vec_copy(Vec vec) {
 function ptr vec_to_array_copy(Vec vec) {
     let used = vec.size
     let out = array_new(used)
-    if used > 0 {
-        mem_copy_cells(out, vec.data, used)
+    if used > 0 && vec.data != 0 && out != 0 {
+        mem.copy_cells(out, vec.data, used)
+    }
+    if out != 0 {
         mem.write(out - 16, used)
     }
     return out
@@ -4017,7 +4724,6 @@ function Vec vec_free(Vec vec) {
     vec.cap = 0
     return vec
 }
-
 )SBVEC"},
     };
     return sources;

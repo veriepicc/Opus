@@ -1,7 +1,5 @@
-import simd
-
 function int main() {
-    if has_avx512f() == 0 {
+    if simd_has_avx512f() == 0 {
         return 0
     }
 
@@ -30,16 +28,16 @@ function int main() {
         lane++
     }
 
-    intx16_splat(factor, 8)
-    intx16_splat(ones, 1)
-    intx16_splat(step, 16)
+    simd_i32x16_splat(factor, 8)
+    simd_i32x16_splat(ones, 1)
+    simd_i32x16_splat(step, 16)
 
     var i = 0
     while i < 8 {
-        intx16_mul(x, idx, factor)
-        intx16_add(y, x, ones)
-        intx16_add(accum, accum, y)
-        intx16_add(idx, idx, step)
+        simd_i32x16_mul(x, idx, factor)
+        simd_i32x16_add(y, x, ones)
+        simd_i32x16_add(accum, accum, y)
+        simd_i32x16_add(idx, idx, step)
         i++
     }
 

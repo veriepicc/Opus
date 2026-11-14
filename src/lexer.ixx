@@ -1,4 +1,4 @@
-﻿// lexer - supports c-style and english syntaxes
+﻿// unified lexer - c/js/rust/english surface keywords in one stream
 
 export module sable.lexer;
 
@@ -13,6 +13,7 @@ enum class TokenKind : std::uint8_t {
     FloatLit,
     StringLit,
     HexStringLit,   // hex"55 57 56 53..."
+    FStringLit,     // f"hello {name}"
     CharLit,
     
     // Identifiers & Keywords
@@ -31,39 +32,33 @@ enum class TokenKind : std::uint8_t {
     Const,          // const
     Static,         // static
     If, Else, Switch, Case, While, For, In, Loop,
-    Return, Break, Continue,
+    Return, Break, Continue, Defer,
     Import, Export, Internal, Extern,
     Using,
     True, False,
     As, And, Or, Not,
     
-    // Memory keywords (C/C++ power)
-    New, Delete,        // C++ style
-    Malloc, Free,       // C style
-    Sizeof, Alignof,    // size operators
-    Unsafe,             // unsafe block
-    Manual,             // manual memory block
-    
-    // Concurrency
-    Thread,             // thread function/block
-    Spawn,              // spawn expr - fire off a new thread
-    Await,              // await handle - block until thread done
-    Parallel,           // parallel for - split work across cores
-    
-    // Type modifiers
-    Auto,               // type inference (C++ style)
-    Mut,                // mutable
-    
-    // Smart pointers
-    Box, Rc, Weak,      // ownership types
+    // memory and size ops
+    Malloc, Free,
+    Sizeof, Alignof,
 
-    // Legacy keywords (backward compat)
-    Fn,                 // fn (old Rust-style)
+    // concurrency
+    Thread,
+    Spawn,
+    Await,
+    Parallel,
 
-    // English Keywords (additional)
+    // modifiers
+    Auto,
+    Mut,
+
+    // short function keyword
+    Fn,
+
+    // english scripting keywords
     Define, Returning, Variable, With, Value,
     Create, Set, To, End, Is, Than, Greater, Less,
-    Equal, Begin, Then, Do, Until, Repeat, Call,
+    Equal, Begin, Then, Do, Call,
 
     
     // Type names - C++/JS friendly
@@ -94,13 +89,11 @@ enum class TokenKind : std::uint8_t {
     Comma, Colon, Semicolon, Dot, DotDot,
     Arrow,      // ->
     FatArrow,   // =>
-    ColonColon, // ::
-    At,         // @ (decorators/annotations)
-    Hash,       // # (for directives)
-    Question,   // ? (nullable types)
-    
-    // Special
-    Newline,    // Significant in English syntax
+    ColonColon,
+    At,
+    Hash,
+    Question,
+
     Eof,
     Error,
 };
@@ -132,21 +125,9 @@ struct Token {
 
 class Lexer {
 public:
-    // mixed mode: auto-detect syntax per token
     Lexer(std::string_view source, std::string_view filename)
         : source_(source)
         , filename_(filename)
-        , mode_(SyntaxMode::CStyle)  // Default, but we detect per-token
-        , mixed_mode_(true)
-        , pos_(0)
-        , loc_{.line = 1, .column = 1, .offset = 0, .file = std::string(filename)}
-    {}
-
-    Lexer(std::string_view source, std::string_view filename, SyntaxMode mode)
-        : source_(source)
-        , filename_(filename)
-        , mode_(mode)
-        , mixed_mode_(false)
         , pos_(0)
         , loc_{.line = 1, .column = 1, .offset = 0, .file = std::string(filename)}
     {}
@@ -194,30 +175,9 @@ public:
         return tokens;
     }
 
-    SyntaxMode mode() const { return mode_; }
-    
-    static SyntaxMode detect_syntax(std::string_view source) {
-        std::size_t i = 0;
-        while (i < source.size() && std::isspace(static_cast<unsigned char>(source[i]))) i++;
-        
-        if (i >= source.size()) return SyntaxMode::CStyle;
-
-        std::string_view rest = source.substr(i);
-        
-        if (rest.starts_with("define ") || 
-            rest.starts_with("create ") ||
-            rest.starts_with("begin ")) {
-            return SyntaxMode::English;
-        }
-
-        return SyntaxMode::CStyle;
-    }
-
 private:
     std::string_view source_;
     std::string_view filename_;
-    SyntaxMode mode_;
-    bool mixed_mode_;
     std::size_t pos_;
     SourceLoc loc_;
 
@@ -530,6 +490,91 @@ private:
         return tok;
     }
 
+    Token lex_fstring(SourceLoc start, std::size_t start_pos) {
+        advance(); // opening '"'
+        std::string raw;
+        int brace_depth = 0;
+        bool closed = false;
+
+        while (!at_end()) {
+            char c = peek();
+            if (brace_depth == 0) {
+                if (c == '"') {
+                    advance();
+                    closed = true;
+                    break;
+                }
+                if (c == '\\') {
+                    raw += advance();
+                    if (!at_end()) {
+                        raw += advance();
+                    }
+                    continue;
+                }
+                if (c == '{') {
+                    if (peek(1) == '{') {
+                        raw += advance();
+                        raw += advance();
+                        continue;
+                    }
+                    ++brace_depth;
+                    raw += advance();
+                    continue;
+                }
+                if (c == '}') {
+                    if (peek(1) == '}') {
+                        raw += advance();
+                        raw += advance();
+                        continue;
+                    }
+                    return make_token(TokenKind::Error, "unmatched '}' in f-string", start);
+                }
+                raw += advance();
+                continue;
+            }
+
+            if (c == '{') {
+                ++brace_depth;
+                raw += advance();
+            } else if (c == '}') {
+                --brace_depth;
+                raw += advance();
+            } else if (c == '"') {
+                raw += advance();
+                while (!at_end() && peek() != '"') {
+                    if (peek() == '\\') {
+                        raw += advance();
+                        if (!at_end()) raw += advance();
+                    } else {
+                        raw += advance();
+                    }
+                }
+                if (!at_end()) raw += advance();
+            } else if (c == '\'') {
+                raw += advance();
+                while (!at_end() && peek() != '\'') {
+                    if (peek() == '\\') {
+                        raw += advance();
+                        if (!at_end()) raw += advance();
+                    } else {
+                        raw += advance();
+                    }
+                }
+                if (!at_end()) raw += advance();
+            } else {
+                raw += advance();
+            }
+        }
+
+        if (!closed || brace_depth != 0) {
+            return make_token(TokenKind::Error, "unterminated f-string", start);
+        }
+
+        Token tok = make_token(TokenKind::FStringLit, source_.substr(start_pos, pos_ - start_pos), start);
+        tok.value = std::move(raw);
+        return tok;
+    }
+
     std::optional<std::uint32_t> advance_utf8_codepoint() {
         if (at_end()) return std::nullopt;
 
@@ -595,9 +640,12 @@ private:
 
         std::string_view text = source_.substr(start_pos, pos_ - start_pos);
         
-        // hex"55 57 56..." syntax
+        // hex"..." and f"..." string prefixes
         if (text == "hex" && peek() == '\"') {
             return lex_hex_string(start, start_pos);
+        }
+        if (text == "f" && peek() == '\"') {
+            return lex_fstring(start, start_pos);
         }
         
         TokenKind kind = keyword_or_ident(text);
@@ -607,21 +655,17 @@ private:
     }
 
     TokenKind keyword_or_ident(std::string_view text) {
-        // C-style keywords (v2.0 - C++/JS hybrid)
-        static const std::unordered_map<std::string_view, TokenKind> c_keywords = {
-            // Function/class keywords - ALL ALIASES WORK
+        static const std::unordered_map<std::string_view, TokenKind> keywords = {
             {"function", TokenKind::Function},
-            {"func", TokenKind::Function},      // Alias: Go style
-            {"fn", TokenKind::Fn},          // Alias: Rust style
+            {"func", TokenKind::Function},
+            {"fn", TokenKind::Fn},
             {"class", TokenKind::Class},
             {"struct", TokenKind::Struct},
-            {"structure", TokenKind::Struct},   // Alias: verbose
+            {"structure", TokenKind::Struct},
             {"view", TokenKind::View},
             {"enum", TokenKind::Enum},
             {"project", TokenKind::Project},
             {"include", TokenKind::Include},
-            
-            // Variable keywords - ALL ALIASES WORK
             {"let", TokenKind::Let},
             {"var", TokenKind::Var},
             {"const", TokenKind::Const},
@@ -630,11 +674,9 @@ private:
             {"resolved", TokenKind::Static},
             {"auto", TokenKind::Auto},
             {"mut", TokenKind::Mut},
-            
-            // Control flow - ALL ALIASES WORK
             {"if", TokenKind::If},
             {"else", TokenKind::Else},
-            {"elif", TokenKind::Else},          // Alias: Python style (parser handles)
+            {"elif", TokenKind::Else},
             {"switch", TokenKind::Switch},
             {"case", TokenKind::Case},
             {"while", TokenKind::While},
@@ -642,58 +684,36 @@ private:
             {"in", TokenKind::In},
             {"loop", TokenKind::Loop},
             {"return", TokenKind::Return},
-            {"ret", TokenKind::Return},         // Alias: short form
+            {"ret", TokenKind::Return},
             {"break", TokenKind::Break},
             {"continue", TokenKind::Continue},
-            {"cont", TokenKind::Continue},      // Alias: short form
-            
-            // Modules
+            {"cont", TokenKind::Continue},
+            {"defer", TokenKind::Defer},
             {"import", TokenKind::Import},
             {"export", TokenKind::Export},
             {"public", TokenKind::Export},
             {"internal", TokenKind::Internal},
             {"extern", TokenKind::Extern},
-            {"external", TokenKind::Extern},    // Alias: verbose
+            {"external", TokenKind::Extern},
             {"using", TokenKind::Using},
-            
-            // Literals - ALL ALIASES WORK
             {"true", TokenKind::True},
             {"false", TokenKind::False},
-            {"yes", TokenKind::True},           // Alias: English
-            {"no", TokenKind::False},           // Alias: English
-            
-            // Operators as keywords
+            {"yes", TokenKind::True},
+            {"no", TokenKind::False},
             {"as", TokenKind::As},
             {"and", TokenKind::And},
             {"or", TokenKind::Or},
             {"not", TokenKind::Not},
-            
-            // Memory keywords
-            {"new", TokenKind::New},
-            {"delete", TokenKind::Delete},
             {"malloc", TokenKind::Malloc},
-            {"alloc", TokenKind::Malloc},       // Alias: short form
+            {"alloc", TokenKind::Malloc},
             {"free", TokenKind::Free},
             {"sizeof", TokenKind::Sizeof},
             {"alignof", TokenKind::Alignof},
-            {"unsafe", TokenKind::Unsafe},
-            {"manual", TokenKind::Manual},
-            
-            // Concurrency
             {"thread", TokenKind::Thread},
-            {"async", TokenKind::Thread},       // Alias: JS style
+            {"async", TokenKind::Thread},
             {"spawn", TokenKind::Spawn},
             {"await", TokenKind::Await},
             {"parallel", TokenKind::Parallel},
-            
-            // Smart pointers
-            {"Box", TokenKind::Box},
-            {"Rc", TokenKind::Rc},
-            {"Weak", TokenKind::Weak},
-        };
-
-        // English keywords
-        static const std::unordered_map<std::string_view, TokenKind> en_keywords = {
             {"define", TokenKind::Define},
             {"returning", TokenKind::Returning},
             {"variable", TokenKind::Variable},
@@ -711,15 +731,10 @@ private:
             {"begin", TokenKind::Begin},
             {"then", TokenKind::Then},
             {"do", TokenKind::Do},
-            {"until", TokenKind::Until},
-            {"repeat", TokenKind::Repeat},
             {"call", TokenKind::Call},
         };
 
-        // Type names - Minimal set to avoid variable name conflicts
-        // Use explicit types (i32, f64) over ambiguous words (int, double)
         static const std::unordered_map<std::string_view, TokenKind> types = {
-            // Core types only
             {"void", TokenKind::TypeVoid},
             {"bool", TokenKind::TypeBool},
             {"int", TokenKind::TypeInt},
@@ -729,8 +744,6 @@ private:
             {"addr", TokenKind::TypePtr},
             {"address", TokenKind::TypePtr},
             {"pointer", TokenKind::TypePtr},
-            
-            // Rust-style explicit types (preferred - clear and unambiguous)
             {"i8", TokenKind::TypeI8},
             {"i16", TokenKind::TypeI16},
             {"i32", TokenKind::TypeI32},
@@ -749,20 +762,11 @@ private:
             {"isize", TokenKind::TypeI64},
         };
 
-        // types are shared across both syntaxes so check them first
         if (auto it = types.find(text); it != types.end()) {
             return it->second;
         }
-
-        // c keywords are the hot path
-        if (auto it = c_keywords.find(text); it != c_keywords.end()) {
+        if (auto it = keywords.find(text); it != keywords.end()) {
             return it->second;
-        }
-
-        if (mixed_mode_ || mode_ == SyntaxMode::English) {
-            if (auto it = en_keywords.find(text); it != en_keywords.end()) {
-                return it->second;
-            }
         }
 
         return TokenKind::Ident;

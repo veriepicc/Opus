@@ -1,8 +1,7 @@
-import simd
 import mem
 
 function int main() {
-    if has_avx512f() == 0 {
+    if simd_has_avx512f() == 0 {
         return 0
     }
 
@@ -20,7 +19,7 @@ function int main() {
         i++
     }
 
-    intx16_add(out, a, b)
+    simd_i32x16_add(out, a, b)
     i = 0
     while i < 16 {
         if mem.read32(out + i * 4) != (i + 2) + ((i + 1) * 3) {
@@ -29,7 +28,7 @@ function int main() {
         i++
     }
 
-    longx8_splat(out, 1234)
+    simd_i64x8_splat(out, 1234)
     i = 0
     while i < 8 {
         if mem.read(out + i * 8) != 1234 {
@@ -38,8 +37,8 @@ function int main() {
         i++
     }
 
-    if has_avx512dq() != 0 {
-        intx16_mul(out, a, b)
+    if simd_has_avx512dq() != 0 {
+        simd_i32x16_mul(out, a, b)
         i = 0
         while i < 16 {
             if mem.read32(out + i * 4) != (i + 2) * ((i + 1) * 3) {

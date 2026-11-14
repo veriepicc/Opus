@@ -102,6 +102,7 @@ struct Symbol {
 struct Scope {
     std::unordered_map<std::string, Symbol> symbols;
     std::unordered_map<std::string, std::vector<const ast::Expr*>> inline_bindings;
+    std::vector<const ast::Stmt*> defers;
     Scope* parent = nullptr;
     std::int32_t next_offset = -8;  // Start at RBP-8
 
@@ -389,7 +390,7 @@ public:
     }
     
     bool has_iat_fixups() const { return !iat_fixups_.empty(); }
-    bool has_global_slot() const { return has_global_slot_; }
+    bool has_global_slot() const { return has_global_slot_ || has_pfor_pool_slot_; }
     
     // return fixups using the pe named struct
     std::vector<pe::IatFixup> get_iat_fixups() const {
@@ -506,11 +507,18 @@ private:
         std::int32_t chunk_off;    // __pfor_chunk stack offset
         std::int32_t rem_off;      // __pfor_rem stack offset (division remainder)
         std::int32_t idx_off;      // __pfor_i stack offset
+        std::int32_t pool_off;     // __pfor_pool stack offset
         std::int32_t ctx_arr_base; // bottom of context array on stack
         std::int32_t hdl_arr_base; // bottom of handle array on stack
         std::string body_fn;       // name of the emitted body function
         std::size_t stub_offset;   // offset of the thread entry stub
     };
+
+    struct FusedProducerExpr {
+        std::string loop_var;
+        const ast::Expr* expr = nullptr;
+    };
+    using FusedProducerMap = std::unordered_map<std::string, FusedProducerExpr>;
 
     struct SelfUpdateInfo {
         Symbol* sym = nullptr;
@@ -982,6 +990,9 @@ private:
     // auto-parallelization flag
     bool auto_parallel_ = false;
     int while_loop_depth_ = 0;
+    Scope* function_root_scope_ = nullptr;
+    std::vector<Scope*> loop_defer_roots_;
+    std::size_t in_defer_depth_ = 0;
 
     // type-context stack for binary ops. lhs type drives signed/unsigned/float dispatch.
     std::vector<Type> binary_op_type_stack_;
@@ -1038,6 +1049,11 @@ private:
     // __sable_init writes HeapAlloc result here, all global accesses load from here
     std::size_t global_base_slot_ = 0;
     bool has_global_slot_ = false;
+    std::size_t pfor_pool_slot_ = 0;
+    std::size_t pfor_pool_lock_slot_ = 0;
+    std::size_t pfor_pool_worker_offset_ = 0;
+    std::size_t pfor_pool_init_offset_ = 0;
+    bool has_pfor_pool_slot_ = false;
 
     // builtin dispatch tables - lazily initialized on first generate_call
     using BuiltinHandler = std::function<bool(const ast::CallExpr&)>;
@@ -2520,7 +2536,10 @@ private:
                 if (!std::filesystem::exists(candidate)) {
                     continue;
                 }
-                if (std::find(matches.begin(), matches.end(), candidate) == matches.end()) {
+                if (std::find_if(matches.begin(), matches.end(), [&](const auto& existing) {
+                        std::error_code eq_ec;
+                        return existing == candidate || std::filesystem::equivalent(existing, candidate, eq_ec);
+                    }) == matches.end()) {
                     matches.push_back(std::move(candidate));
                 }
                 break;
@@ -2803,7 +2822,7 @@ private:
                 }
             }
 
-            Parser parser(std::move(tokens), SyntaxMode::CStyle);
+            Parser parser(std::move(tokens));
             auto mod_result = parser.parse_module(canonical);
             if (!mod_result) {
                 abandon_import();
@@ -2945,7 +2964,7 @@ private:
                 }
             }
 
-            Parser parser(std::move(tokens), SyntaxMode::CStyle);
+            Parser parser(std::move(tokens));
             auto mod_result = parser.parse_module(canonical);
             if (!mod_result) {
                 abandon_import();
@@ -3778,17 +3797,12 @@ private:
             [&](const ast::IndexExpr& e) { return expr_contains_call(*e.base) || expr_contains_call(*e.index); },
             [&](const ast::FieldExpr& e) { return expr_contains_call(*e.base); },
             [&](const ast::CastExpr& e) { return expr_contains_call(*e.expr); },
-            [&](const ast::ArrayExpr& e) {
-                for (const auto& elem : e.elements) {
-                    if (expr_contains_call(*elem)) return true;
-                }
-                return false;
+            [&](const ast::FStringExpr&) { return true; },
+            [&](const ast::ArrayExpr&) {
+                return true;
             },
-            [&](const ast::StructExpr& e) {
-                for (const auto& [_, value] : e.fields) {
-                    if (expr_contains_call(*value)) return true;
-                }
-                return false;
+            [&](const ast::StructExpr&) {
+                return true;
             },
             [&](const ast::CallExpr&) { return true; },
             [&](const auto&) { return true; },
@@ -3798,7 +3812,14 @@ private:
     [[nodiscard]] static bool stmt_contains_call(const ast::Stmt& stmt) {
         return std::visit(overloaded{
             [&](const ast::LetStmt& s) {
-                return s.init && expr_contains_call(*s.init);
+                if (!s.init) return false;
+                if (s.init->is<ast::StructExpr>()) {
+                    for (const auto& [_, value] : s.init->as<ast::StructExpr>().fields) {
+                        if (expr_contains_call(*value)) return true;
+                    }
+                    return false;
+                }
+                return expr_contains_call(*s.init);
             },
             [&](const ast::ExprStmt& s) {
                 return expr_contains_call(*s.expr);
@@ -3885,6 +3906,9 @@ private:
                 }
                 return false;
             },
+            [&](const ast::DeferStmt& s) {
+                return s.stmt && stmt_contains_call(*s.stmt);
+            },
             [&](const ast::ParallelForStmt& s) {
                 if (expr_contains_call(*s.start) || expr_contains_call(*s.end)) {
                     return true;
@@ -3915,17 +3939,12 @@ private:
             },
             [&](const ast::FieldExpr& e) { return expr_contains_non_inlined_call(*e.base); },
             [&](const ast::CastExpr& e) { return expr_contains_non_inlined_call(*e.expr); },
-            [&](const ast::ArrayExpr& e) {
-                for (const auto& elem : e.elements) {
-                    if (expr_contains_non_inlined_call(*elem)) return true;
-                }
-                return false;
+            [&](const ast::FStringExpr&) { return true; },
+            [&](const ast::ArrayExpr&) {
+                return true;
             },
-            [&](const ast::StructExpr& e) {
-                for (const auto& [_, value] : e.fields) {
-                    if (expr_contains_non_inlined_call(*value)) return true;
-                }
-                return false;
+            [&](const ast::StructExpr&) {
+                return true;
             },
             [&](const ast::CallExpr& e) {
                 if (!is_inline_safe_direct_call_expr(expr)) {
@@ -3943,7 +3962,14 @@ private:
     [[nodiscard]] bool stmt_contains_non_inlined_call(const ast::Stmt& stmt) const {
         return std::visit(overloaded{
             [&](const ast::LetStmt& s) {
-                return s.init && expr_contains_non_inlined_call(*s.init);
+                if (!s.init) return false;
+                if (s.init->is<ast::StructExpr>()) {
+                    for (const auto& [_, value] : s.init->as<ast::StructExpr>().fields) {
+                        if (expr_contains_non_inlined_call(*value)) return true;
+                    }
+                    return false;
+                }
+                return expr_contains_non_inlined_call(*s.init);
             },
             [&](const ast::ExprStmt& s) {
                 return expr_contains_non_inlined_call(*s.expr);
@@ -4004,6 +4030,9 @@ private:
                     if (stmt_contains_non_inlined_call(*inner)) return true;
                 }
                 return false;
+            },
+            [&](const ast::DeferStmt& s) {
+                return s.stmt && stmt_contains_non_inlined_call(*s.stmt);
             },
             [&](const ast::ParallelForStmt& s) {
                 if (expr_contains_non_inlined_call(*s.start) || expr_contains_non_inlined_call(*s.end)) {
@@ -4150,9 +4179,8 @@ private:
             used_regs.insert(x64::ARG_REGS[i]);
         }
 
-        constexpr std::array<x64::Reg, 6> local_candidates = {
+        constexpr std::array<x64::Reg, 5> local_candidates = {
             x64::Reg::R10,
-            x64::Reg::R11,
             x64::Reg::R9,
             x64::Reg::R8,
             x64::Reg::RDX,
@@ -4261,6 +4289,11 @@ private:
                 [&](const ast::CastExpr& e) {
                     scan_expr(*e.expr, weight);
                 },
+                [&](const ast::FStringExpr& e) {
+                    for (const auto& part : e.parts) {
+                        if (part.is_expr && part.expr) scan_expr(*part.expr, weight);
+                    }
+                },
                 [&](const ast::ArrayExpr& e) {
                     for (const auto& elem : e.elements) {
                         scan_expr(*elem, weight);
@@ -4347,6 +4380,9 @@ private:
                         scan_stmt(*inner, weight);
                     }
                 },
+                [&](const ast::DeferStmt& s) {
+                    if (s.stmt) scan_stmt(*s.stmt, weight);
+                },
                 [&](const auto&) {},
             }, stmt.kind);
         };
@@ -4410,6 +4446,7 @@ private:
             },
             [&](const ast::FieldExpr& e) { return expr_has_only_local_side_effects(*e.base, locals); },
             [&](const ast::CastExpr& e) { return expr_has_only_local_side_effects(*e.expr, locals); },
+            [&](const ast::FStringExpr&) { return false; },
             [&](const ast::ArrayExpr& e) {
                 for (const auto& elem : e.elements) {
                     if (!expr_has_only_local_side_effects(*elem, locals)) return false;
@@ -4520,6 +4557,7 @@ private:
             },
             [&](const ast::FieldExpr& e) { return expr_is_single_use_inline_safe(*e.base); },
             [&](const ast::CastExpr& e) { return expr_is_single_use_inline_safe(*e.expr); },
+            [&](const ast::FStringExpr&) { return false; },
             [&](const ast::ArrayExpr& e) {
                 for (const auto& elem : e.elements) {
                     if (!expr_is_single_use_inline_safe(*elem)) return false;
@@ -4594,7 +4632,11 @@ private:
         bool use_saved_local_plan = !use_leaf_plan && try_make_function_saved_local_plan(fn, saved_local_plan);
 
         std::size_t scope_mark = scopes_.size();
+        Scope* prev_fn_root = function_root_scope_;
+        auto prev_loop_defer_roots = std::move(loop_defer_roots_);
+        loop_defer_roots_.clear();
         push_scope();
+        function_root_scope_ = current_scope_;
 
         register_bindings_.clear();
         pending_named_register_bindings_.clear();
@@ -4723,12 +4765,25 @@ private:
                 bound_stack_elision_names_.pop_back();
             }
             pop_scope();
+            function_root_scope_ = prev_fn_root;
+            loop_defer_roots_ = std::move(prev_loop_defer_roots);
             return false;
+        }
+
+        if (!suite_guarantees_return(body)) {
+            if (!emit_defers_for_scope(current_scope_)) {
+                pop_scope();
+                function_root_scope_ = prev_fn_root;
+                loop_defer_roots_ = std::move(prev_loop_defer_roots);
+                return false;
+            }
         }
 
         if (!patch_scope_frame(frame_patch, scope_mark, current_function_saved_regs_.size())) {
             has_current_function_return_type_ = false;
             pop_scope();
+            function_root_scope_ = prev_fn_root;
+            loop_defer_roots_ = std::move(prev_loop_defer_roots);
             current_function_saved_regs_.clear();
             return false;
         }
@@ -4759,6 +4814,8 @@ private:
         has_current_function_return_type_ = false;
 
         pop_scope();
+        function_root_scope_ = prev_fn_root;
+        loop_defer_roots_ = std::move(prev_loop_defer_roots);
         return true;
     }
 
@@ -4880,6 +4937,7 @@ private:
             [&](const ast::IndexExpr& e) { return expr_is_side_effect_free(*e.base) && expr_is_side_effect_free(*e.index); },
             [&](const ast::FieldExpr& e) { return expr_is_side_effect_free(*e.base); },
             [&](const ast::CastExpr& e) { return expr_is_side_effect_free(*e.expr); },
+            [&](const ast::FStringExpr&) { return false; },
             [&](const ast::ArrayExpr& e) {
                 for (const auto& elem : e.elements) {
                     if (!expr_is_side_effect_free(*elem)) return false;
@@ -4991,6 +5049,13 @@ private:
             [&](const ast::CastExpr& e) -> std::size_t {
                 return count_ident_uses_in_expr(name, *e.expr);
             },
+            [&](const ast::FStringExpr& e) -> std::size_t {
+                std::size_t total = 0;
+                for (const auto& part : e.parts) {
+                    if (part.is_expr && part.expr) total += count_ident_uses_in_expr(name, *part.expr);
+                }
+                return total;
+            },
             [&](const ast::ArrayExpr& e) -> std::size_t {
                 std::size_t total = 0;
                 for (const auto& elem : e.elements) total += count_ident_uses_in_expr(name, *elem);
@@ -5092,6 +5157,9 @@ private:
                 for (const auto& inner : s.block.stmts) total += count_ident_uses_in_stmt(name, *inner);
                 return total;
             },
+            [&](const ast::DeferStmt& s) -> std::size_t {
+                return s.stmt ? count_ident_uses_in_stmt(name, *s.stmt) : 0u;
+            },
             [&](const ast::ParallelForStmt& s) -> std::size_t {
                 std::size_t total = count_ident_uses_in_expr(name, *s.start) + count_ident_uses_in_expr(name, *s.end);
                 for (const auto& inner : s.body) total += count_ident_uses_in_stmt(name, *inner);
@@ -5147,6 +5215,15 @@ private:
             },
             [&](const ast::CastExpr& e) -> bool {
                 return expr_uses_ident_in_call_arg_context(name, *e.expr, in_call_arg);
+            },
+            [&](const ast::FStringExpr& e) -> bool {
+                for (const auto& part : e.parts) {
+                    if (part.is_expr && part.expr &&
+                        expr_uses_ident_in_call_arg_context(name, *part.expr, true)) {
+                        return true;
+                    }
+                }
+                return false;
             },
             [&](const ast::ArrayExpr& e) -> bool {
                 for (const auto& elem : e.elements) {
@@ -5313,6 +5390,9 @@ private:
                     }
                 }
                 return false;
+            },
+            [&](const ast::DeferStmt& s) -> bool {
+                return s.stmt && stmt_uses_ident_in_call_arg_context(name, *s.stmt);
             },
             [&](const ast::ParallelForStmt& s) -> bool {
                 if (expr_uses_ident_in_call_arg_context(name, *s.start) ||
@@ -5603,6 +5683,9 @@ private:
                 if (auto* ptr = std::get_if<PointerType>(&base->kind)) {
                     return ptr->pointee->clone();
                 }
+                if (is_str_type(*base)) {
+                    return Type::make_primitive(PrimitiveType::U8);
+                }
                 if (is_pointer_like_type(*base)) {
                     return Type::make_primitive(PrimitiveType::I64);
                 }
@@ -5615,6 +5698,9 @@ private:
                 auto resolved = canonicalize_type(e.target_type);
                 if (resolved) return resolved;
                 return e.target_type.clone();
+            },
+            [&](const ast::FStringExpr&) -> std::optional<Type> {
+                return Type::make_primitive(PrimitiveType::Str);
             },
             [&](const ast::ArrayExpr&) -> std::optional<Type> {
                 return Type::make_primitive(PrimitiveType::Ptr);
@@ -5978,8 +6064,8 @@ private:
             std::size_t size = struct_it->second.total_size > 0 ? struct_it->second.total_size : 8;
             for (std::size_t offset = 0; offset < size; offset += 8) {
                 auto chunk = static_cast<std::int32_t>(offset);
-                emit_.mov_load(x64::Reg::RCX, x64::Reg::RAX, chunk);
-                emit_.mov_store(x64::Reg::RBP, sym.stack_offset + chunk, x64::Reg::RCX);
+                emit_.mov_load(x64::Reg::R11, x64::Reg::RAX, chunk);
+                emit_.mov_store(x64::Reg::RBP, sym.stack_offset + chunk, x64::Reg::R11);
             }
             if (auto bound = lookup_bound_reg(&sym)) {
                 emit_.lea(*bound, x64::Reg::RBP, sym.stack_offset);
@@ -6196,6 +6282,215 @@ private:
         });
     }
 
+    [[nodiscard]] static bool pfor_expr_structurally_equal(const ast::Expr& a, const ast::Expr& b) {
+        if (a.kind.index() != b.kind.index()) return false;
+        return std::visit(overloaded{
+            [&](const ast::LiteralExpr& la) -> bool {
+                const auto& lb = b.as<ast::LiteralExpr>();
+                return la.value == lb.value;
+            },
+            [&](const ast::IdentExpr& ia) -> bool {
+                return ia.name == b.as<ast::IdentExpr>().name;
+            },
+            [&](const ast::UnaryExpr& ua) -> bool {
+                const auto& ub = b.as<ast::UnaryExpr>();
+                return ua.op == ub.op && pfor_expr_structurally_equal(*ua.operand, *ub.operand);
+            },
+            [&](const ast::BinaryExpr& ba) -> bool {
+                const auto& bb = b.as<ast::BinaryExpr>();
+                return ba.op == bb.op &&
+                       pfor_expr_structurally_equal(*ba.lhs, *bb.lhs) &&
+                       pfor_expr_structurally_equal(*ba.rhs, *bb.rhs);
+            },
+            [&](const auto&) -> bool { return false; }
+        }, a.kind);
+    }
+
+    void analyze_pfor_fusion(
+        const std::vector<ast::StmtPtr>& stmts,
+        std::size_t start_index,
+        std::unordered_set<std::size_t>& skip_stmts,
+        std::unordered_map<std::size_t, FusedProducerMap>& fused_maps
+    ) {
+        if (!is_native_image_output() || !vectorize_enabled_ || stmts.size() <= start_index + 1) {
+            return;
+        }
+
+        auto parse_vector_pfor = [](const ast::ParallelForStmt& pfor, std::string& dst, const ast::Expr*& rhs) -> bool {
+            if (pfor.body.size() != 1) return false;
+            const auto* es = std::get_if<ast::ExprStmt>(&pfor.body[0]->kind);
+            const auto* assign = es ? std::get_if<ast::BinaryExpr>(&es->expr->kind) : nullptr;
+            if (!assign || assign->op != ast::BinaryExpr::Op::Assign) return false;
+            const auto* lhs_idx = std::get_if<ast::IndexExpr>(&assign->lhs->kind);
+            const auto* lhs_idx_id = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->index->kind) : nullptr;
+            const auto* lhs_base_id = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->base->kind) : nullptr;
+            if (!lhs_idx_id || lhs_idx_id->name != pfor.name || !lhs_base_id) return false;
+            dst = lhs_base_id->name;
+            rhs = assign->rhs.get();
+            return true;
+        };
+
+        auto is_malloc_let = [&](const ast::Stmt& stmt, std::string& out_name, const ast::Expr*& size_expr) -> bool {
+            if (!stmt.is<ast::LetStmt>()) return false;
+            const auto& let = stmt.as<ast::LetStmt>();
+            if (!let.init) return false;
+            const ast::Expr* cur = let.init.get();
+            while (auto* c = std::get_if<ast::CastExpr>(&cur->kind)) {
+                auto resolved = canonicalize_type(c->target_type);
+                if (!resolved) return false;
+                bool ok_ptr = false;
+                if (auto* pt = std::get_if<PointerType>(&resolved->kind)) {
+                    if (auto* prim = std::get_if<PrimitiveType>(&pt->pointee->kind)) {
+                        ok_ptr = (*prim == PrimitiveType::I64);
+                    }
+                } else if (auto* prim = std::get_if<PrimitiveType>(&resolved->kind)) {
+                    ok_ptr = (*prim == PrimitiveType::Ptr);
+                }
+                if (!ok_ptr) return false;
+                cur = c->expr.get();
+            }
+            const auto* call = std::get_if<ast::CallExpr>(&cur->kind);
+            if (!call || call->args.size() != 1) return false;
+            const auto* callee = std::get_if<ast::IdentExpr>(&call->callee->kind);
+            if (!callee || callee->name != "malloc") return false;
+            if (!expr_is_side_effect_free(*call->args[0])) return false;
+            out_name = let.name;
+            size_expr = call->args[0].get();
+            return true;
+        };
+
+        auto is_free_stmt = [](const ast::Stmt& stmt, const std::string& target) -> bool {
+            const auto* es = std::get_if<ast::ExprStmt>(&stmt.kind);
+            const auto* call = es ? std::get_if<ast::CallExpr>(&es->expr->kind) : nullptr;
+            if (!call || call->args.size() != 1) return false;
+            const auto* callee = std::get_if<ast::IdentExpr>(&call->callee->kind);
+            const auto* arg = std::get_if<ast::IdentExpr>(&call->args[0]->kind);
+            return callee && callee->name == "free" && arg && arg->name == target;
+        };
+
+        auto expr_reads_only_index_or_lit = [](const ast::Expr& expr, const std::string& loop_var, const auto& self) -> bool {
+            return std::visit(overloaded{
+                [&](const ast::LiteralExpr&) { return true; },
+                [&](const ast::IdentExpr& e) { return e.name == loop_var; },
+                [&](const ast::UnaryExpr& e) {
+                    return e.op == ast::UnaryExpr::Op::Neg && self(*e.operand, loop_var, self);
+                },
+                [&](const ast::BinaryExpr& e) {
+                    using Op = ast::BinaryExpr::Op;
+                    if (e.op != Op::Add && e.op != Op::Sub && e.op != Op::Mul &&
+                        e.op != Op::BitAnd && e.op != Op::BitOr && e.op != Op::BitXor) return false;
+                    return self(*e.lhs, loop_var, self) && self(*e.rhs, loop_var, self);
+                },
+                [&](const auto&) { return false; }
+            }, expr.kind);
+        };
+
+        for (std::size_t c_idx = start_index + 1; c_idx < stmts.size(); ++c_idx) {
+            if (skip_stmts.contains(c_idx) || !stmts[c_idx]->is<ast::ParallelForStmt>()) continue;
+            const auto& consumer = stmts[c_idx]->as<ast::ParallelForStmt>();
+            std::string out_name;
+            const ast::Expr* c_rhs = nullptr;
+            if (!parse_vector_pfor(consumer, out_name, c_rhs)) continue;
+
+            struct Candidate {
+                std::size_t alloc_idx;
+                std::size_t pfor_idx;
+                std::size_t free_idx;
+                std::string buf_name;
+                std::string loop_var;
+                const ast::Expr* rhs;
+            };
+            std::vector<Candidate> candidates;
+            FusedProducerMap trial_map;
+
+            for (std::size_t p_idx = c_idx; p_idx-- > start_index;) {
+                if (skip_stmts.contains(p_idx)) continue;
+                if (!stmts[p_idx]->is<ast::ParallelForStmt>()) continue;
+                const auto& producer = stmts[p_idx]->as<ast::ParallelForStmt>();
+                std::string buf_name;
+                const ast::Expr* p_rhs = nullptr;
+                if (!parse_vector_pfor(producer, buf_name, p_rhs)) continue;
+                if (buf_name == out_name || trial_map.contains(buf_name)) continue;
+                if (!pfor_expr_structurally_equal(*producer.start, *consumer.start) ||
+                    !pfor_expr_structurally_equal(*producer.end, *consumer.end)) {
+                    continue;
+                }
+                if (!expr_reads_only_index_or_lit(*p_rhs, producer.name, expr_reads_only_index_or_lit)) {
+                    continue;
+                }
+                if (count_ident_uses_in_expr(buf_name, *c_rhs) == 0) continue;
+
+                // Ensure range bounds & buf_name aren't touched between p_idx and c_idx
+                bool interval_clean = true;
+                for (std::size_t k = p_idx + 1; k < c_idx; ++k) {
+                    if (skip_stmts.contains(k)) continue;
+                    bool is_other_pfor = stmts[k]->is<ast::ParallelForStmt>();
+                    if (!is_other_pfor) { interval_clean = false; break; }
+                    if (count_ident_uses_in_stmt(buf_name, *stmts[k]) != 0) {
+                        interval_clean = false; break;
+                    }
+                }
+                if (!interval_clean) continue;
+
+                // Find matching malloc let before p_idx with no intervening uses
+                std::optional<std::size_t> alloc_idx;
+                for (std::size_t a_idx = p_idx; a_idx-- > start_index;) {
+                    if (skip_stmts.contains(a_idx)) continue;
+                    std::string let_name;
+                    const ast::Expr* sz = nullptr;
+                    if (is_malloc_let(*stmts[a_idx], let_name, sz) && let_name == buf_name) {
+                        bool pre_clean = true;
+                        for (std::size_t k = a_idx + 1; k < p_idx; ++k) {
+                            if (skip_stmts.contains(k)) continue;
+                            if (count_ident_uses_in_stmt(buf_name, *stmts[k]) != 0) {
+                                pre_clean = false;
+                                break;
+                            }
+                        }
+                        if (pre_clean) alloc_idx = a_idx;
+                        break;
+                    }
+                    if (count_ident_uses_in_stmt(buf_name, *stmts[a_idx]) != 0) {
+                        break;
+                    }
+                }
+                if (!alloc_idx) continue;
+
+                // Check post-consumer uses: only a single free(buf_name) allowed
+                std::optional<std::size_t> free_idx;
+                bool post_clean = true;
+                for (std::size_t k = c_idx + 1; k < stmts.size(); ++k) {
+                    if (skip_stmts.contains(k)) continue;
+                    std::size_t uses = count_ident_uses_in_stmt(buf_name, *stmts[k]);
+                    if (uses == 0) continue;
+                    if (!free_idx && uses == 1 && is_free_stmt(*stmts[k], buf_name)) {
+                        free_idx = k;
+                    } else {
+                        post_clean = false;
+                        break;
+                    }
+                }
+                if (!post_clean || !free_idx) continue;
+
+                trial_map[buf_name] = FusedProducerExpr{producer.name, p_rhs};
+                candidates.push_back({*alloc_idx, p_idx, *free_idx, buf_name, producer.name, p_rhs});
+            }
+
+            if (candidates.empty()) continue;
+
+            std::vector<Symbol*> dummy_syms;
+            vectorize::Loop dummy_vloop;
+            if (try_build_pfor_vector_loop(consumer, &trial_map, dummy_syms, dummy_vloop, true)) {
+                for (const auto& cand : candidates) {
+                    skip_stmts.insert(cand.alloc_idx);
+                    skip_stmts.insert(cand.pfor_idx);
+                    skip_stmts.insert(cand.free_idx);
+                }
+                fused_maps[c_idx] = std::move(trial_map);
+            }
+        }
+    }
+
     [[nodiscard]] bool generate_stmt_list_from(const std::vector<ast::StmtPtr>& stmts, std::size_t start_index = 0) {
         if (!current_scope_) {
             for (std::size_t i = start_index; i < stmts.size(); ++i) {
@@ -6204,12 +6499,16 @@ private:
             return true;
         }
 
+        std::unordered_set<std::size_t> skip_pfor_stmts;
+        std::unordered_map<std::size_t, FusedProducerMap> fused_pfor_maps;
+        analyze_pfor_fusion(stmts, start_index, skip_pfor_stmts, fused_pfor_maps);
+
         std::unordered_map<std::size_t, std::vector<std::string>> expirations;
         std::unordered_map<std::size_t, std::vector<const Symbol*>> reg_expirations;
         std::unordered_map<std::size_t, std::vector<std::string>> inline_call_reg_expirations;
         std::unordered_set<std::string> active_inline_safe_call_reg_lets;
         for (std::size_t i = start_index; i < stmts.size(); ++i) {
-            if (can_skip_stmt(stmts, i)) {
+            if (skip_pfor_stmts.contains(i) || can_skip_stmt(stmts, i)) {
                 continue;
             }
 
@@ -6321,8 +6620,8 @@ private:
                     std::size_t remaining_uses = count_ident_uses_in_range(let.name, stmts, i + 1);
                     if (remaining_uses >= 2) {
                         std::size_t min_free_regs = lives_across_any_call ? 4 : 2;
-                        if (available_scratch_reg_count() > min_free_regs) {
-                            auto reg = pick_scratch_reg();
+                        if (available_scratch_reg_count({x64::Reg::R11}) > min_free_regs) {
+                            auto reg = pick_scratch_reg({x64::Reg::R11});
                             if (!reg) {
                                 continue;
                             }
@@ -6362,7 +6661,15 @@ private:
                 }
             }
 
-            if (!generate_stmt(*stmts[i])) return false;
+            if (stmts[i]->is<ast::ParallelForStmt>()) {
+                const FusedProducerMap* fused = nullptr;
+                if (auto fit = fused_pfor_maps.find(i); fit != fused_pfor_maps.end()) {
+                    fused = &fit->second;
+                }
+                if (!generate_parallel_for(stmts[i]->as<ast::ParallelForStmt>(), fused)) return false;
+            } else {
+                if (!generate_stmt(*stmts[i])) return false;
+            }
 
             if (auto it = expirations.find(i); it != expirations.end()) {
                 for (const auto& name : it->second) {
@@ -6407,11 +6714,23 @@ private:
             [&](const ast::ParallelForStmt& s) { return generate_parallel_for(s); },
             [&](const ast::BreakStmt&)         { return generate_break(); },
             [&](const ast::ContinueStmt&)      { return generate_continue(); },
+            [&](const ast::DeferStmt& d) -> bool {
+                if (current_scope_ && d.stmt) {
+                    current_scope_->defers.push_back(d.stmt.get());
+                }
+                return true;
+            },
             [&](const ast::BlockStmt& block) -> bool {
                 push_scope();
                 if (!generate_stmt_list(block.block.stmts)) {
                     pop_scope();
                     return false;
+                }
+                if (!suite_guarantees_return(block.block.stmts)) {
+                    if (!emit_defers_for_scope(current_scope_)) {
+                        pop_scope();
+                        return false;
+                    }
                 }
                 pop_scope();
                 return true;
@@ -6453,6 +6772,12 @@ private:
                 pop_scope();
                 return false;
             }
+            if (!suite_guarantees_return(branch.body)) {
+                if (!emit_defers_for_scope(current_scope_)) {
+                    pop_scope();
+                    return false;
+                }
+            }
             pop_scope();
             done_patches.push_back(emit_.jmp_rel32_placeholder());
 
@@ -6466,6 +6791,12 @@ private:
                 pop_scope();
                 return false;
             }
+            if (!suite_guarantees_return(*switch_stmt.else_block)) {
+                if (!emit_defers_for_scope(current_scope_)) {
+                    pop_scope();
+                    return false;
+                }
+            }
             pop_scope();
         }
 
@@ -6476,17 +6807,6 @@ private:
     }
 
     [[nodiscard]] bool generate_let(const ast::LetStmt& let) {
-        if (while_loop_depth_ > 0 && let.is_mut && let.init) {
-            auto init_type = infer_expr_type(*let.init);
-            bool is_simple_int = init_type && init_type->is_integer();
-            bool is_struct_val = init_type && get_struct_name(*init_type).has_value();
-            if (is_simple_int && !is_struct_val && available_scratch_reg_count({x64::Reg::RAX}) > 4) {
-                auto free_reg = pick_scratch_reg({x64::Reg::RAX});
-                if (free_reg) {
-                    pending_named_register_bindings_[let.name] = *free_reg;
-                }
-            }
-        }
         Symbol* sym = define_let_symbol(let);
         if (!sym) {
             return false;
@@ -6498,14 +6818,106 @@ private:
         return true;
     }
 
+    [[nodiscard]] static bool stmt_guarantees_return(const ast::Stmt& stmt) {
+        return std::visit(overloaded{
+            [&](const ast::ReturnStmt&) -> bool {
+                return true;
+            },
+            [&](const ast::BlockStmt& s) -> bool {
+                return !s.block.stmts.empty() && stmt_guarantees_return(*s.block.stmts.back());
+            },
+            [&](const ast::IfStmt& s) -> bool {
+                return !s.then_block.empty() &&
+                       s.has_else() &&
+                       stmt_guarantees_return(*s.then_block.back()) &&
+                       !s.else_block->empty() &&
+                       stmt_guarantees_return(*s.else_block->back());
+            },
+            [&](const ast::SwitchStmt& s) -> bool {
+                if (s.cases.empty() || !s.has_else()) {
+                    return false;
+                }
+                for (const auto& branch : s.cases) {
+                    if (branch.body.empty() || !stmt_guarantees_return(*branch.body.back())) {
+                        return false;
+                    }
+                }
+                return !s.else_block->empty() && stmt_guarantees_return(*s.else_block->back());
+            },
+            [&](const auto&) -> bool {
+                return false;
+            }
+        }, stmt.kind);
+    }
+
+    [[nodiscard]] static bool suite_guarantees_return(const ast::StmtSuite& suite) {
+        return !suite.empty() && stmt_guarantees_return(*suite.back());
+    }
+
+    [[nodiscard]] bool has_active_defers_to_function_root() const {
+        for (Scope* s = current_scope_; s != nullptr; s = s->parent) {
+            if (!s->defers.empty()) {
+                return true;
+            }
+            if (s == function_root_scope_) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool emit_defers_for_scope(Scope* scope) {
+        if (!scope || scope->defers.empty()) {
+            return true;
+        }
+        auto items = scope->defers;
+        ++in_defer_depth_;
+        for (auto it = items.rbegin(); it != items.rend(); ++it) {
+            if (!generate_stmt(**it)) {
+                --in_defer_depth_;
+                return false;
+            }
+        }
+        --in_defer_depth_;
+        return true;
+    }
+
+    [[nodiscard]] bool emit_defers_down_to(Scope* stop_inclusive) {
+        for (Scope* s = current_scope_; s != nullptr; s = s->parent) {
+            if (!emit_defers_for_scope(s)) {
+                return false;
+            }
+            if (s == stop_inclusive) {
+                break;
+            }
+        }
+        return true;
+    }
+
     [[nodiscard]] bool generate_return(const ast::ReturnStmt& ret) {
+        if (in_defer_depth_ > 0) {
+            error("return inside defer is not allowed");
+            return false;
+        }
         current_function_return_seen_ = true;
-        warn_live_owned_locals_on_exit(ret.value.get());
         if (ret.value) {
             if (!generate_expr(*ret.value)) return false;
         } else {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
         }
+        if (has_active_defers_to_function_root()) {
+            // Keep RSP 16-byte aligned across any calls executed inside defer blocks.
+            emit_.sub_imm(x64::Reg::RSP, 16);
+            emit_.mov_store(x64::Reg::RSP, 0, x64::Reg::RAX);
+            if (!emit_defers_down_to(function_root_scope_)) {
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 0);
+                emit_.add_smart(x64::Reg::RSP, 16);
+                return false;
+            }
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 0);
+            emit_.add_smart(x64::Reg::RSP, 16);
+        }
+        warn_live_owned_locals_on_exit(ret.value.get());
         if (has_current_function_return_type_ && current_function_return_type_.is_float()) {
             emit_return_float_rax_to_xmm0(current_function_return_type_);
         }
@@ -6783,7 +7195,8 @@ private:
             return expr_obviously_produces_owned_value(*cast->expr);
         }
 
-        if (std::holds_alternative<ast::ArrayExpr>(expr.kind)) {
+        if (std::holds_alternative<ast::ArrayExpr>(expr.kind) ||
+            std::holds_alternative<ast::FStringExpr>(expr.kind)) {
             return true;
         }
 
@@ -9035,42 +9448,6 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             return true;
         };
 
-        auto stmt_guarantees_return = [&](const ast::Stmt& stmt, const auto& self) -> bool {
-            return std::visit(overloaded{
-                [&](const ast::ReturnStmt&) -> bool {
-                    return true;
-                },
-                [&](const ast::BlockStmt& s) -> bool {
-                    return !s.block.stmts.empty() && self(*s.block.stmts.back(), self);
-                },
-                [&](const ast::IfStmt& s) -> bool {
-                    return !s.then_block.empty() &&
-                           s.has_else() &&
-                           self(*s.then_block.back(), self) &&
-                           !s.else_block->empty() &&
-                           self(*s.else_block->back(), self);
-                },
-                [&](const ast::SwitchStmt& s) -> bool {
-                    if (s.cases.empty() || !s.has_else()) {
-                        return false;
-                    }
-                    for (const auto& branch : s.cases) {
-                        if (branch.body.empty() || !self(*branch.body.back(), self)) {
-                            return false;
-                        }
-                    }
-                    return !s.else_block->empty() && self(*s.else_block->back(), self);
-                },
-                [&](const auto&) -> bool {
-                    return false;
-                }
-            }, stmt.kind);
-        };
-
-        auto suite_guarantees_return = [&](const ast::StmtSuite& suite) -> bool {
-            return !suite.empty() && stmt_guarantees_return(*suite.back(), stmt_guarantees_return);
-        };
-
         auto merge_owned_states = [](const std::vector<std::unordered_map<const Symbol*, OwnedLocalState>>& states) {
             std::unordered_map<const Symbol*, OwnedLocalState> merged;
             if (states.empty()) {
@@ -9177,8 +9554,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             pop_scope();
             return false;
         }
-        pop_scope();
         bool then_returns = suite_guarantees_return(if_stmt.then_block);
+        if (!then_returns) {
+            if (!emit_defers_for_scope(current_scope_)) {
+                pop_scope();
+                return false;
+            }
+        }
+        pop_scope();
         auto then_state = owned_locals_;
 
         std::vector<std::unordered_map<const Symbol*, OwnedLocalState>> continuing_states;
@@ -9196,8 +9579,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 pop_scope();
                 return false;
             }
-            pop_scope();
             bool else_returns = suite_guarantees_return(*if_stmt.else_block);
+            if (!else_returns) {
+                if (!emit_defers_for_scope(current_scope_)) {
+                    pop_scope();
+                    return false;
+                }
+            }
+            pop_scope();
             if (!else_returns) {
                 continuing_states.push_back(owned_locals_);
             }
@@ -9526,6 +9915,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         Symbol* dst_sym = current_scope_->lookup(lhs_base_ident->name);
         if (!dst_sym) return false;
+        if (typed_element_stride(dst_sym->type) != 8 ||
+            std::holds_alternative<PointerType>(dst_sym->type.kind) ||
+            std::holds_alternative<ArrayType>(dst_sym->type.kind) ||
+            is_str_type(dst_sym->type)) {
+            return false;
+        }
 
         // Trip count: start must be 0
         if (call.args.size() == 2) {
@@ -9568,6 +9963,18 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 vloop.nodes.push_back(node);
                 return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
             }
+            if (auto* id = std::get_if<ast::IdentExpr>(&expr.kind)) {
+                if (id->name == for_stmt.name) {
+                    vectorize::Node node;
+                    node.op = vectorize::Op::index;
+                    vloop.nodes.push_back(node);
+                    return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                }
+                if (const ast::Expr* inl = current_scope_->lookup_inline(id->name)) {
+                    return self(self, *inl);
+                }
+                return std::nullopt;
+            }
             if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
                 std::int64_t val = 0;
                 if (!try_get_i64_immediate(*lit, val)) return std::nullopt;
@@ -9575,6 +9982,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 node.op = vectorize::Op::constant;
                 node.bits = static_cast<std::uint64_t>(val);
                 vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* un = std::get_if<ast::UnaryExpr>(&expr.kind); un && un->op == ast::UnaryExpr::Op::Neg) {
+                auto operand = self(self, *un->operand);
+                if (!operand) return std::nullopt;
+                vectorize::Node znode{vectorize::Op::constant, 0, 0, 0};
+                vloop.nodes.push_back(znode);
+                auto zidx = static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                vectorize::Node snode{vectorize::Op::sub, zidx, *operand, 0};
+                vloop.nodes.push_back(snode);
                 return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
             }
             if (auto* bin = std::get_if<ast::BinaryExpr>(&expr.kind)) {
@@ -9628,6 +10045,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         }
         emit_.mov(x64::Reg::RDX, x64::Reg::RAX); // count in RDX
         emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // pointer table in RCX
+        emit_.xor_(x64::Reg::R8, x64::Reg::R8);  // start_index = 0
 
         // Call the dispatch: call rel32
         std::size_t call_site = emit_.buffer().pos();
@@ -9640,18 +10058,182 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         return true;
     }
 
-    [[nodiscard]] bool generate_for(const ast::ForStmt& for_stmt) {
-        // evaluate range bounds as full expressions
-        if (!for_stmt.iterable->is<ast::CallExpr>()) {
-            error("for-in requires a range() call");
+    [[nodiscard]] std::uint8_t typed_element_stride(const Type& elem_type) {
+        auto resolved = canonicalize_type(elem_type);
+        const Type& final_type = resolved ? *resolved : elem_type;
+        if (is_bool_type(final_type)) {
+            return 1;
+        }
+        if (auto* prim = std::get_if<PrimitiveType>(&final_type.kind)) {
+            switch (*prim) {
+                case PrimitiveType::I8:
+                case PrimitiveType::U8:
+                    return 1;
+                case PrimitiveType::I16:
+                case PrimitiveType::U16:
+                    return 2;
+                case PrimitiveType::I32:
+                case PrimitiveType::U32:
+                case PrimitiveType::F32:
+                case PrimitiveType::Char:
+                    return 4;
+                default:
+                    return 8;
+            }
+        }
+        return 8;
+    }
+
+    [[nodiscard]] bool generate_for_iterable_loop(const ast::ForStmt& for_stmt) {
+        auto iter_type = infer_expr_type(*for_stmt.iterable);
+        if (!iter_type) {
+            error("cannot determine iterable type for for-in loop");
             return false;
+        }
+        auto resolved_iter = canonicalize_type(*iter_type);
+        const Type& final_iter = resolved_iter ? *resolved_iter : *iter_type;
+
+        bool is_str_iter = is_str_type(final_iter);
+        const auto* fixed_arr = std::get_if<ArrayType>(&final_iter.kind);
+        bool is_dyn_arr =
+            (std::holds_alternative<PrimitiveType>(final_iter.kind) &&
+             std::get<PrimitiveType>(final_iter.kind) == PrimitiveType::Ptr) ||
+            std::holds_alternative<ast::ArrayExpr>(for_stmt.iterable->kind);
+
+        if (!is_str_iter && !fixed_arr && !is_dyn_arr) {
+            error("for-in expects range(), string, or array");
+            return false;
+        }
+
+        bool free_temp_array = std::holds_alternative<ast::ArrayExpr>(for_stmt.iterable->kind);
+
+        push_scope();
+        break_patches_.push_back({});
+        continue_patches_.push_back({});
+        loop_defer_roots_.push_back(current_scope_);
+
+        auto& src_sym = current_scope_->define("__for_src", Type::make_primitive(PrimitiveType::Ptr), false);
+        if (!generate_expr(*for_stmt.iterable)) {
+            loop_defer_roots_.pop_back();
+            pop_scope();
+            return false;
+        }
+        emit_.mov_store(x64::Reg::RBP, src_sym.stack_offset, x64::Reg::RAX);
+
+        auto& end_sym = current_scope_->define("__for_end", Type::make_primitive(PrimitiveType::I64), false);
+        if (fixed_arr && fixed_arr->size) {
+            emit_.mov_smart(x64::Reg::RAX, static_cast<std::int64_t>(*fixed_arr->size));
+        } else if (is_str_iter) {
+            emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+            std::size_t null_str = emit_.jcc_rel32(x64::Emitter::CC_E);
+            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+            emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+            emit_inline_strlen();
+            std::size_t done_len = emit_.jmp_rel32_placeholder();
+            emit_.patch_jump(null_str);
+            emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+            emit_.patch_jump(done_len);
+        } else {
+            emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+            std::size_t null_arr = emit_.jcc_rel32(x64::Emitter::CC_E);
+            if (is_native_image_output()) {
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, -16);
+            } else {
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);
+            }
+            std::size_t done_len = emit_.jmp_rel32_placeholder();
+            emit_.patch_jump(null_arr);
+            emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+            emit_.patch_jump(done_len);
+        }
+        emit_.mov_store(x64::Reg::RBP, end_sym.stack_offset, x64::Reg::RAX);
+
+        auto& idx_sym = current_scope_->define("__for_idx", Type::make_primitive(PrimitiveType::I64), true);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, idx_sym.stack_offset, x64::Reg::RAX);
+
+        Type elem_type = is_str_iter
+            ? Type::make_primitive(PrimitiveType::U8)
+            : (fixed_arr ? fixed_arr->element->clone() : Type::make_primitive(PrimitiveType::I64));
+        std::uint8_t stride = is_str_iter ? 1 : typed_element_stride(elem_type);
+        auto& var_sym = current_scope_->define(for_stmt.name, elem_type.clone(), false);
+
+        std::size_t loop_start = emit_.buffer().pos();
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, end_sym.stack_offset);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
+        std::size_t jge_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        emit_.mov_load(x64::Reg::R11, x64::Reg::RBP, src_sym.stack_offset);
+        emit_.lea_scaled(x64::Reg::RAX, x64::Reg::R11, x64::Reg::RAX, stride);
+        if (!is_str_iter && !fixed_arr && !is_native_image_output()) {
+            emit_.add_smart(x64::Reg::RAX, 8);
+        }
+        if (is_str_iter || fixed_arr) {
+            if (!emit_load_typed_from_address_in_rax(elem_type)) {
+                loop_defer_roots_.pop_back();
+                pop_scope();
+                return false;
+            }
+        } else {
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);
+        }
+        emit_.mov_store(x64::Reg::RBP, var_sym.stack_offset, x64::Reg::RAX);
+
+        if (!generate_stmt_list(for_stmt.body)) {
+            loop_defer_roots_.pop_back();
+            pop_scope();
+            return false;
+        }
+        if (!suite_guarantees_return(for_stmt.body)) {
+            if (!emit_defers_for_scope(current_scope_)) {
+                loop_defer_roots_.pop_back();
+                pop_scope();
+                return false;
+            }
+        }
+
+        std::size_t increment_pos = emit_.buffer().pos();
+        patch_jumps_to(continue_patches_.back(), increment_pos);
+        continue_patches_.pop_back();
+
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, idx_sym.stack_offset);
+        emit_.add_smart(x64::Reg::RAX, 1);
+        emit_.mov_store(x64::Reg::RBP, idx_sym.stack_offset, x64::Reg::RAX);
+        emit_jmp_rel32_to(loop_start);
+
+        emit_.patch_jump(jge_patch);
+        for (std::size_t patch : break_patches_.back()) {
+            emit_.patch_jump(patch);
+        }
+        break_patches_.pop_back();
+        loop_defer_roots_.pop_back();
+
+        if (free_temp_array) {
+            auto free_arg = std::make_unique<ast::Expr>();
+            free_arg->kind = ast::IdentExpr{.name = "__for_src"};
+            auto free_callee = std::make_unique<ast::Expr>();
+            free_callee->kind = ast::IdentExpr{.name = "array_free"};
+            ast::CallExpr free_call;
+            free_call.callee = std::move(free_callee);
+            free_call.args.push_back(std::move(free_arg));
+            if (!generate_call(free_call)) {
+                pop_scope();
+                return false;
+            }
+        }
+
+        pop_scope();
+        return true;
+    }
+
+    [[nodiscard]] bool generate_for(const ast::ForStmt& for_stmt) {
+        if (!for_stmt.iterable->is<ast::CallExpr>() ||
+            !for_stmt.iterable->as<ast::CallExpr>().callee->is<ast::IdentExpr>() ||
+            for_stmt.iterable->as<ast::CallExpr>().callee->as<ast::IdentExpr>().name != "range") {
+            return generate_for_iterable_loop(for_stmt);
         }
         const auto& call = for_stmt.iterable->as<ast::CallExpr>();
-        if (!call.callee->is<ast::IdentExpr>() || 
-            call.callee->as<ast::IdentExpr>().name != "range") {
-            error("for-in requires a range() call");
-            return false;
-        }
         
         if (call.args.size() > 2) {
             error("range() accepts 1 or 2 arguments");
@@ -9667,12 +10249,13 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         push_scope();
         break_patches_.push_back({});
         continue_patches_.push_back({});
+        loop_defer_roots_.push_back(current_scope_);
         
         // evaluate start
         auto& start_sym = current_scope_->define("__for_start",
             Type::make_primitive(PrimitiveType::I64), true);
         if (call.args.size() >= 2) {
-            if (!generate_expr(*call.args[0])) { pop_scope(); return false; }
+            if (!generate_expr(*call.args[0])) { loop_defer_roots_.pop_back(); pop_scope(); return false; }
         } else {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
         }
@@ -9682,9 +10265,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         auto& end_sym = current_scope_->define("__for_end",
             Type::make_primitive(PrimitiveType::I64), true);
         if (call.args.size() >= 2) {
-            if (!generate_expr(*call.args[1])) { pop_scope(); return false; }
+            if (!generate_expr(*call.args[1])) { loop_defer_roots_.pop_back(); pop_scope(); return false; }
         } else if (call.args.size() == 1) {
-            if (!generate_expr(*call.args[0])) { pop_scope(); return false; }
+            if (!generate_expr(*call.args[0])) { loop_defer_roots_.pop_back(); pop_scope(); return false; }
         } else {
             emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
         }
@@ -9706,8 +10289,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         
         // body
         if (!generate_stmt_list(for_stmt.body)) {
+            loop_defer_roots_.pop_back();
             pop_scope();
             return false;
+        }
+        if (!suite_guarantees_return(for_stmt.body)) {
+            if (!emit_defers_for_scope(current_scope_)) {
+                loop_defer_roots_.pop_back();
+                pop_scope();
+                return false;
+            }
         }
         
         // increment - continue jumps here (skip body, do increment, loop back)
@@ -9730,6 +10321,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             emit_.patch_jump(patch);
         }
         break_patches_.pop_back();
+        loop_defer_roots_.pop_back();
         
         pop_scope();
         return true;
@@ -9743,9 +10335,18 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     }
 
     [[nodiscard]] bool generate_break() {
+        if (in_defer_depth_ > 0) {
+            error("break inside defer is not allowed");
+            return false;
+        }
         if (break_patches_.empty()) {
             error("break outside of loop");
             return false;
+        }
+        if (!loop_defer_roots_.empty()) {
+            if (!emit_defers_down_to(loop_defer_roots_.back())) {
+                return false;
+            }
         }
         std::size_t patch = emit_.jmp_rel32_placeholder();
         break_patches_.back().push_back(patch);
@@ -9753,9 +10354,18 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     }
 
     [[nodiscard]] bool generate_continue() {
+        if (in_defer_depth_ > 0) {
+            error("continue inside defer is not allowed");
+            return false;
+        }
         if (continue_patches_.empty()) {
             error("continue outside of loop");
             return false;
+        }
+        if (!loop_defer_roots_.empty()) {
+            if (!emit_defers_down_to(loop_defer_roots_.back())) {
+                return false;
+            }
         }
         std::size_t patch = emit_.jmp_rel32_placeholder();
         continue_patches_.back().push_back(patch);
@@ -9988,8 +10598,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
                 if (bin->rhs->is<ast::IdentExpr>()) {
                     if (can_generate_pure_expr(*bin->lhs)) {
-                        auto lhs_reg = pick_scratch_reg();
+                        auto lhs_reg = pick_scratch_reg({x64::Reg::R11});
+                        if (!lhs_reg) lhs_reg = pick_scratch_reg();
                         if (!lhs_reg) return false;
+                        ScopedScratchReg hold_lhs(*this, *lhs_reg);
                         auto rhs_reg = pick_scratch_reg({*lhs_reg});
                         if (!rhs_reg) return false;
                         if (!generate_pure_expr_into(*bin->lhs, *lhs_reg)) return false;
@@ -10025,8 +10637,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 }
 
                 if (can_generate_pure_expr(*bin->lhs) && can_generate_pure_expr(*bin->rhs)) {
-                    auto lhs_reg = pick_scratch_reg();
+                    auto lhs_reg = pick_scratch_reg({x64::Reg::R11});
+                    if (!lhs_reg) lhs_reg = pick_scratch_reg();
                     if (!lhs_reg) return false;
+                    ScopedScratchReg hold_lhs(*this, *lhs_reg);
                     auto rhs_reg = pick_scratch_reg({*lhs_reg});
                     if (!rhs_reg) return false;
                     if (!generate_pure_expr_into(*bin->lhs, *lhs_reg)) return false;
@@ -10163,6 +10777,19 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             case Op::Ge: emit_bool_result(x64::Emitter::CC_AE, dst); return;
             case Op::Eq:
                 // result = (ZF=1 AND PF=0). NaN compares set PF.
+                // dst may be R11 itself; stage the ZF predicate through R10 then,
+                // otherwise setcc into R11 followed by setcc into dst would
+                // overwrite the PF test and `and dst, r11` would self-AND.
+                if (dst == x64::Reg::R11) {
+                    emit_.push(x64::Reg::R10);
+                    emit_.setcc(0xB, x64::Reg::R10); // setnp r10b
+                    emit_.movzx_byte(x64::Reg::R10, x64::Reg::R10);
+                    emit_.setcc(x64::Emitter::CC_E, dst);
+                    emit_.movzx_byte(dst, dst);
+                    emit_.and_(dst, x64::Reg::R10);
+                    emit_.pop(x64::Reg::R10);
+                    return;
+                }
                 emit_.setcc(0xB, x64::Reg::R11); // setnp r11b
                 emit_.movzx_byte(x64::Reg::R11, x64::Reg::R11); // clear upper bits
                 emit_.setcc(x64::Emitter::CC_E, dst);
@@ -10171,6 +10798,16 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 return;
             case Op::Ne:
                 // result = (ZF=0 OR PF=1)
+                if (dst == x64::Reg::R11) {
+                    emit_.push(x64::Reg::R10);
+                    emit_.setcc(0xA, x64::Reg::R10); // setp r10b
+                    emit_.movzx_byte(x64::Reg::R10, x64::Reg::R10);
+                    emit_.setcc(x64::Emitter::CC_NE, dst);
+                    emit_.movzx_byte(dst, dst);
+                    emit_.or_(dst, x64::Reg::R10);
+                    emit_.pop(x64::Reg::R10);
+                    return;
+                }
                 emit_.setcc(0xA, x64::Reg::R11); // setp r11b
                 emit_.movzx_byte(x64::Reg::R11, x64::Reg::R11);
                 emit_.setcc(x64::Emitter::CC_NE, dst);
@@ -10205,11 +10842,26 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
     [[nodiscard]] bool emit_binary_into_with_rhs_imm(x64::Reg dst, ast::BinaryExpr::Op op, std::int64_t imm) {
         using Op = ast::BinaryExpr::Op;
+        // 64-bit immediates need a scratch register to hold the constant. When
+        // dst IS that scratch (R11) the constant load would clobber the live
+        // operand, so stash R10 on the stack and use it instead.
+        const bool dst_is_scratch = (dst == x64::Reg::R11);
+        auto load_imm_scratch = [&](std::int64_t value) -> x64::Reg {
+            if (!dst_is_scratch) {
+                emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(value));
+                return x64::Reg::R11;
+            }
+            emit_.push(x64::Reg::R10);
+            emit_.mov_imm64(x64::Reg::R10, static_cast<std::uint64_t>(value));
+            return x64::Reg::R10;  // caller must pop R10 after use
+        };
         // floats can't go through imm path - bail to the reg path
         if (binary_type_is_float()) {
             // load imm bits as the f64 (interpret as int) and dispatch via reg path
-            emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
-            return emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R11);
+            x64::Reg scratch = load_imm_scratch(imm);
+            bool ok = emit_binary_into_with_rhs_reg(dst, op, scratch);
+            if (dst_is_scratch) emit_.pop(x64::Reg::R10);
+            return ok;
         }
         const bool is_unsigned = binary_type_is_unsigned();
         switch (op) {
@@ -10236,7 +10888,17 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             case Op::Div:
             case Op::Mod:
                 // div/mod by immediate has no scalar shortcut; route through the reg
-                // path with the immediate in a stack-protected R11.
+                // path with the immediate in a stack-protected scratch. When dst is
+                // R11 the dividend would be overwritten by the constant load, so
+                // stage the divisor through R10 instead.
+                if (dst == x64::Reg::R11) {
+                    emit_.push(x64::Reg::R10);
+                    emit_.mov_imm64(x64::Reg::R10, static_cast<std::uint64_t>(imm));
+                    bool ok = emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R10);
+                    emit_.pop(x64::Reg::R10);
+                    if (!ok) return false;
+                    return true;
+                }
                 emit_.push(x64::Reg::R11);
                 emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
                 {
@@ -10257,8 +10919,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     imm <= (std::numeric_limits<std::int32_t>::max)()) {
                     emit_.and_imm(dst, static_cast<std::int32_t>(imm));
                 } else {
-                    emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
-                    emit_.and_(dst, x64::Reg::R11);
+                    x64::Reg scratch = load_imm_scratch(imm);
+                    emit_.and_(dst, scratch);
+                    if (dst_is_scratch) emit_.pop(x64::Reg::R10);
                 }
                 return true;
             case Op::BitOr:
@@ -10269,8 +10932,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     imm <= (std::numeric_limits<std::int32_t>::max)()) {
                     emit_.or_imm(dst, static_cast<std::int32_t>(imm));
                 } else {
-                    emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
-                    emit_.or_(dst, x64::Reg::R11);
+                    x64::Reg scratch = load_imm_scratch(imm);
+                    emit_.or_(dst, scratch);
+                    if (dst_is_scratch) emit_.pop(x64::Reg::R10);
                 }
                 return true;
             case Op::BitXor:
@@ -10285,8 +10949,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     imm <= (std::numeric_limits<std::int32_t>::max)()) {
                     emit_.xor_imm(dst, static_cast<std::int32_t>(imm));
                 } else {
-                    emit_.mov_imm64(x64::Reg::R11, static_cast<std::uint64_t>(imm));
-                    emit_.xor_(dst, x64::Reg::R11);
+                    x64::Reg scratch = load_imm_scratch(imm);
+                    emit_.xor_(dst, scratch);
+                    if (dst_is_scratch) emit_.pop(x64::Reg::R10);
                 }
                 return true;
             case Op::Shl:
@@ -10476,7 +11141,15 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     [[nodiscard]] bool emit_binary_into_with_rhs_mem(x64::Reg dst, ast::BinaryExpr::Op op, x64::Reg base, std::int32_t offset) {
         using Op = ast::BinaryExpr::Op;
         if (binary_type_is_float()) {
-            // float through reg path
+            // float through reg path. R11 cannot hold the loaded rhs when dst is
+            // R11 (the load would wipe the lhs), so stage it through R10.
+            if (dst == x64::Reg::R11) {
+                emit_.push(x64::Reg::R10);
+                emit_.mov_load(x64::Reg::R10, base, offset);
+                bool ok = emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R10);
+                emit_.pop(x64::Reg::R10);
+                return ok;
+            }
             emit_.mov_load(x64::Reg::R11, base, offset);
             return emit_binary_into_with_rhs_reg(dst, op, x64::Reg::R11);
         }
@@ -11011,6 +11684,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 }
                 return emit_coerce_rax_to_type(e.target_type, e.expr.get());
             },
+            [&](const ast::FStringExpr& e) { return generate_fstring(e); },
             [&](const ast::ArrayExpr& e)   { return generate_array_literal(e); },
             [&](const ast::StructExpr& e)  { return generate_struct_literal(e); },
             [&](const ast::IfExpr& e)      { return generate_if_expr(e); },
@@ -11298,27 +11972,184 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         return true;
     }
 
-    [[nodiscard]] bool generate_index(const ast::IndexExpr& idx) {
-        // Generate base address -> RAX
-        if (!generate_expr(*idx.base)) return false;
-        emit_.push(x64::Reg::RAX);  // Save base
-        
-        // Generate index -> RAX
-        if (!generate_expr(*idx.index)) return false;
-        
-        // Calculate offset: index * 8 (assuming 64-bit elements)
-        // Pop base into RCX
-        emit_.pop(x64::Reg::RCX);
-        
-        // Add: base + (index * 8)
-        emit_.lea_scaled(x64::Reg::RAX, x64::Reg::RCX, x64::Reg::RAX, 8);
-        if (!is_native_image_output()) {
-            emit_.add_smart(x64::Reg::RAX, 8); // host fallback arrays store length at arr[0]
+    [[nodiscard]] bool generate_fstring(const ast::FStringExpr& fstr) {
+        auto make_ident_expr = [](std::string name) {
+            auto e = std::make_unique<ast::Expr>();
+            e->kind = ast::IdentExpr{.name = std::move(name)};
+            return e;
+        };
+        auto make_str_lit_expr = [](std::string val) {
+            auto e = std::make_unique<ast::Expr>();
+            e->kind = ast::LiteralExpr{.value = std::move(val), .type = Type::make_primitive(PrimitiveType::Str)};
+            return e;
+        };
+        auto make_int_lit_expr = [](std::int64_t val) {
+            auto e = std::make_unique<ast::Expr>();
+            e->kind = ast::LiteralExpr{.value = val, .type = Type::make_primitive(PrimitiveType::I64)};
+            return e;
+        };
+        auto emit_call1 = [&](std::string fn, ast::ExprPtr arg0) -> bool {
+            ast::CallExpr c;
+            c.callee = make_ident_expr(std::move(fn));
+            c.args.push_back(std::move(arg0));
+            return generate_call(c);
+        };
+        auto emit_call2 = [&](std::string fn, ast::ExprPtr arg0, ast::ExprPtr arg1) -> bool {
+            ast::CallExpr c;
+            c.callee = make_ident_expr(std::move(fn));
+            c.args.push_back(std::move(arg0));
+            c.args.push_back(std::move(arg1));
+            return generate_call(c);
+        };
+        auto emit_heap_clone_lit = [&](const std::string& text) -> bool {
+            ast::CallExpr c;
+            c.callee = make_ident_expr("string_substring");
+            c.args.push_back(make_str_lit_expr(text));
+            c.args.push_back(make_int_lit_expr(0));
+            c.args.push_back(make_int_lit_expr(static_cast<std::int64_t>(text.size())));
+            return generate_call(c);
+        };
+
+        if (fstr.parts.empty()) {
+            return emit_heap_clone_lit("");
         }
-        
-        // Dereference: load value at that address
+        if (fstr.parts.size() == 1 && !fstr.parts[0].is_expr) {
+            return emit_heap_clone_lit(fstr.parts[0].text);
+        }
+
+        push_scope();
+        auto& acc_sym = current_scope_->define("__fstr_acc", Type::make_primitive(PrimitiveType::Str), true);
+        auto& part_sym = current_scope_->define("__fstr_part", Type::make_primitive(PrimitiveType::Str), true);
+        auto& tmp_sym = current_scope_->define("__fstr_tmp", Type::make_primitive(PrimitiveType::Str), true);
+        bool acc_owned = false;
+
+        for (std::size_t i = 0; i < fstr.parts.size(); ++i) {
+            const auto& part = fstr.parts[i];
+            bool part_owned = false;
+
+            if (!part.is_expr) {
+                if (!generate_literal(ast::LiteralExpr{.value = part.text, .type = Type::make_primitive(PrimitiveType::Str)})) {
+                    pop_scope();
+                    return false;
+                }
+            } else {
+                auto part_type = infer_expr_type(*part.expr);
+                if (part_type && is_str_type(*part_type)) {
+                    if (!generate_expr(*part.expr)) {
+                        pop_scope();
+                        return false;
+                    }
+                    part_owned = expr_obviously_produces_owned_value(*part.expr);
+                } else if (part_type && is_bool_type(*part_type)) {
+                    if (!generate_expr(*part.expr)) {
+                        pop_scope();
+                        return false;
+                    }
+                    emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+                    std::size_t false_jmp = emit_.jcc_rel32(x64::Emitter::CC_E);
+                    if (!generate_literal(ast::LiteralExpr{.value = std::string("true"), .type = Type::make_primitive(PrimitiveType::Str)})) { pop_scope(); return false; }
+                    std::size_t done_jmp = emit_.jmp_rel32_placeholder();
+                    emit_.patch_jump(false_jmp);
+                    if (!generate_literal(ast::LiteralExpr{.value = std::string("false"), .type = Type::make_primitive(PrimitiveType::Str)})) { pop_scope(); return false; }
+                    emit_.patch_jump(done_jmp);
+                } else if (part_type && part_type->is_float()) {
+                    pop_scope();
+                    error("f-string float interpolation requires an explicit int cast");
+                    return false;
+                } else {
+                    if (!generate_expr(*part.expr)) {
+                        pop_scope();
+                        return false;
+                    }
+                    emit_.mov_store(x64::Reg::RBP, part_sym.stack_offset, x64::Reg::RAX);
+                    if (!emit_call1("int_to_string", make_ident_expr("__fstr_part"))) {
+                        pop_scope();
+                        return false;
+                    }
+                    part_owned = true;
+                }
+            }
+
+            if (i == 0) {
+                emit_.mov_store(x64::Reg::RBP, acc_sym.stack_offset, x64::Reg::RAX);
+                acc_owned = part_owned;
+            } else {
+                emit_.mov_store(x64::Reg::RBP, part_sym.stack_offset, x64::Reg::RAX);
+                if (!emit_call2("string_append", make_ident_expr("__fstr_acc"), make_ident_expr("__fstr_part"))) {
+                    pop_scope();
+                    return false;
+                }
+                // Save concatenated string in a frame local so RSP stays 16-byte aligned across free().
+                emit_.mov_store(x64::Reg::RBP, tmp_sym.stack_offset, x64::Reg::RAX);
+                if (acc_owned) {
+                    if (!emit_call1("free", make_ident_expr("__fstr_acc"))) {
+                        pop_scope();
+                        return false;
+                    }
+                }
+                if (part_owned) {
+                    if (!emit_call1("free", make_ident_expr("__fstr_part"))) {
+                        pop_scope();
+                        return false;
+                    }
+                }
+                emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, tmp_sym.stack_offset);
+                emit_.mov_store(x64::Reg::RBP, acc_sym.stack_offset, x64::Reg::RAX);
+                acc_owned = true;
+            }
+        }
+
+        if (!acc_owned) {
+            if (!emit_call2("string_append", make_ident_expr("__fstr_acc"), make_str_lit_expr(""))) {
+                pop_scope();
+                return false;
+            }
+        } else {
+            emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, acc_sym.stack_offset);
+        }
+
+        pop_scope();
+        return true;
+    }
+
+    [[nodiscard]] bool generate_index(const ast::IndexExpr& idx) {
+        auto base_type = infer_expr_type(*idx.base);
+        std::optional<Type> elem_type;
+        std::uint8_t stride = 8;
+        bool is_typed_raw = false;
+        if (base_type) {
+            auto resolved = canonicalize_type(*base_type);
+            const Type& final_base = resolved ? *resolved : *base_type;
+            if (auto* ptr = std::get_if<PointerType>(&final_base.kind)) {
+                elem_type = ptr->pointee->clone();
+                stride = typed_element_stride(*elem_type);
+                is_typed_raw = true;
+            } else if (auto* arr = std::get_if<ArrayType>(&final_base.kind)) {
+                elem_type = arr->element->clone();
+                stride = typed_element_stride(*elem_type);
+                is_typed_raw = true;
+            } else if (is_str_type(final_base)) {
+                elem_type = Type::make_primitive(PrimitiveType::U8);
+                stride = 1;
+                is_typed_raw = true;
+            }
+        }
+
+        if (!generate_expr(*idx.base)) return false;
+        emit_.push(x64::Reg::RAX);
+
+        if (!generate_expr(*idx.index)) return false;
+
+        emit_.pop(x64::Reg::R11);
+        emit_.lea_scaled(x64::Reg::RAX, x64::Reg::R11, x64::Reg::RAX, stride);
+        if (!is_typed_raw && !is_native_image_output()) {
+            emit_.add_smart(x64::Reg::RAX, 8);
+        }
+
+        if (is_typed_raw && elem_type) {
+            return emit_load_typed_from_address_in_rax(*elem_type);
+        }
         emit_.mov_load(x64::Reg::RAX, x64::Reg::RAX, 0);
-        
         return true;
     }
 
@@ -11788,6 +12619,33 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 if (!checked_view_offset(struct_it->first, field.field, *offset_opt, offset)) {
                     return false;
                 }
+                bool save_rcx = reg_is_bound(x64::Reg::RCX);
+                if (save_rcx) {
+                    if (base_sym) {
+                        emit_.pop(x64::Reg::RAX);
+                        emit_.push(x64::Reg::RCX);
+                        if (auto bound = lookup_bound_reg(base_sym)) {
+                            emit_.mov(x64::Reg::RCX, *bound);
+                        } else {
+                            emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, base_sym->stack_offset);
+                        }
+                    } else {
+                        emit_.push(x64::Reg::RAX);
+                        emit_.mov_load(x64::Reg::RAX, x64::Reg::RSP, 8);
+                        emit_.mov_store(x64::Reg::RSP, 8, x64::Reg::RCX);
+                        emit_.pop(x64::Reg::RCX);
+                    }
+                    if (offset != 0) {
+                        emit_.add_smart(x64::Reg::RCX, offset);
+                    }
+                    if (!emit_coerce_rax_to_type(*field_type, bin.rhs.get())) {
+                        emit_.pop(x64::Reg::RCX);
+                        return false;
+                    }
+                    bool ok = emit_store_typed_to_address_in_rcx(*field_type);
+                    emit_.pop(x64::Reg::RCX);
+                    return ok;
+                }
                 if (base_sym) {
                     if (auto bound = lookup_bound_reg(base_sym)) {
                         emit_.mov(x64::Reg::RCX, *bound);
@@ -11849,9 +12707,34 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     error_undefined_name("variable", var_name, collect_value_name_candidates());
                     return false;
                 }
-                if (!sym->is_mut) {
+                bool is_ptr_sym =
+                    std::holds_alternative<PointerType>(sym->type.kind) ||
+                    (std::holds_alternative<PrimitiveType>(sym->type.kind) &&
+                     std::get<PrimitiveType>(sym->type.kind) == PrimitiveType::Ptr);
+                if (!sym->is_mut && !is_ptr_sym) {
                     error(describe_rebinding_target("variable", var_name));
                     return false;
+                }
+            }
+            auto base_type = infer_expr_type(*idx.base);
+            std::optional<Type> elem_type;
+            std::uint8_t stride = 8;
+            bool is_typed_raw = false;
+            if (base_type) {
+                auto resolved = canonicalize_type(*base_type);
+                const Type& final_base = resolved ? *resolved : *base_type;
+                if (is_str_type(final_base)) {
+                    error("cannot assign into immutable string index");
+                    return false;
+                }
+                if (auto* ptr = std::get_if<PointerType>(&final_base.kind)) {
+                    elem_type = ptr->pointee->clone();
+                    stride = typed_element_stride(*elem_type);
+                    is_typed_raw = true;
+                } else if (auto* arr = std::get_if<ArrayType>(&final_base.kind)) {
+                    elem_type = arr->element->clone();
+                    stride = typed_element_stride(*elem_type);
+                    is_typed_raw = true;
                 }
             }
             // value is already in RAX; save it while we compute the element address
@@ -11859,14 +12742,22 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             if (!generate_expr(*idx.base)) return false;
             emit_.push(x64::Reg::RAX);
             if (!generate_expr(*idx.index)) return false;
-            emit_.pop(x64::Reg::RCX);
-            emit_.lea_scaled(x64::Reg::RAX, x64::Reg::RCX, x64::Reg::RAX, 8);
-            if (!is_native_image_output()) {
+            emit_.pop(x64::Reg::R11);
+            emit_.lea_scaled(x64::Reg::RAX, x64::Reg::R11, x64::Reg::RAX, stride);
+            if (!is_typed_raw && !is_native_image_output()) {
                 emit_.add_smart(x64::Reg::RAX, 8); // host fallback arrays store length at arr[0]
             }
-            emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+            emit_.mov(x64::Reg::R11, x64::Reg::RAX);
             emit_.pop(x64::Reg::RAX);
-            emit_.mov_store(x64::Reg::RCX, 0, x64::Reg::RAX);
+            if (is_typed_raw && elem_type && stride < 8) {
+                bool save_rcx = reg_is_bound(x64::Reg::RCX);
+                if (save_rcx) emit_.push(x64::Reg::RCX);
+                emit_.mov(x64::Reg::RCX, x64::Reg::R11);
+                bool ok = emit_store_typed_to_address_in_rcx(*elem_type);
+                if (save_rcx) emit_.pop(x64::Reg::RCX);
+                return ok;
+            }
+            emit_.mov_store(x64::Reg::R11, 0, x64::Reg::RAX);
             return true;
         }
 
@@ -11884,6 +12775,25 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             if (!sym->is_mut) {
                 error(describe_rebinding_target("variable", ident.name));
                 return false;
+            }
+            if (auto struct_it_local = stack_struct_locals_.find(sym); struct_it_local != stack_struct_locals_.end()) {
+                auto struct_it = structs_.find(struct_it_local->second);
+                if (struct_it == structs_.end()) {
+                    error_unknown_type("struct/class", struct_it_local->second);
+                    return false;
+                }
+                std::size_t size = struct_it->second.total_size > 0 ? struct_it->second.total_size : 8;
+                auto tmp_reg = pick_scratch_reg({x64::Reg::RAX}).value_or(x64::Reg::R11);
+                for (std::size_t offset = 0; offset < size; offset += 8) {
+                    auto chunk = static_cast<std::int32_t>(offset);
+                    emit_.mov_load(tmp_reg, x64::Reg::RAX, chunk);
+                    emit_.mov_store(x64::Reg::RBP, sym->stack_offset + chunk, tmp_reg);
+                }
+                if (auto bound = lookup_bound_reg(sym)) {
+                    emit_.lea(*bound, x64::Reg::RBP, sym->stack_offset);
+                }
+                update_owned_local_after_store(sym, bin.rhs.get());
+                return true;
             }
             if (auto bound = lookup_bound_reg(sym)) {
                 if (!emit_coerce_rax_to_type(sym->type, bin.rhs.get())) {
@@ -11993,7 +12903,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     return false;
                 }
 
-                if (!generate_expr(*bin.rhs)) return false;
+                bool save_rcx = reg_is_bound(x64::Reg::RCX);
+                if (save_rcx) {
+                    emit_.push(x64::Reg::RCX);
+                }
+                if (!generate_expr(*bin.rhs)) {
+                    if (save_rcx) emit_.pop(x64::Reg::RCX);
+                    return false;
+                }
                 emit_.push(x64::Reg::RAX);
 
                 if (auto bound = lookup_bound_reg(sym)) {
@@ -12031,7 +12948,11 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     return false;
                 }
                 emit_.mov(x64::Reg::RCX, x64::Reg::R10);
-                return emit_store_typed_to_address_in_rcx(*field_type);
+                bool ok = emit_store_typed_to_address_in_rcx(*field_type);
+                if (save_rcx) {
+                    emit_.pop(x64::Reg::RCX);
+                }
+                return ok;
             }
 
             std::int32_t foff = 0;
@@ -12136,7 +13057,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         // Generate right side -> RAX
         if (!generate_expr(*bin.rhs)) return false;
-        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // Save RHS to RCX
+        x64::Reg rhs_reg = pick_scratch_reg({x64::Reg::RAX, x64::Reg::RDX}).value_or(x64::Reg::R11);
+        emit_.mov(rhs_reg, x64::Reg::RAX);  // Save RHS
 
         // Register-bound locals must be updated in the register, not the stack spill slot.
         auto bound = lookup_bound_reg(sym);
@@ -12149,21 +13071,21 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // Apply operation
             switch (bin.op) {
                 case Op::AddAssign:
-                    emit_.add(x64::Reg::RAX, x64::Reg::RCX);
+                    emit_.add(x64::Reg::RAX, rhs_reg);
                     break;
             case Op::SubAssign:
-                emit_.sub(x64::Reg::RAX, x64::Reg::RCX);
+                emit_.sub(x64::Reg::RAX, rhs_reg);
                 break;
             case Op::MulAssign:
-                emit_.imul(x64::Reg::RAX, x64::Reg::RCX);
+                emit_.imul(x64::Reg::RAX, rhs_reg);
                 break;
             case Op::DivAssign:
                 emit_.cqo();
-                emit_.idiv(x64::Reg::RCX);
+                emit_.idiv(rhs_reg);
                 break;
             case Op::ModAssign:
                 emit_.cqo();
-                emit_.idiv(x64::Reg::RCX);
+                emit_.idiv(rhs_reg);
                 emit_.mov(x64::Reg::RAX, x64::Reg::RDX);  // remainder lives in rdx
                 break;
                 default:
@@ -12242,10 +13164,15 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     const auto& ident = un.operand->as<ast::IdentExpr>();
                     Symbol* sym = current_scope_->lookup(ident.name);
                     if (!sym) {
-                    error_undefined_name("variable", ident.name, collect_value_name_candidates());
-                    return false;
+                        error_undefined_name("variable", ident.name, collect_value_name_candidates());
+                        return false;
                     }
-                    emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+                    auto bound = lookup_bound_reg(sym);
+                    if (bound) {
+                        emit_.mov(x64::Reg::RAX, *bound);
+                    } else {
+                        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+                    }
                     if (un.op == Op::PreInc) {
                         emit_.add_smart(x64::Reg::RAX, 1);
                     } else {
@@ -12254,7 +13181,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                     if (!emit_coerce_rax_to_type(sym->type)) {
                         return false;
                     }
-                    emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                    if (bound) {
+                        emit_.mov(*bound, x64::Reg::RAX);
+                        if (!should_elide_bound_stack_slot(sym)) {
+                            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                        }
+                    } else {
+                        emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RAX);
+                    }
                 } else {
                     error("increment/decrement requires a variable");
                     return false;
@@ -12270,21 +13204,36 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                         error_undefined_name("variable", ident.name, collect_value_name_candidates());
                         return false;
                     }
+                    auto bound = lookup_bound_reg(sym);
                     // Load current value (this is what we return)
-                    emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+                    if (bound) {
+                        emit_.mov(x64::Reg::RAX, *bound);
+                    } else {
+                        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, sym->stack_offset);
+                    }
+                    x64::Reg tmp_reg = (bound && *bound == x64::Reg::RCX)
+                        ? x64::Reg::RCX
+                        : pick_scratch_reg({x64::Reg::RAX}).value_or(x64::Reg::RCX);
                     // Save to temp register
-                    emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+                    emit_.mov(tmp_reg, x64::Reg::RAX);
                     // Increment/decrement
                     if (un.op == Op::PostInc) {
-                        emit_.add_smart(x64::Reg::RCX, 1);
+                        emit_.add_smart(tmp_reg, 1);
                     } else {
-                        emit_.add_smart(x64::Reg::RCX, -1);
+                        emit_.add_smart(tmp_reg, -1);
                     }
-                    if (!emit_coerce_reg_to_type(x64::Reg::RCX, sym->type)) {
+                    if (!emit_coerce_reg_to_type(tmp_reg, sym->type)) {
                         return false;
                     }
                     // Store incremented value
-                    emit_.mov_store(x64::Reg::RBP, sym->stack_offset, x64::Reg::RCX);
+                    if (bound) {
+                        emit_.mov(*bound, tmp_reg);
+                        if (!should_elide_bound_stack_slot(sym)) {
+                            emit_.mov_store(x64::Reg::RBP, sym->stack_offset, tmp_reg);
+                        }
+                    } else {
+                        emit_.mov_store(x64::Reg::RBP, sym->stack_offset, tmp_reg);
+                    }
                     // RAX still has original value
                 } else {
                     error("increment/decrement requires a variable");
@@ -12599,8 +13548,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         std::unordered_map<std::string, x64::Reg> inline_named_regs;
         FunctionLeafRegisterPlan inline_plan;
         if (try_make_function_leaf_register_plan(*info.decl, inline_plan)) {
-            constexpr std::array<x64::Reg, 6> inline_candidates = {
-                x64::Reg::R11,
+            constexpr std::array<x64::Reg, 5> inline_candidates = {
                 x64::Reg::R10,
                 x64::Reg::R9,
                 x64::Reg::R8,
@@ -13607,24 +14555,24 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         
         // Generate address
         if (!generate_expr(*call.args[0])) return false;
-        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // RCX = address
+        emit_.mov(x64::Reg::R11, x64::Reg::RAX);  // R11 = address
         
         emit_.pop(x64::Reg::RAX);  // RAX = value
         
-        // Write to [RCX] from RAX
+        // Write to [R11] from RAX
         switch (size) {
             case 1:
-                emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x01);  // mov [rcx], al
+                emit_.buffer().emit8(0x41); emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x03);  // mov [r11], al
                 break;
             case 2:
-                emit_.buffer().emit8(0x66); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x01);  // mov [rcx], ax
+                emit_.buffer().emit8(0x66); emit_.buffer().emit8(0x41); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x03);  // mov [r11], ax
                 break;
             case 4:
-                emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x01);  // mov [rcx], eax
+                emit_.buffer().emit8(0x41); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x03);  // mov [r11], eax
                 break;
             case 8:
             default:
-                emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x01);  // mov [rcx], rax
+                emit_.buffer().emit8(0x49); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0x03);  // mov [r11], rax
                 break;
         }
         
@@ -13638,12 +14586,27 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             return false;
         }
         
+        emit_.push(x64::Reg::RDI);
+        emit_.push(x64::Reg::RSI);
+
         // Save args to stack, then use rep movsb
-        if (!generate_expr(*call.args[2])) return false;
+        if (!generate_expr(*call.args[2])) {
+            emit_.pop(x64::Reg::RSI);
+            emit_.pop(x64::Reg::RDI);
+            return false;
+        }
         emit_.push(x64::Reg::RAX);  // len
-        if (!generate_expr(*call.args[1])) return false;
+        if (!generate_expr(*call.args[1])) {
+            emit_.pop(x64::Reg::RSI);
+            emit_.pop(x64::Reg::RDI);
+            return false;
+        }
         emit_.push(x64::Reg::RAX);  // src
-        if (!generate_expr(*call.args[0])) return false;
+        if (!generate_expr(*call.args[0])) {
+            emit_.pop(x64::Reg::RSI);
+            emit_.pop(x64::Reg::RDI);
+            return false;
+        }
         emit_.mov(x64::Reg::RDI, x64::Reg::RAX);  // dst -> RDI
         emit_.pop(x64::Reg::RSI);  // src -> RSI
         emit_.pop(x64::Reg::RCX);  // len -> RCX
@@ -13651,6 +14614,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // rep movsb
         emit_.buffer().emit8(0xF3);
         emit_.buffer().emit8(0xA4);
+
+        emit_.pop(x64::Reg::RSI);
+        emit_.pop(x64::Reg::RDI);
         
         return true;
     }
@@ -14190,9 +15156,9 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.sub_imm(x64::Reg::RAX, 16);
         emit_.push(x64::Reg::RAX);  // save alloc base (GetProcessHeap clobbers volatiles)
 
-        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_.sub_imm(x64::Reg::RSP, 40);
         emit_iat_call_raw(pe::iat::GetProcessHeap);
-        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.add_smart(x64::Reg::RSP, 40);
 
         // HeapFree(heap, 0, alloc_ptr)
         emit_.mov(x64::Reg::RCX, x64::Reg::RAX);  // hHeap
@@ -14518,7 +15484,8 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
 
         if (!generate_expr(*call.args[0])) return false;
         // rax = value to convert
-        emit_.push(x64::Reg::RAX);  // save value
+        emit_.push(x64::Reg::RAX);  // [rsp+16] value
+        emit_.push(x64::Reg::RDI);  // [rsp+8]  preserve non-volatile RDI + 16-byte align RSP
 
         // heap alloc 24 bytes (enough for "-9223372036854775808\0")
         emit_.sub_imm(x64::Reg::RSP, 32);
@@ -14534,7 +15501,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // rax = buffer
 
         emit_.push(x64::Reg::RAX);  // save buffer
-        // stack: [value, buffer]
+        // stack: [value, saved_rdi, buffer]
 
         // rdi = buffer + 22 (write backwards, leave room for null terminator)
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x8D); emit_.buffer().emit8(0x78); emit_.buffer().emit8(0x16);  // lea rdi, [rax+22]
@@ -14543,7 +15510,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xCF);  // dec rdi
 
         // load original value into r8
-        emit_.mov_load(x64::Reg::R8, x64::Reg::RSP, 8);  // r8 = value from stack
+        emit_.mov_load(x64::Reg::R8, x64::Reg::RSP, 16);  // r8 = value from stack
 
         // check sign, r9 = is_negative flag
         emit_.buffer().emit8(0x4D); emit_.buffer().emit8(0x31); emit_.buffer().emit8(0xC9);  // xor r9, r9
@@ -14622,14 +15589,24 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             emit_.buffer().data()[jz_nosign_pos + 1] = static_cast<std::uint8_t>(off);
         }
 
-        // rdi points one before first char, inc to get start of string
+        // rdi points one before first char, inc to get start of formatted string
         emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC7);  // inc rdi
 
-        // return pointer to start of string in rax
-        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0x89); emit_.buffer().emit8(0xF8);  // mov rax, rdi
+        // Shift string to the HeapAlloc base pointer so free(int_to_string(n))
+        // always frees the real allocation base instead of an interior pointer.
+        emit_.pop(x64::Reg::RCX);   // rcx = buffer base
+        emit_.mov(x64::Reg::RAX, x64::Reg::RCX);  // return buffer base
+        std::size_t copy_loop = emit_.buffer().pos();
+        emit_.buffer().emit8(0x8A); emit_.buffer().emit8(0x17);  // mov dl, byte [rdi]
+        emit_.buffer().emit8(0x88); emit_.buffer().emit8(0x11);  // mov byte [rcx], dl
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC7);  // inc rdi
+        emit_.buffer().emit8(0x48); emit_.buffer().emit8(0xFF); emit_.buffer().emit8(0xC1);  // inc rcx
+        emit_.buffer().emit8(0x84); emit_.buffer().emit8(0xD2);  // test dl, dl
+        emit_.buffer().emit8(0x75);  // jnz .copy_loop
+        std::int8_t copy_off = static_cast<std::int8_t>(copy_loop - emit_.buffer().pos() - 1);
+        emit_.buffer().emit8(static_cast<std::uint8_t>(copy_off));
 
-        // clean up stack: pop buffer (discard), pop value (discard)
-        emit_.pop(x64::Reg::RCX);   // discard buffer
+        emit_.pop(x64::Reg::RDI);   // restore non-volatile RDI
         emit_.pop(x64::Reg::RCX);   // discard value
 
         return true;
@@ -16942,13 +17919,146 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         Type type;
     };
 
+    [[nodiscard]] bool try_build_pfor_vector_loop(
+        const ast::ParallelForStmt& pfor,
+        const FusedProducerMap* fused_producers,
+        std::vector<Symbol*>& buffer_syms,
+        vectorize::Loop& vloop,
+        bool check_compile = false
+    ) {
+        if (!vectorize_enabled_ || pfor.body.size() != 1) return false;
+        const auto* expr_stmt = std::get_if<ast::ExprStmt>(&pfor.body[0]->kind);
+        const auto* assign = expr_stmt ? std::get_if<ast::BinaryExpr>(&expr_stmt->expr->kind) : nullptr;
+        if (!assign || assign->op != ast::BinaryExpr::Op::Assign) return false;
+        const auto* lhs_idx = std::get_if<ast::IndexExpr>(&assign->lhs->kind);
+        const auto* lhs_idx_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->index->kind) : nullptr;
+        const auto* lhs_base_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->base->kind) : nullptr;
+        if (!lhs_idx_ident || lhs_idx_ident->name != pfor.name || !lhs_base_ident) return false;
+
+        Symbol* dst_sym = current_scope_->lookup(lhs_base_ident->name);
+        if (!dst_sym && !check_compile) return false;
+
+        auto get_or_add_buf = [&](Symbol* sym, const std::string& name) -> std::uint16_t {
+            if (!sym) {
+                static std::vector<std::string> dummy_names;
+                for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+                    if (i < dummy_names.size() && dummy_names[i] == name) return static_cast<std::uint16_t>(i);
+                }
+                if (buffer_syms.empty()) dummy_names.clear();
+                buffer_syms.push_back(nullptr);
+                if (dummy_names.size() < buffer_syms.size()) dummy_names.resize(buffer_syms.size());
+                dummy_names[buffer_syms.size() - 1] = name;
+                return static_cast<std::uint16_t>(buffer_syms.size() - 1);
+            }
+            for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+                if (buffer_syms[i] == sym) return static_cast<std::uint16_t>(i);
+            }
+            buffer_syms.push_back(sym);
+            return static_cast<std::uint16_t>(buffer_syms.size() - 1);
+        };
+
+        std::uint16_t dst_buf_idx = get_or_add_buf(dst_sym, lhs_base_ident->name);
+        vloop = vectorize::Loop{};
+        vloop.element = vectorize::Element::i64;
+        vloop.result = vectorize::Result::map;
+        vloop.output = dst_buf_idx;
+
+        auto build_dag = [&](auto& self, const ast::Expr& expr, const std::string& cur_var, int depth) -> std::optional<vectorize::Value> {
+            if (depth > 32) return std::nullopt;
+            if (auto* idx = std::get_if<ast::IndexExpr>(&expr.kind)) {
+                auto* idx_id = std::get_if<ast::IdentExpr>(&idx->index->kind);
+                if (!idx_id || idx_id->name != cur_var) return std::nullopt;
+                auto* base_id = std::get_if<ast::IdentExpr>(&idx->base->kind);
+                if (!base_id) return std::nullopt;
+                if (fused_producers) {
+                    if (auto fit = fused_producers->find(base_id->name); fit != fused_producers->end()) {
+                        return self(self, *fit->second.expr, fit->second.loop_var, depth + 1);
+                    }
+                }
+                Symbol* src_sym = current_scope_->lookup(base_id->name);
+                if (!src_sym && !check_compile) return std::nullopt;
+                std::uint16_t b_idx = get_or_add_buf(src_sym, base_id->name);
+                vectorize::Node node;
+                node.op = vectorize::Op::load;
+                node.bits = b_idx;
+                vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* id = std::get_if<ast::IdentExpr>(&expr.kind)) {
+                if (id->name == cur_var) {
+                    vectorize::Node node;
+                    node.op = vectorize::Op::index;
+                    vloop.nodes.push_back(node);
+                    return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                }
+                if (const ast::Expr* inl = current_scope_->lookup_inline(id->name)) {
+                    return self(self, *inl, cur_var, depth + 1);
+                }
+                return std::nullopt;
+            }
+            if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
+                std::int64_t val = 0;
+                if (!try_get_i64_immediate(*lit, val)) return std::nullopt;
+                vectorize::Node node;
+                node.op = vectorize::Op::constant;
+                node.bits = static_cast<std::uint64_t>(val);
+                vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* un = std::get_if<ast::UnaryExpr>(&expr.kind); un && un->op == ast::UnaryExpr::Op::Neg) {
+                auto operand = self(self, *un->operand, cur_var, depth);
+                if (!operand) return std::nullopt;
+                vectorize::Node znode{vectorize::Op::constant, 0, 0, 0};
+                vloop.nodes.push_back(znode);
+                auto zidx = static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+                vectorize::Node snode{vectorize::Op::sub, zidx, *operand, 0};
+                vloop.nodes.push_back(snode);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            if (auto* bin = std::get_if<ast::BinaryExpr>(&expr.kind)) {
+                auto left = self(self, *bin->lhs, cur_var, depth);
+                if (!left) return std::nullopt;
+                auto right = self(self, *bin->rhs, cur_var, depth);
+                if (!right) return std::nullopt;
+                vectorize::Op vop = vectorize::Op::add;
+                switch (bin->op) {
+                    case ast::BinaryExpr::Op::Add:    vop = vectorize::Op::add; break;
+                    case ast::BinaryExpr::Op::Sub:    vop = vectorize::Op::sub; break;
+                    case ast::BinaryExpr::Op::Mul:    vop = vectorize::Op::mul; break;
+                    case ast::BinaryExpr::Op::BitAnd: vop = vectorize::Op::bit_and; break;
+                    case ast::BinaryExpr::Op::BitOr:  vop = vectorize::Op::bit_or; break;
+                    case ast::BinaryExpr::Op::BitXor: vop = vectorize::Op::bit_xor; break;
+                    default: return std::nullopt;
+                }
+                vectorize::Node node;
+                node.op = vop;
+                node.a = *left;
+                node.b = *right;
+                vloop.nodes.push_back(node);
+                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
+            }
+            return std::nullopt;
+        };
+
+        auto root = build_dag(build_dag, *assign->rhs, pfor.name, 0);
+        if (!root) return false;
+        vloop.root = *root;
+        vloop.buffers = static_cast<std::uint16_t>(buffer_syms.size());
+        if (check_compile) {
+            std::string reason;
+            return vectorize::detail::plan(vloop, 6, reason).has_value();
+        }
+        return true;
+    }
+
     // emits the inner loop function that each worker thread runs
     // registers body_fn in functions_, emits stub, patches jmp_over
     bool emit_pfor_body_function(
         const ast::ParallelForStmt& pfor,
         const std::vector<CapturedVar>& captures,
         PforLayout& layout,
-        std::size_t jmp_over
+        std::size_t jmp_over,
+        const FusedProducerMap* fused_producers = nullptr
     ) {
         functions_[layout.body_fn] = FunctionInfo{
             .name = layout.body_fn,
@@ -17008,113 +18118,36 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         // try auto-vectorizing worker loop across this thread's chunk
         bool pfor_vectorized = false;
         if (vectorize_enabled_ && pfor.body.size() == 1) {
-            const auto* expr_stmt = std::get_if<ast::ExprStmt>(&pfor.body[0]->kind);
-            const auto* assign = expr_stmt ? std::get_if<ast::BinaryExpr>(&expr_stmt->expr->kind) : nullptr;
-            if (assign && assign->op == ast::BinaryExpr::Op::Assign) {
-                const auto* lhs_idx = std::get_if<ast::IndexExpr>(&assign->lhs->kind);
-                const auto* lhs_idx_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->index->kind) : nullptr;
-                const auto* lhs_base_ident = lhs_idx ? std::get_if<ast::IdentExpr>(&lhs_idx->base->kind) : nullptr;
-                if (lhs_idx_ident && lhs_idx_ident->name == pfor.name && lhs_base_ident) {
-                    Symbol* dst_sym = current_scope_->lookup(lhs_base_ident->name);
-                    if (dst_sym) {
-                        std::vector<Symbol*> buffer_syms;
-                        auto get_or_add_buf = [&](Symbol* sym) -> std::uint16_t {
-                            for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
-                                if (buffer_syms[i] == sym) return static_cast<std::uint16_t>(i);
-                            }
-                            buffer_syms.push_back(sym);
-                            return static_cast<std::uint16_t>(buffer_syms.size() - 1);
-                        };
-                        std::uint16_t dst_buf_idx = get_or_add_buf(dst_sym);
-
-                        vectorize::Loop vloop;
-                        vloop.element = vectorize::Element::i64;
-                        vloop.result = vectorize::Result::map;
-                        vloop.output = dst_buf_idx;
-
-                        auto build_dag = [&](auto& self, const ast::Expr& expr) -> std::optional<vectorize::Value> {
-                            if (auto* idx = std::get_if<ast::IndexExpr>(&expr.kind)) {
-                                auto* idx_id = std::get_if<ast::IdentExpr>(&idx->index->kind);
-                                if (!idx_id || idx_id->name != pfor.name) return std::nullopt;
-                                auto* base_id = std::get_if<ast::IdentExpr>(&idx->base->kind);
-                                if (!base_id) return std::nullopt;
-                                Symbol* src_sym = current_scope_->lookup(base_id->name);
-                                if (!src_sym) return std::nullopt;
-                                std::uint16_t b_idx = get_or_add_buf(src_sym);
-                                vectorize::Node node;
-                                node.op = vectorize::Op::load;
-                                node.bits = b_idx;
-                                vloop.nodes.push_back(node);
-                                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
-                            }
-                            if (auto* lit = std::get_if<ast::LiteralExpr>(&expr.kind)) {
-                                std::int64_t val = 0;
-                                if (!try_get_i64_immediate(*lit, val)) return std::nullopt;
-                                vectorize::Node node;
-                                node.op = vectorize::Op::constant;
-                                node.bits = static_cast<std::uint64_t>(val);
-                                vloop.nodes.push_back(node);
-                                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
-                            }
-                            if (auto* bin = std::get_if<ast::BinaryExpr>(&expr.kind)) {
-                                auto left = self(self, *bin->lhs);
-                                if (!left) return std::nullopt;
-                                auto right = self(self, *bin->rhs);
-                                if (!right) return std::nullopt;
-                                vectorize::Op vop = vectorize::Op::add;
-                                switch (bin->op) {
-                                    case ast::BinaryExpr::Op::Add:    vop = vectorize::Op::add; break;
-                                    case ast::BinaryExpr::Op::Sub:    vop = vectorize::Op::sub; break;
-                                    case ast::BinaryExpr::Op::Mul:    vop = vectorize::Op::mul; break;
-                                    case ast::BinaryExpr::Op::BitAnd: vop = vectorize::Op::bit_and; break;
-                                    case ast::BinaryExpr::Op::BitOr:  vop = vectorize::Op::bit_or; break;
-                                    case ast::BinaryExpr::Op::BitXor: vop = vectorize::Op::bit_xor; break;
-                                    default: return std::nullopt;
-                                }
-                                vectorize::Node node;
-                                node.op = vop;
-                                node.a = *left;
-                                node.b = *right;
-                                vloop.nodes.push_back(node);
-                                return static_cast<vectorize::Value>(vloop.nodes.size() - 1);
-                            }
-                            return std::nullopt;
-                        };
-
-                        auto root = build_dag(build_dag, *assign->rhs);
-                        if (root) {
-                            vloop.root = *root;
-                            vloop.buffers = static_cast<std::uint16_t>(buffer_syms.size());
-
-                            std::size_t dispatch_entry = 0;
-                            if (emit_vector_dispatch(vloop, dispatch_entry)) {
-                                // compute slice pointers: ptr + iter_start * 8
-                                std::int32_t buf_table_bytes = static_cast<std::int32_t>(buffer_syms.size() * 8);
-                                emit_.sub_imm(x64::Reg::RSP, buf_table_bytes);
-                                for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
-                                    emit_ptr_symbol_into(buffer_syms[i], x64::Reg::RAX);
-                                    emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
-                                    emit_.shl_imm(x64::Reg::RCX, 3); // iter_start * 8
-                                    emit_.add(x64::Reg::RAX, x64::Reg::RCX); // RAX = slice pointer
-                                    emit_.mov_store(x64::Reg::RSP, static_cast<std::int32_t>(i * 8), x64::Reg::RAX);
-                                }
-
-                                // count = iter_end - iter_start
-                                emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, iter_end.stack_offset);
-                                emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
-                                emit_.sub(x64::Reg::RDX, x64::Reg::RCX); // RDX = chunk count
-                                emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // RCX = slice pointer table
-
-                                std::size_t call_site = emit_.buffer().pos();
-                                emit_.buffer().emit8(0xE8);
-                                std::int32_t rel = emit_.buffer().rel32(call_site + 1, dispatch_entry);
-                                emit_.buffer().emit32(static_cast<std::uint32_t>(rel));
-
-                                emit_.add_imm(x64::Reg::RSP, buf_table_bytes);
-                                pfor_vectorized = true;
-                            }
-                        }
+            std::vector<Symbol*> buffer_syms;
+            vectorize::Loop vloop;
+            if (try_build_pfor_vector_loop(pfor, fused_producers, buffer_syms, vloop, false)) {
+                std::size_t dispatch_entry = 0;
+                if (emit_vector_dispatch(vloop, dispatch_entry)) {
+                    // compute slice pointers: ptr + iter_start * 8
+                    std::int32_t buf_table_bytes = static_cast<std::int32_t>(buffer_syms.size() * 8);
+                    emit_.sub_imm(x64::Reg::RSP, buf_table_bytes);
+                    for (std::size_t i = 0; i < buffer_syms.size(); ++i) {
+                        emit_ptr_symbol_into(buffer_syms[i], x64::Reg::RAX);
+                        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
+                        emit_.shl_imm(x64::Reg::RCX, 3); // iter_start * 8
+                        emit_.add(x64::Reg::RAX, x64::Reg::RCX); // RAX = slice pointer
+                        emit_.mov_store(x64::Reg::RSP, static_cast<std::int32_t>(i * 8), x64::Reg::RAX);
                     }
+
+                    // count = iter_end - iter_start, start_index = iter_start
+                    emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, iter_end.stack_offset);
+                    emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, iter_start.stack_offset);
+                    emit_.mov(x64::Reg::R8, x64::Reg::RCX);  // R8 = start_index
+                    emit_.sub(x64::Reg::RDX, x64::Reg::RCX); // RDX = chunk count
+                    emit_.mov(x64::Reg::RCX, x64::Reg::RSP); // RCX = slice pointer table
+
+                    std::size_t call_site = emit_.buffer().pos();
+                    emit_.buffer().emit8(0xE8);
+                    std::int32_t rel = emit_.buffer().rel32(call_site + 1, dispatch_entry);
+                    emit_.buffer().emit32(static_cast<std::uint32_t>(rel));
+
+                    emit_.add_imm(x64::Reg::RSP, buf_table_bytes);
+                    pfor_vectorized = true;
                 }
             }
         }
@@ -17155,8 +18188,378 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         return true;
     }
 
+    void emit_pause() {
+        emit_.buffer().emit8(0xF3);
+        emit_.buffer().emit8(0x90);
+    }
+
+    // lazily emits persistent thread pool slots, worker loop, and init function
+    void ensure_pfor_pool_runtime() {
+        if (has_pfor_pool_slot_) return;
+        has_pfor_pool_slot_ = true;
+        std::size_t jmp_over = emit_.jmp_rel32_placeholder();
+
+        pfor_pool_slot_ = emit_.buffer().pos();
+        emit_.buffer().emit64(0);
+        pfor_pool_lock_slot_ = emit_.buffer().pos();
+        emit_.buffer().emit64(0);
+
+        // ---- __pfor_pool_worker(RCX = slot_ptr) ----
+        // slot layout: +00 fn_ptr, +08 arg0, +10 arg1, +18 arg2, +20 go_gen, +28 wake_evt, +30 sleep, +38 pool
+        // pool layout: +00 ncores, +08 busy, +10 rem, +18 done_evt, +20 main_waiting
+        pfor_pool_worker_offset_ = emit_.buffer().pos();
+        emit_.push(x64::Reg::RBP);
+        emit_.mov(x64::Reg::RBP, x64::Reg::RSP);
+        emit_.push(x64::Reg::R12);
+        emit_.push(x64::Reg::R13);
+        emit_.push(x64::Reg::R14);
+        emit_.push(x64::Reg::R15);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+
+        emit_.mov(x64::Reg::R12, x64::Reg::RCX);
+        emit_.mov_load(x64::Reg::R13, x64::Reg::R12, 0x38);
+        emit_.xor_(x64::Reg::R14, x64::Reg::R14);
+
+        std::size_t worker_top = emit_.buffer().pos();
+        emit_.mov_imm32(x64::Reg::R15, 4096);
+        std::size_t spin_top = emit_.buffer().pos();
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0x20);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::R14);
+        std::size_t spin_got_work = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_pause();
+        emit_.dec(x64::Reg::R15);
+        emit_.jcc_rel32_to(x64::Emitter::CC_NE, spin_top);
+
+        // go to sleep safely (xchg sleep=1, re-check go_gen)
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.xchg_mem(x64::Reg::R12, 0x30, x64::Reg::RAX);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0x20);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::R14);
+        std::size_t race_got_work = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::R12, 0x28);
+        emit_.mov_imm32(x64::Reg::RDX, -1);
+        emit_iat_call_raw(pe::iat::WaitForSingleObject);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::R12, 0x30, x64::Reg::RAX);
+        emit_jmp_rel32_to(worker_top);
+
+        emit_.patch_jump(race_got_work);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::R12, 0x30, x64::Reg::RAX);
+
+        emit_.patch_jump(spin_got_work);
+        emit_.mov_load(x64::Reg::R14, x64::Reg::R12, 0x20);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::R12, 0x08);
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::R12, 0x10);
+        emit_.mov_load(x64::Reg::R8, x64::Reg::R12, 0x18);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0x00);
+        emit_.call(x64::Reg::RAX);
+
+        emit_.mov_imm64(x64::Reg::RAX, static_cast<std::uint64_t>(-1LL));
+        emit_.lock_xadd(x64::Reg::R13, 0x10, x64::Reg::RAX);
+        emit_.cmp_imm(x64::Reg::RAX, 1);
+        emit_.jcc_rel32_to(x64::Emitter::CC_NE, worker_top);
+        emit_.cmp_mem_imm(x64::Reg::R13, 0x20, 0);
+        emit_.jcc_rel32_to(x64::Emitter::CC_E, worker_top);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::R13, 0x18);
+        emit_iat_call_raw(pe::iat::SetEvent);
+        emit_jmp_rel32_to(worker_top);
+
+        // ---- __pfor_get_or_init_pool() -> RAX ----
+        pfor_pool_init_offset_ = emit_.buffer().pos();
+        emit_.push(x64::Reg::RBP);
+        emit_.mov(x64::Reg::RBP, x64::Reg::RSP);
+        emit_.push(x64::Reg::RBX);
+        emit_.push(x64::Reg::R12);
+        emit_.push(x64::Reg::R13);
+        emit_.sub_imm(x64::Reg::RSP, 104); // 16-byte aligned: 0..31 shadow, 32..47 args, 48..95 SYSTEM_INFO
+
+        std::size_t lea_slot1 = emit_lea_rip_disp32(x64::Reg::R12);
+        patch_rel32(lea_slot1, pfor_pool_slot_);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0);
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t already_init = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+        std::size_t lea_lock1 = emit_lea_rip_disp32(x64::Reg::RBX);
+        patch_rel32(lea_lock1, pfor_pool_lock_slot_);
+        std::size_t spin_init = emit_.buffer().pos();
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_imm32(x64::Reg::RCX, 1);
+        emit_.lock_cmpxchg(x64::Reg::RBX, 0, x64::Reg::RCX);
+        std::size_t got_lock = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_pause();
+        emit_jmp_rel32_to(spin_init);
+
+        emit_.patch_jump(got_lock);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::R12, 0);
+        emit_.test(x64::Reg::RAX, x64::Reg::RAX);
+        std::size_t unlocked_ret = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+        // GetSystemInfo(&[rsp+48])
+        emit_.lea(x64::Reg::RCX, x64::Reg::RSP, 48);
+        emit_iat_call_raw(pe::iat::GetSystemInfo);
+        // mov eax, dword [rsp + 48 + 32]
+        emit_.buffer().emit8(0x8B); emit_.buffer().emit8(0x44);
+        emit_.buffer().emit8(0x24); emit_.buffer().emit8(0x50);
+        emit_.cmp_imm(x64::Reg::RAX, 1);
+        std::size_t min_ok = emit_.jcc_rel32(x64::Emitter::CC_GE);
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.patch_jump(min_ok);
+        emit_.cmp_imm(x64::Reg::RAX, PFOR_MAX_THREADS);
+        std::size_t max_ok = emit_.jcc_rel32(x64::Emitter::CC_LE);
+        emit_.mov_imm32(x64::Reg::RAX, PFOR_MAX_THREADS);
+        emit_.patch_jump(max_ok);
+        emit_.mov(x64::Reg::R13, x64::Reg::RAX); // R13 = ncores
+
+        // HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY=8, (ncores + 1) * 64)
+        emit_iat_call_raw(pe::iat::GetProcessHeap);
+        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+        emit_.mov_imm32(x64::Reg::RDX, 8);
+        emit_.mov(x64::Reg::R8, x64::Reg::R13);
+        emit_.inc(x64::Reg::R8);
+        emit_.shl_imm(x64::Reg::R8, 6);
+        emit_iat_call_raw(pe::iat::HeapAlloc);
+        emit_.mov(x64::Reg::R12, x64::Reg::RAX); // R12 = pool_ptr
+        emit_.mov_store(x64::Reg::R12, 0x00, x64::Reg::R13);
+
+        emit_.cmp_imm(x64::Reg::R13, 1);
+        std::size_t single_core = emit_.jcc_rel32(x64::Emitter::CC_LE);
+
+        // done_evt = CreateEventA(NULL, FALSE, FALSE, NULL)
+        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+        emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);
+        emit_.xor_(x64::Reg::R8, x64::Reg::R8);
+        emit_.xor_(x64::Reg::R9, x64::Reg::R9);
+        emit_iat_call_raw(pe::iat::CreateEventA);
+        emit_.mov_store(x64::Reg::R12, 0x18, x64::Reg::RAX);
+
+        emit_.mov_imm32(x64::Reg::RBX, 1); // k = 1 .. ncores-1
+        std::size_t create_top = emit_.buffer().pos();
+        emit_.cmp(x64::Reg::RBX, x64::Reg::R13);
+        std::size_t create_done = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+        emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);
+        emit_.xor_(x64::Reg::R8, x64::Reg::R8);
+        emit_.xor_(x64::Reg::R9, x64::Reg::R9);
+        emit_iat_call_raw(pe::iat::CreateEventA);
+
+        // slot_k = pool + (k + 1) * 64 -> RCX
+        emit_.mov(x64::Reg::RCX, x64::Reg::RBX);
+        emit_.inc(x64::Reg::RCX);
+        emit_.shl_imm(x64::Reg::RCX, 6);
+        emit_.add(x64::Reg::RCX, x64::Reg::R12);
+        emit_.mov_store(x64::Reg::RCX, 0x28, x64::Reg::RAX); // wake_evt
+        emit_.mov_store(x64::Reg::RCX, 0x38, x64::Reg::R12); // pool_ptr
+
+        // CreateThread(NULL, 0, worker, slot_k, 0, NULL)
+        emit_.mov(x64::Reg::R9, x64::Reg::RCX);
+        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+        emit_.xor_(x64::Reg::RDX, x64::Reg::RDX);
+        std::size_t lea_worker = emit_lea_rip_disp32(x64::Reg::R8);
+        patch_rel32(lea_worker, pfor_pool_worker_offset_);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RSP, 0x20, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RSP, 0x28, x64::Reg::RAX);
+        emit_iat_call_raw(pe::iat::CreateThread);
+        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+        emit_iat_call_raw(pe::iat::CloseHandle);
+
+        emit_.inc(x64::Reg::RBX);
+        emit_jmp_rel32_to(create_top);
+        emit_.patch_jump(create_done);
+        emit_.patch_jump(single_core);
+
+        std::size_t lea_slot2 = emit_lea_rip_disp32(x64::Reg::RCX);
+        patch_rel32(lea_slot2, pfor_pool_slot_);
+        emit_.mov(x64::Reg::RAX, x64::Reg::R12);
+        emit_.xchg_mem(x64::Reg::RCX, 0, x64::Reg::RAX);
+        emit_.mov(x64::Reg::RAX, x64::Reg::R12);
+
+        emit_.patch_jump(unlocked_ret);
+        std::size_t lea_lock2 = emit_lea_rip_disp32(x64::Reg::RBX);
+        patch_rel32(lea_lock2, pfor_pool_lock_slot_);
+        emit_.xor_(x64::Reg::RCX, x64::Reg::RCX);
+        emit_.xchg_mem(x64::Reg::RBX, 0, x64::Reg::RCX);
+
+        emit_.patch_jump(already_init);
+        emit_.add_imm(x64::Reg::RSP, 104);
+        emit_.pop(x64::Reg::R13);
+        emit_.pop(x64::Reg::R12);
+        emit_.pop(x64::Reg::RBX);
+        emit_.pop(x64::Reg::RBP);
+        emit_.ret();
+
+        emit_.patch_jump(jmp_over);
+    }
+
+    // emits fast persistent-pool dispatch with nested CreateThread fallback
+    void emit_pfor_pool_and_spawn(const PforLayout& layout) {
+        ensure_pfor_pool_runtime();
+
+        // grow rsp once to cover all locals + fallback arrays
+        std::int32_t frame_needed = (-current_scope_->next_offset + 15) & ~15;
+        emit_.sub_imm(x64::Reg::RSP, frame_needed);
+
+        std::size_t init_call = emit_.buffer().pos();
+        emit_.buffer().emit8(0xE8);
+        emit_.buffer().emit32(static_cast<std::uint32_t>(emit_.buffer().rel32(init_call + 1, pfor_pool_init_offset_)));
+        emit_.mov_store(x64::Reg::RBP, layout.pool_off, x64::Reg::RAX);
+
+        emit_.mov(x64::Reg::RDX, x64::Reg::RAX);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_imm32(x64::Reg::RCX, 1);
+        emit_.lock_cmpxchg(x64::Reg::RDX, 0x08, x64::Reg::RCX);
+        std::size_t pool_busy = emit_.jcc_rel32(x64::Emitter::CC_NE);
+
+        // range = end - start
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.end_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.start_off);
+        emit_.sub(x64::Reg::RAX, x64::Reg::RCX);
+        emit_.mov_store(x64::Reg::RBP, layout.range_off, x64::Reg::RAX);
+
+        // active = min(pool->ncores, range)
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, layout.pool_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RDX, 0x00);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
+        std::size_t use_pool_ncores = emit_.jcc_rel32(x64::Emitter::CC_GE);
+        emit_.mov(x64::Reg::RCX, x64::Reg::RAX);
+        emit_.patch_jump(use_pool_ncores);
+        emit_.mov_store(x64::Reg::RBP, layout.ncores_off, x64::Reg::RCX);
+
+        // chunk = range / active
+        emit_.cqo();
+        emit_.idiv(x64::Reg::RCX);
+        emit_.mov_store(x64::Reg::RBP, layout.chunk_off, x64::Reg::RAX);
+
+        // pool->main_waiting = 0; pool->remaining = active - 1
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, layout.pool_off);
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RDX, 0x20, x64::Reg::RAX);
+        emit_.dec(x64::Reg::RCX);
+        emit_.mov_store(x64::Reg::RDX, 0x10, x64::Reg::RCX);
+
+        // dispatch workers k = 1 .. active - 1
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.mov_store(x64::Reg::RBP, layout.idx_off, x64::Reg::RAX);
+        std::size_t disp_top = emit_.buffer().pos();
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.ncores_off);
+        emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
+        std::size_t disp_done = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        // slot_k -> RDX
+        emit_.mov(x64::Reg::RDX, x64::Reg::RAX);
+        emit_.inc(x64::Reg::RDX);
+        emit_.shl_imm(x64::Reg::RDX, 6);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.pool_off);
+        emit_.add(x64::Reg::RDX, x64::Reg::RCX);
+
+        // slot_k->fn_ptr = body_fn
+        std::size_t body_fix = emit_lea_rip_disp32(x64::Reg::R8);
+        call_fixups_.push_back({body_fix, layout.body_fn});
+        emit_.mov_store(x64::Reg::RDX, 0x00, x64::Reg::R8);
+
+        // slot_k->arg0 = start + k * chunk
+        emit_.mov_load(x64::Reg::R8, x64::Reg::RBP, layout.chunk_off);
+        emit_.imul(x64::Reg::RAX, x64::Reg::R8);
+        emit_.mov_load(x64::Reg::R9, x64::Reg::RBP, layout.start_off);
+        emit_.add(x64::Reg::RAX, x64::Reg::R9);
+        emit_.mov_store(x64::Reg::RDX, 0x08, x64::Reg::RAX);
+
+        // slot_k->arg1 = (k + 1 == active) ? end : arg0 + chunk
+        emit_.mov_load(x64::Reg::R9, x64::Reg::RBP, layout.idx_off);
+        emit_.inc(x64::Reg::R9);
+        emit_.cmp(x64::Reg::R9, x64::Reg::RCX);
+        std::size_t not_last_w = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.end_off);
+        std::size_t end_ok_w = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(not_last_w);
+        emit_.add(x64::Reg::RAX, x64::Reg::R8);
+        emit_.patch_jump(end_ok_w);
+        emit_.mov_store(x64::Reg::RDX, 0x10, x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RDX, 0x18, x64::Reg::RBP);
+
+        // lock xadd [slot_k + 0x20], 1
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.lock_xadd(x64::Reg::RDX, 0x20, x64::Reg::RAX);
+        emit_.cmp_mem_imm(x64::Reg::RDX, 0x30, 0);
+        std::size_t no_wake = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RDX, 0x28);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_iat_call_raw(pe::iat::SetEvent);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.patch_jump(no_wake);
+
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.idx_off);
+        emit_.inc(x64::Reg::RAX);
+        emit_.mov_store(x64::Reg::RBP, layout.idx_off, x64::Reg::RAX);
+        emit_jmp_rel32_to(disp_top);
+        emit_.patch_jump(disp_done);
+
+        // run chunk 0 on caller thread: body_fn(start, active == 1 ? end : start + chunk, rbp)
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.start_off);
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.ncores_off);
+        emit_.cmp_imm(x64::Reg::RAX, 1);
+        std::size_t multi_chunk0 = emit_.jcc_rel32(x64::Emitter::CC_NE);
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, layout.end_off);
+        std::size_t chunk0_ready = emit_.jmp_rel32_placeholder();
+        emit_.patch_jump(multi_chunk0);
+        emit_.mov_load(x64::Reg::RDX, x64::Reg::RBP, layout.chunk_off);
+        emit_.add(x64::Reg::RDX, x64::Reg::RCX);
+        emit_.patch_jump(chunk0_ready);
+        emit_.mov(x64::Reg::R8, x64::Reg::RBP);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        std::size_t c0_call = emit_.buffer().pos();
+        emit_.buffer().emit8(0xE8);
+        emit_.buffer().emit32(0);
+        call_fixups_.push_back({c0_call + 1, layout.body_fn});
+        emit_.add_smart(x64::Reg::RSP, 32);
+
+        // wait for workers if active > 1
+        emit_.mov_load(x64::Reg::RAX, x64::Reg::RBP, layout.ncores_off);
+        emit_.cmp_imm(x64::Reg::RAX, 1);
+        std::size_t skip_wait = emit_.jcc_rel32(x64::Emitter::CC_LE);
+
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.pool_off);
+        emit_.mov_imm32(x64::Reg::RAX, 16384);
+        std::size_t wait_spin = emit_.buffer().pos();
+        emit_.cmp_mem_imm(x64::Reg::RCX, 0x10, 0);
+        std::size_t wait_done1 = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_pause();
+        emit_.dec(x64::Reg::RAX);
+        emit_.jcc_rel32_to(x64::Emitter::CC_NE, wait_spin);
+
+        emit_.mov_imm32(x64::Reg::RAX, 1);
+        emit_.xchg_mem(x64::Reg::RCX, 0x20, x64::Reg::RAX);
+        emit_.cmp_mem_imm(x64::Reg::RCX, 0x10, 0);
+        std::size_t wait_done2 = emit_.jcc_rel32(x64::Emitter::CC_E);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RCX, 0x18);
+        emit_.mov_imm32(x64::Reg::RDX, -1);
+        emit_.sub_imm(x64::Reg::RSP, 32);
+        emit_iat_call_raw(pe::iat::WaitForSingleObject);
+        emit_.add_smart(x64::Reg::RSP, 32);
+        emit_.patch_jump(wait_done1);
+        emit_.patch_jump(wait_done2);
+        emit_.patch_jump(skip_wait);
+
+        // release pool->busy = 0
+        emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
+        emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, layout.pool_off);
+        emit_.xchg_mem(x64::Reg::RCX, 0x08, x64::Reg::RAX);
+        std::size_t all_done = emit_.jmp_rel32_placeholder();
+
+        // nested parallel for fallback
+        emit_.patch_jump(pool_busy);
+        emit_pfor_spawn_loop(layout, false);
+        emit_pfor_wait_and_close(layout);
+
+        emit_.patch_jump(all_done);
+    }
+
     // emits the CreateThread loop that spawns one worker per core
-    void emit_pfor_spawn_loop(const PforLayout& layout) {
+    void emit_pfor_spawn_loop(const PforLayout& layout, bool sub_frame = true) {
         // get cpu count via GetSystemInfo (48 byte struct, dwNumberOfProcessors at offset 32)
         emit_.sub_imm(x64::Reg::RSP, 48);
         emit_.mov(x64::Reg::RCX, x64::Reg::RSP);
@@ -17198,8 +18601,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.mov_store(x64::Reg::RBP, layout.rem_off, x64::Reg::RDX);
 
         // grow rsp to cover all our locals so function calls dont clobber them
-        std::int32_t frame_needed = (-current_scope_->next_offset + 15) & ~15;
-        emit_.sub_imm(x64::Reg::RSP, frame_needed);
+        if (sub_frame) {
+            std::int32_t frame_needed = (-current_scope_->next_offset + 15) & ~15;
+            emit_.sub_imm(x64::Reg::RSP, frame_needed);
+        }
 
         // i = 0
         emit_.xor_(x64::Reg::RAX, x64::Reg::RAX);
@@ -17349,7 +18754,10 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
     }
 
     // parallel for codegen ? extracts body into internal function, spawns N threads, waits for all
-    [[nodiscard]] bool generate_parallel_for(const ast::ParallelForStmt& pfor) {
+    [[nodiscard]] bool generate_parallel_for(
+        const ast::ParallelForStmt& pfor,
+        const FusedProducerMap* fused_producers = nullptr
+    ) {
         if (!is_native_image_output()) {
             error("parallel for requires native image codegen");
             return false;
@@ -17373,6 +18781,17 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         emit_.mov_load(x64::Reg::RCX, x64::Reg::RBP, end_sym.stack_offset);
         emit_.cmp(x64::Reg::RAX, x64::Reg::RCX);
         std::size_t skip_patch = emit_.jcc_rel32(x64::Emitter::CC_GE);
+
+        // flush any register-bound captured variables to their stack slots before workers read parent_rbp
+        for (Scope* s = current_scope_; s != nullptr; s = s->parent) {
+            for (const auto& [name, sym] : s->symbols) {
+                if (name.starts_with("__pfor_") || name == pfor.name) continue;
+                if (stack_struct_locals_.contains(&sym)) continue;
+                if (auto bound = lookup_bound_reg(&sym)) {
+                    emit_.mov_store(x64::Reg::RBP, sym.stack_offset, *bound);
+                }
+            }
+        }
 
         // collect captured variables from parent scopes
         // threads cant access the callers stack directly, so we snapshot vars into the body frame
@@ -17452,6 +18871,14 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
                 },
                 [&](const ast::CastExpr& e) -> bool {
                     return expr_mutates_ident(*e.expr, target, shadowed);
+                },
+                [&](const ast::FStringExpr& e) -> bool {
+                    for (const auto& part : e.parts) {
+                        if (part.is_expr && part.expr && expr_mutates_ident(*part.expr, target, shadowed)) {
+                            return true;
+                        }
+                    }
+                    return false;
                 },
                 [&](const ast::ArrayExpr& e) -> bool {
                     for (const auto& elem : e.elements) {
@@ -17621,7 +19048,7 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
         std::size_t jmp_over = emit_.jmp_rel32_placeholder();
 
         // phase 1: emit the worker thread body function + entry stub
-        if (!emit_pfor_body_function(pfor, captures, layout, jmp_over)) {
+        if (!emit_pfor_body_function(pfor, captures, layout, jmp_over, fused_producers)) {
             pop_scope();
             return false;
         }
@@ -17658,11 +19085,12 @@ emit_.vmovdqu32_zmm_load(*zmm, x64::Reg::R10);
             Type::make_primitive(PrimitiveType::I64), true);
         layout.idx_off = idx_sym.stack_offset;
 
-        // phase 2: spawn worker threads
-        emit_pfor_spawn_loop(layout);
+        auto& pool_sym = current_scope_->define("__pfor_pool",
+            Type::make_primitive(PrimitiveType::I64), true);
+        layout.pool_off = pool_sym.stack_offset;
 
-        // phase 3: wait for all threads and close handles
-        emit_pfor_wait_and_close(layout);
+        // phase 2 & 3: persistent pool dispatch with CreateThread fallback
+        emit_pfor_pool_and_spawn(layout);
 
         emit_.patch_jump(skip_patch);
 

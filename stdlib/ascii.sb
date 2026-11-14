@@ -1,6 +1,4 @@
-import text
-
-// ASCII-oriented helpers for formatting, parsing, and quick protocol work.
+// ASCII-oriented helpers for formatting, parsing, and protocol work.
 // Ownership:
 // - ascii_hex_digit/ascii_hex_byte return heap strings; caller must free.
 
@@ -42,22 +40,53 @@ function int ascii_to_upper(int ch) {
     return ch
 }
 
+function int ascii_hex_value(int ch) {
+    if ch >= 48 and ch <= 57 {
+        return ch - 48
+    }
+    if ch >= 65 and ch <= 70 {
+        return ch - 55
+    }
+    if ch >= 97 and ch <= 102 {
+        return ch - 87
+    }
+    return -1
+}
+
+function int ascii_hex_nibble_char(int nibble) {
+    var n = nibble
+    if n < 0 {
+        n = 0
+    } else if n > 15 {
+        n = 15
+    }
+    if n < 10 {
+        return 48 + n
+    }
+    return 55 + n
+}
+
 function str ascii_hex_digit(int nibble) {
-    let table = "0123456789ABCDEF"
-    if nibble < 0 {
-        nibble = 0
+    let buf = malloc(2)
+    if buf == 0 {
+        return string_substring("", 0, 0)
     }
-    if nibble > 15 {
-        nibble = 15
-    }
-    return string_substring(table, nibble, 1)
+    mem_write_i8(buf, ascii_hex_nibble_char(nibble))
+    mem_write_i8(buf + 1, 0)
+    let out = make_string(buf)
+    free(buf)
+    return out
 }
 
 function str ascii_hex_byte(int byte_value) {
-    let hi = ascii_hex_digit((byte_value >> 4) & 15)
-    let lo = ascii_hex_digit(byte_value & 15)
-    let out = string_append(hi, lo)
-    free(hi)
-    free(lo)
+    let buf = malloc(3)
+    if buf == 0 {
+        return string_substring("", 0, 0)
+    }
+    mem_write_i8(buf, ascii_hex_nibble_char((byte_value >> 4) & 15))
+    mem_write_i8(buf + 1, ascii_hex_nibble_char(byte_value & 15))
+    mem_write_i8(buf + 2, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }

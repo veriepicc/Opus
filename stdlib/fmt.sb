@@ -1,7 +1,8 @@
 import ascii
+import mem
 import text
 
-// Small formatting helpers that make ordinary output code much less repetitive.
+// Formatting helpers using single-pass buffer assembly.
 // Ownership:
 // - every fmt_* function returning str returns a heap string; caller must free.
 
@@ -24,16 +25,29 @@ function str fmt_int_pad_left(int number, int width) {
 }
 
 function str fmt_pair(str key, str val) {
-    let left = string_append(key, ": ")
-    let out = string_append(left, val)
-    free(left)
-    return out
+    return text_join3(key, ": ", val)
 }
 
 function str fmt_csv3(str a, str b, str c) {
-    let ab = text_join3(a, ",", b)
-    let out = text_join3(ab, ",", c)
-    free(ab)
+    let la = string_length(a)
+    let lb = string_length(b)
+    let lc = string_length(c)
+    let total = la + lb + lc + 2
+    let buf = malloc(total + 1)
+    if buf == 0 {
+        return text_clone("")
+    }
+    var pos = 0
+    if la > 0 { memcpy(buf, a as ptr, la); pos += la }
+    mem.write8(buf + pos, 44)
+    pos++
+    if lb > 0 { memcpy(buf + pos, b as ptr, lb); pos += lb }
+    mem.write8(buf + pos, 44)
+    pos++
+    if lc > 0 { memcpy(buf + pos, c as ptr, lc); pos += lc }
+    mem.write8(buf + pos, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }
 
@@ -42,8 +56,16 @@ function str fmt_wrap(str val, str left, str right) {
 }
 
 function str fmt_hex_byte(int byte_value) {
-    let body = ascii_hex_byte(byte_value)
-    let out = string_append("0x", body)
-    free(body)
+    let buf = malloc(5)
+    if buf == 0 {
+        return text_clone("0x00")
+    }
+    mem.write8(buf, 48)
+    mem.write8(buf + 1, 120)
+    mem.write8(buf + 2, ascii_hex_nibble_char((byte_value >> 4) & 15))
+    mem.write8(buf + 3, ascii_hex_nibble_char(byte_value & 15))
+    mem.write8(buf + 4, 0)
+    let out = make_string(buf)
+    free(buf)
     return out
 }

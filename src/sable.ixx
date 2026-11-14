@@ -598,9 +598,8 @@ public:
             return result;
         }
 
-        // cstyle as base, mixed detection happens per statement
         auto parse_start = now();
-        Parser parser(std::move(tokens), SyntaxMode::CStyle);
+        Parser parser(std::move(tokens));
         auto mod_result = parser.parse_module(filename);
         if (opts.collect_timings) {
             append_timing(result.timings, "parser.parse_module", elapsed_ms(parse_start, now()));

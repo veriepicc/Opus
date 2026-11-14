@@ -1,0 +1,137 @@
+import text
+
+fn defer_return_eval_order() -> int {
+    let arr = malloc(8) as *int
+    arr[0] = 77
+    defer free(arr)
+    return arr[0]
+}
+
+fn defer_lifo_and_loops(log: *int) -> int {
+    var idx = 0
+    {
+        defer {
+            log[idx] = 1
+            idx++
+        }
+        defer {
+            log[idx] = 2
+            idx++
+        }
+        log[idx] = 0
+        idx++
+    }
+
+    for i in 0..4 {
+        defer {
+            log[idx] = 10 + i
+            idx++
+        }
+        if i == 1 {
+            continue
+        }
+        if i == 2 {
+            break
+        }
+    }
+    return idx
+}
+
+fn test_typed_indexing() -> int {
+    let raw = malloc(32)
+    defer free(raw)
+
+    let sb = raw as *byte
+    sb[0] = -5
+    sb[1] = 120
+    if sb[0] != -5 or sb[1] != 120 { return 1 }
+
+    let ub = raw as *ubyte
+    ub[2] = 250
+    if ub[2] != 250 { return 2 }
+
+    let sh = raw as *short
+    sh[2] = -1234
+    if sh[2] != -1234 { return 3 }
+
+    let u32p = raw as *uint
+    u32p[2] = 0x12345678
+    u32p[3] = 0xCAFEBABE
+    if u32p[2] != 0x12345678 or u32p[3] != 0xCAFEBABE { return 4 }
+
+    let word = "Sable"
+    if word[0] != 'S' or word[4] != 'e' { return 5 }
+    return 0
+}
+
+fn greet(name: str) => f"hi {name}"
+
+fn test_fstrings() -> int {
+    let name = "sable"
+    let n = 42
+    let ok = true
+    let s1 = f"hello {name}, n={n + 1}, ok={ok}, {{braces}}"
+    defer free(s1)
+    if !text_eq(s1, "hello sable, n=43, ok=true, {braces}") { return 10 }
+
+    let s2 = f"nested={greet("world")}!"
+    defer free(s2)
+    if !text_eq(s2, "nested=hi world!") { return 11 }
+
+    let empty = f""
+    defer free(empty)
+    if !text_eq(empty, "") { return 12 }
+
+    let neg = -42
+    let z = 0
+    let s3 = f"{z}:{neg}"
+    defer free(s3)
+    if !text_eq(s3, "0:-42") { return 13 }
+    return 0
+}
+
+fn test_for_iterables() -> int {
+    var sum_lit = 0
+    for x in [10, 20, 30] {
+        sum_lit += x
+    }
+    if sum_lit != 60 { return 20 }
+
+    let arr = [1, 2, 3, 4, 5]
+    defer array_free(arr)
+    var sum_var = 0
+    for x in arr {
+        if x == 2 { continue }
+        if x == 5 { break }
+        sum_var += x
+    }
+    if sum_var != 8 { return 21 }
+
+    var ascii_sum = 0
+    for ch in "ABC" {
+        ascii_sum += ch
+    }
+    if ascii_sum != 65 + 66 + 67 { return 22 }
+    return 0
+}
+
+fn main() -> int {
+    if defer_return_eval_order() != 77 { return 1 }
+
+    let log = malloc(64) as *int
+    defer free(log)
+    let count = defer_lifo_and_loops(log)
+    if count != 6 { return 2 }
+    if log[0] != 0 or log[1] != 2 or log[2] != 1 { return 3 }
+    if log[3] != 10 or log[4] != 11 or log[5] != 12 { return 4 }
+
+    let r1 = test_typed_indexing()
+    if r1 != 0 { return 10 + r1 }
+
+    let r2 = test_fstrings()
+    if r2 != 0 { return 20 + r2 }
+
+    let r3 = test_for_iterables()
+    if r3 != 0 { return 30 + r3 }
+    return 0
+}

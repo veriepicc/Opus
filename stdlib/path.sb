@@ -1,3 +1,4 @@
+import mem
 import text
 
 // Lightweight path helpers for common tooling tasks.
@@ -5,9 +6,13 @@ import text
 // - path_join2/path_basename/path_dirname/path_ext/path_stem return heap strings; caller must free.
 
 function int path_last_sep(str source) {
+    if source == 0 {
+        return -1
+    }
+    let p = source as ptr
     var i = string_length(source) - 1
     while i >= 0 {
-        let ch = char_at(source, i)
+        let ch = mem.read8(p + i)
         if ch == 47 or ch == 92 {
             return i
         }
@@ -24,7 +29,8 @@ function str path_join2(str left, str right) {
         return text_clone(left)
     }
 
-    let last = char_at(left, string_length(left) - 1)
+    let left_len = string_length(left)
+    let last = mem.read8((left as ptr) + left_len - 1)
     if last == 47 or last == 92 {
         return string_append(left, right)
     }
@@ -51,24 +57,29 @@ function str path_dirname(str source) {
 }
 
 function str path_ext(str source) {
-    let base = path_basename(source)
-    let dot = text_rfind_char(base, 46)
-    if dot < 0 {
-        free(base)
-        return text_clone("")
+    let base_start = path_last_sep(source) + 1
+    let total = string_length(source)
+    let p = source as ptr
+    var dot = total - 1
+    while dot >= base_start {
+        if mem.read8(p + dot) == 46 {
+            return string_substring(source, dot + 1, total - dot - 1)
+        }
+        dot--
     }
-    let out = string_substring(base, dot + 1, string_length(base) - dot - 1)
-    free(base)
-    return out
+    return text_clone("")
 }
 
 function str path_stem(str source) {
-    let base = path_basename(source)
-    let dot = text_rfind_char(base, 46)
-    if dot < 0 {
-        return base
+    let base_start = path_last_sep(source) + 1
+    let total = string_length(source)
+    let p = source as ptr
+    var dot = total - 1
+    while dot >= base_start {
+        if mem.read8(p + dot) == 46 {
+            return string_substring(source, base_start, dot - base_start)
+        }
+        dot--
     }
-    let out = string_substring(base, 0, dot)
-    free(base)
-    return out
+    return string_substring(source, base_start, total - base_start)
 }
